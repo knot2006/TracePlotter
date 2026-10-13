@@ -4148,7 +4148,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 name = "traceplotter"
 version = "0.1.2"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "dns-lookup",
  "minisign-verify",
  "serde",
