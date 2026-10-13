@@ -122,41 +122,19 @@ export function breaches(rtts: (number | null)[], latencyMs: number, lossPct: nu
   );
 }
 
-/** Plain-text hop table in the style of `mtr --report`, under the given title. */
-export function mtrReport(
-  title: string,
-  hops: { ttl: number; addr: string | null; name: string | null; rtts: (number | null)[] }[],
-): string {
-  const num = (v: number | null, digits = 1) => (v === null ? "-" : v.toFixed(digits));
-  const ipWidth = Math.max(2, ...hops.map((hop) => (hop.addr ?? "*").length));
-  const row = (cells: string[]) =>
-    [cells[0].padStart(3), cells[1].padEnd(ipWidth), ...cells.slice(2, 10).map((c) => c.padStart(7)), cells[10]]
+/**
+ * A table as plain text with aligned columns, under the given title: the header labels,
+ * then one line per row. Each column is as wide as its longest cell; `left` columns are
+ * left-aligned, the others right-aligned like numbers.
+ */
+export function textTable(title: string, headers: { label: string; left?: boolean }[], rows: string[][]): string {
+  const widths = headers.map((header, i) => Math.max(header.label.length, ...rows.map((row) => row[i].length)));
+  const line = (cells: string[]) =>
+    cells
+      .map((cell, i) => (headers[i].left ? cell.padEnd(widths[i]) : cell.padStart(widths[i])))
       .join("  ")
       .trimEnd();
-  const lines = [
-    title,
-    "",
-    row(["Hop", "IP", "Loss%", "Sent", "Last", "Avg", "Best", "Worst", "Jitter", "MOS", "Name"]),
-  ];
-  for (const hop of hops) {
-    const s = stats(hop.rtts);
-    lines.push(
-      row([
-        String(hop.ttl),
-        hop.addr ?? "*",
-        `${s.lossPct.toFixed(1)}%`,
-        String(s.sent),
-        num(s.last),
-        num(s.avg),
-        num(s.min),
-        num(s.max),
-        num(s.jitter),
-        num(mos(s), 2),
-        hop.name ?? "",
-      ]),
-    );
-  }
-  return lines.join("\n") + "\n";
+  return [title, "", line(headers.map((header) => header.label)), ...rows.map(line)].join("\n") + "\n";
 }
 
 /**

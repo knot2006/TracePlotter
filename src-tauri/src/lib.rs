@@ -874,6 +874,9 @@ pub fn run() {
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(640.0, 420.0)
                 .data_directory(data_dir().join("webview"))
+                // Tauri's own file-drop handling swallows drag and drop inside the page
+                // on Windows, which the hop table uses to reorder its columns.
+                .disable_drag_drop_handler()
                 .visible(false)
                 .build()?;
             restore_window_state(&window);

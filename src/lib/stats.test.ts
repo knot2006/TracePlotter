@@ -6,10 +6,10 @@ import {
   lossSeries,
   lowerBound,
   mos,
-  mtrReport,
   parseSpan,
   spanLabel,
   stats,
+  textTable,
 } from "./stats.ts";
 
 test("time spans are parsed from short forms and written out in words", () => {
@@ -51,17 +51,16 @@ test("lowerBound finds the first time at or after the cutoff", () => {
   assert.equal(lowerBound([], 1), 0);
 });
 
-test("mtr report has one aligned row per hop", () => {
-  const lines = mtrReport("Title", [
-    { ttl: 1, addr: "10.0.0.1", name: "gw", rtts: [10, null, 20, 14, null] },
-    { ttl: 2, addr: null, name: null, rtts: [null] },
-  ]).split("\n");
-  assert.equal(lines[0], "Title");
-  assert.deepEqual(lines[3].trim().split(/\s+/), [
-    "1", "10.0.0.1", "40.0%", "5", "-", "14.7", "10.0", "20.0", "8.0", "1.00", "gw",
-  ]);
-  assert.deepEqual(lines[4].trim().split(/\s+/), ["2", "*", "100.0%", "1", "-", "-", "-", "-", "-", "-"]);
-  assert.equal(lines[2].indexOf("Loss%") + 5, lines[3].indexOf("40.0%") + 5);
+test("textTable aligns each column to its widest cell", () => {
+  const table = textTable(
+    "Title",
+    [{ label: "Hop" }, { label: "IP", left: true }, { label: "Loss" }],
+    [
+      ["1", "10.0.0.1", "0.0%"],
+      ["RT", "Round trip", "12.5%"],
+    ],
+  );
+  assert.equal(table, ["Title", "", "Hop  IP           Loss", "  1  10.0.0.1     0.0%", " RT  Round trip  12.5%", ""].join("\n"));
 });
 
 test("mos falls with latency and loss", () => {

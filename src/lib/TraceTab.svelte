@@ -57,7 +57,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
-  import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, mtrReport, stats } from "./stats";
+  import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
   import { exportFile, type Trace } from "./trace";
 
@@ -76,7 +76,59 @@
   };
   let { trace, rev, hidden, focusSeconds, onsave, oncolumn }: Props = $props();
 
-  const columns = $derived(COLUMNS.filter((column) => !hidden.includes(column.key)));
+  // The order of the columns after Hop, as keys. Changed by dragging a header or from its
+  // right-click menu; shared by all tabs and remembered between launches. Columns the
+  // saved order does not know (added by a newer version) follow at the end.
+  const COLUMN_ORDER_KEY = "traceplotter.columnOrder";
+  let order = $state<string[]>(loadOrder());
+
+  function loadOrder(): string[] {
+    try {
+      const stored = JSON.parse(localStorage.getItem(COLUMN_ORDER_KEY) ?? "[]");
+      return Array.isArray(stored) ? stored.filter((key) => typeof key === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  const ordered = $derived([
+    ...order.flatMap((key) => COLUMNS.find((column) => column.key === key) ?? []),
+    ...COLUMNS.filter((column) => !order.includes(column.key)),
+  ]);
+  // The columns on screen, in order. The text export follows these too.
+  const columns = $derived(ordered.filter((column) => !hidden.includes(column.key)));
+
+  /** Puts a column in front of another one, or at the end with `before` null. */
+  function moveColumn(key: string, before: string | null) {
+    const keys = ordered.map((column) => column.key).filter((k) => k !== key);
+    keys.splice(before === null ? keys.length : keys.indexOf(before), 0, key);
+    order = keys;
+    localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(keys));
+  }
+
+  /** Moves a column one place left (-1) or right (1) among the columns on screen. */
+  function shiftColumn(key: string, by: -1 | 1) {
+    const at = columns.findIndex((column) => column.key === key);
+    const target = columns[at + by];
+    if (!target) return;
+    moveColumn(key, by < 0 ? target.key : (columns[at + 2]?.key ?? null));
+  }
+
+  // Dragging a header onto another one moves it there: in front of it when dragged to the
+  // left, behind it when dragged to the right.
+  let dragged = $state<string | null>(null);
+  let dropTarget = $state<string | null>(null);
+  // Set while a header's edge is being dragged to resize, which must not start a move.
+  let resizing = false;
+
+  function dropColumn(onto: string) {
+    if (dragged && dragged !== onto) {
+      const from = columns.findIndex((column) => column.key === dragged);
+      const to = columns.findIndex((column) => column.key === onto);
+      moveColumn(dragged, from < to ? (columns[to + 1]?.key ?? null) : onto);
+    }
+    dragged = dropTarget = null;
+  }
 
   const BACKGROUND = "#0f1319";
   /** Key of the round trip in `graphed`; hops use their number. */
@@ -240,16 +292,29 @@
     }
   }
 
-  /** Right-click menu of the table header: a tick per column, as in View > Columns. */
-  async function columnMenu(event: MouseEvent) {
+  /**
+   * Right-click menu of a table header: move that column left or right, then a tick per
+   * column, as in View > Columns. `key` is null for the Hop column, which stays first.
+   */
+  async function columnMenu(event: MouseEvent, key: string | null) {
     event.preventDefault();
+    const at = columns.findIndex((column) => column.key === key);
     const menu = await Menu.new({
-      items: COLUMNS.map((column) => ({
-        id: `header-${column.key}`,
-        text: column.label,
-        checked: !hidden.includes(column.key),
-        action: () => oncolumn(column.key),
-      })),
+      items: [
+        ...(key === null
+          ? []
+          : [
+              { id: "move-left", text: "Move left", enabled: at > 0, action: () => shiftColumn(key, -1) },
+              { id: "move-right", text: "Move right", enabled: at < columns.length - 1, action: () => shiftColumn(key, 1) },
+              { item: "Separator" as const },
+            ]),
+        ...COLUMNS.map((column) => ({
+          id: `header-${column.key}`,
+          text: column.label,
+          checked: !hidden.includes(column.key),
+          action: () => oncolumn(column.key),
+        })),
+      ],
     });
     await menu.popup();
   }
@@ -355,8 +420,12 @@
     const startWidth = grip.parentElement!.getBoundingClientRect().width;
     event.preventDefault();
     grip.setPointerCapture(event.pointerId);
+    resizing = true;
     grip.onpointermove = (move) => setWidth(key, startWidth + move.clientX - startX);
-    grip.onpointerup = () => (grip.onpointermove = null);
+    grip.onpointerup = grip.onpointercancel = () => {
+      grip.onpointermove = null;
+      resizing = false;
+    };
   }
 
   function nudgeColumn(event: KeyboardEvent, key: string) {
@@ -405,10 +474,22 @@
 
   // The export functions are called from the app menu through `bind:this`.
 
-  /** Hop table for the period shown as plain text, like `mtr --report`. */
+  /**
+   * The hop table as plain text, like `mtr --report`: the rows, the columns and their
+   * order as on screen for the period shown. The latency bar is a drawing and is left out.
+   */
   export function exportTxt() {
     const period = view.to > view.from ? `${clock(view.from)} to ${clock(view.to)}` : "no samples";
-    const report = mtrReport(`TracePlotter report: ${label}\n${period}`, focused);
+    const shown = columns.filter((column) => column.key !== "bar");
+    const report = textTable(
+      `TracePlotter report: ${label}\n${period}`,
+      [{ label: "Hop" }, ...shown.map((column) => ({ label: column.label, left: column.text }))],
+      // The dash the table shows for "no value" is written as a plain hyphen.
+      rows.map((row) => [
+        row.roundTrip ? "RT" : String(row.hop.ttl),
+        ...shown.map((column) => column.value(row).replaceAll("–", "-")),
+      ]),
+    );
     save(fileName("txt"), new TextEncoder().encode(report));
   }
 
@@ -499,10 +580,32 @@
         {#if filler}<col />{/if}
       </colgroup>
       <thead>
-        <tr oncontextmenu={columnMenu} title="Right-click to choose columns">
-          <th class="hop">Hop{@render grip("hop", "Hop")}</th>
+        <tr>
+          <th class="hop" oncontextmenu={(event) => columnMenu(event, null)}>Hop{@render grip("hop", "Hop")}</th>
           {#each columns as column (column.key)}
-            <th class:text={column.text} title={column.title}>
+            <th
+              class:text={column.text}
+              class:drop={dropTarget === column.key}
+              title={column.title ?? "Drag to move this column. Right-click for more."}
+              draggable="true"
+              ondragstart={(event) => {
+                if (resizing) return event.preventDefault();
+                dragged = column.key;
+                event.dataTransfer?.setData("text/plain", column.key);
+              }}
+              ondragover={(event) => {
+                if (!dragged || dragged === column.key) return;
+                event.preventDefault();
+                dropTarget = column.key;
+              }}
+              ondragleave={() => (dropTarget = null)}
+              ondrop={(event) => {
+                event.preventDefault();
+                dropColumn(column.key);
+              }}
+              ondragend={() => (dragged = dropTarget = null)}
+              oncontextmenu={(event) => columnMenu(event, column.key)}
+            >
               {column.key === "bar"
                 ? `Latency (0 – ${scale.toFixed(scale < 10 ? 1 : 0)} ms)${barZoom > 1 ? " · zoomed" : ""}`
                 : column.label}
@@ -777,6 +880,14 @@
     color: var(--muted);
     font-weight: 500;
     font-size: 12px;
+  }
+  th[draggable="true"] {
+    cursor: grab;
+  }
+  /* Where a dragged column will land. */
+  th.drop {
+    box-shadow: inset 3px 0 var(--accent);
+    background: #1c3f63;
   }
   /* Drag handle on a header's right edge. */
   .grip {
