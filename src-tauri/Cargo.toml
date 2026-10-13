@@ -17,8 +17,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
-# API is documented as unstable, keep the exact pin.
-trippy-core = "=0.13.0"
+# Not capped: new releases, breaking ones included, are taken and our code is fixed when
+# the API changes. Cargo.lock keeps builds on the tested version until then.
+trippy-core = ">=0.13"
 tauri-plugin-notification = "2"
 serde_json = "1"
 tauri-plugin-dialog = "2"
