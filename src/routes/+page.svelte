@@ -5,6 +5,7 @@
   import Summary from "$lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "$lib/TraceTab.svelte";
   import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "$lib/stats";
+  import { setLocale } from "$lib/time";
   import {
     closeTrace,
     restartTrace,
@@ -256,6 +257,8 @@
       // Keep the defaults.
     }
     buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+    // Before any tab shows a date: the host's own date and time format.
+    setLocale(await invoke<string | null>("host_locale").catch(() => null));
     try {
       const stored = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "[]");
       session = Array.isArray(stored) ? stored : [];
@@ -408,7 +411,7 @@
       />
     {/key}
   {:else if activeId === "summary" && traces.length}
-    <Summary {traces} {rev} {focusSeconds} onopen={(trace) => (activeId = trace.id)} />
+    <Summary {traces} {rev} {focusSeconds} onopen={(trace) => (activeId = trace.id)} ontoggle={togglePause} />
   {:else}
     <p class="empty">Type a host above and press the green button. Each target opens in its own tab.</p>
   {/if}
@@ -621,9 +624,31 @@
     flex: 1;
     min-height: 0;
   }
+  /* Printing (File > Export page as PDF) uses a light theme: dark text on white paper.
+     The page's own dark background is not printed, so the on-screen light text would
+     vanish. Row colours and the graphs' dark panels are kept by print-color-adjust. */
   @media print {
-    :global(body) {
+    :global(:root) {
+      --bg: #fff;
+      --panel: #eef2f7;
+      --line: #cbd5e1;
+      --text: #0f172a;
+      --muted: #475569;
+      color-scheme: light;
+    }
+    :global(html),
+    :global(body),
+    :global(body > div),
+    main {
+      display: block !important;
       height: auto;
+      overflow: visible;
+    }
+    /* The page margin is 0 (see app.html), which drops the browser's header and footer
+       lines; this padding is the margin instead. */
+    :global(body) {
+      padding: 10mm;
+      background: #fff;
       print-color-adjust: exact;
     }
     header {

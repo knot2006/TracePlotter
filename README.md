@@ -12,9 +12,19 @@ Open-source visual traceroute and ping monitor.
 - Open targets are restored on the next launch, with up to 24 h of history per target
 - Export the hop table as text, samples as CSV, the graph as PNG and the page as PDF
 
-Every tab is its own session, even when two tabs trace the same host. A tab's history is one
-JSON-lines file in `%APPDATA%\io.github.traceplotter\history`; closing the tab or restarting its
-trace erases that file.
+Every tab is its own session, even when two tabs trace the same host. Closing a tab or restarting
+its trace erases that tab's history.
+
+## Portable
+
+There is no installer. `traceplotter.exe` runs from any folder and keeps everything it stores in a
+`TracePlotter-data` folder next to itself: trace history (`history`, one JSON-lines file per tab),
+open tabs and settings (`webview`) and the window's size and position (`window.json`). Copy the exe
+together with that folder to move the app; delete the folder to reset it. Nothing is written to the
+user profile.
+
+Not portable: the WebView2 runtime the app needs (part of Windows 11) and the Windows Firewall
+rules below, which belong to the machine.
 
 Built with [Tauri 2](https://tauri.app), [Svelte 5](https://svelte.dev), [uPlot](https://github.com/leeoniya/uPlot)
 and the [trippy-core](https://github.com/fujiapple852/trippy) probe engine. Windows first; the code is portable.

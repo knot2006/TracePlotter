@@ -6,9 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TracePlotter</title>
     <style>
+      /* No page margin: the browser then has no room for its date, title and URL lines.
+         The printed page gets its margin from body padding instead. */
       @page {
         size: landscape;
-        margin: 10mm;
+        margin: 0;
       }
     </style>
     %sveltekit.head%

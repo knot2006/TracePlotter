@@ -1,0 +1,23 @@
+# Weekly dependency update pull requests.
+# Minor and patch updates of one ecosystem come as a single pull request; a new major
+# version gets its own, because it may need code changes.
+version: 2
+updates:
+  # Frontend: Svelte, uPlot, the Tauri JavaScript API and the build tools.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Backend: Tauri, its plugins and trippy-core. trippy-core is pinned to an exact
+  # version because its API is unstable, so every update of it needs a build and a test.
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]

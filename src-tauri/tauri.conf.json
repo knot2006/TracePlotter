@@ -10,15 +10,7 @@
     "frontendDist": "../build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "TracePlotter",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 640,
-        "minHeight": 420
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

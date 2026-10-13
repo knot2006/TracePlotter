@@ -2,6 +2,7 @@
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
   import { BAD_MS, WARN_MS, jitterSeries, lossSeries } from "./stats";
+  import { timeOfDay } from "./time";
   import type { Hop } from "./trace";
 
   type Props = {
@@ -108,7 +109,7 @@
       tip = null;
       return;
     }
-    const time =new Date(xs[idx] * 1000).toLocaleTimeString([], { hour12: false });
+    const time = timeOfDay(xs[idx]);
     const rtt = ys[idx];
     const jitter = shown.js[idx];
     const loss = ls[idx];
@@ -171,7 +172,7 @@
           loss: { range: (_u, _min, max) => [0, Math.max(10, Math.ceil(max / 10) * 10)] },
         },
         axes: [
-          { ...axis, values: (_u, ticks) => ticks.map((t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false })) },
+          { ...axis, values: (_u, ticks) => ticks.map(timeOfDay) },
           { ...axis, label: "Latency (ms)", labelSize: 20, size: 44 },
           { show: withLoss, scale: "loss", side: 1, stroke: LOSS, label: "Packet loss %", labelSize: 20, size: 36, grid: { show: false }, ticks: { stroke: "#232a36" } },
         ],
@@ -361,10 +362,17 @@
   .tip div:first-child {
     color: var(--muted);
   }
+  /* The page prints dark on white, but the graphs are drawn in light colours on their
+     canvases, so each graph keeps the dark background it was drawn for. */
   @media print {
     .hop-graph {
       display: block;
       break-inside: avoid;
+      margin-top: 8px;
+      border: 0;
+      background: #0f1319;
+      color: #e6eaf0;
+      print-color-adjust: exact;
     }
     .jitter,
     .chart {

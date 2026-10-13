@@ -56,6 +56,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import HopGraph from "./HopGraph.svelte";
   import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, mtrReport, stats } from "./stats";
+  import { dateTime, timeOfDay } from "./time";
   import { exportFile, type Trace } from "./trace";
 
   type Props = {
@@ -203,7 +204,7 @@
 
   // Position along the bar scale; values beyond a zoomed scale stop at its end.
   const pct = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
-  const clock = (t: number) => new Date(t * 1000).toLocaleString();
+  const clock = dateTime;
 
   // Bumped when a threshold in `trace.config` (a plain object) changes.
   let thresholdsRev = $state(0);
@@ -392,9 +393,7 @@
   const today = new Date().toDateString();
   /** Time of day, with the date when it is not today. */
   function stamp(t: number) {
-    const date = new Date(t * 1000);
-    const time = date.toLocaleTimeString([], { hour12: false });
-    return date.toDateString() === today ? time : `${date.toLocaleDateString()} ${time}`;
+    return new Date(t * 1000).toDateString() === today ? timeOfDay(t) : dateTime(t);
   }
 
   // The export functions are called from the app menu through `bind:this`.
@@ -449,7 +448,9 @@
 </script>
 
 <div class="trace" bind:this={traceEl}>
-  <h1 class="print-only">TracePlotter · {label} · {new Date().toLocaleString()}</h1>
+  <h1 class="print-only">
+    TracePlotter · {label}{#if view.to > view.from} · {clock(view.from)} – {clock(view.to)}{/if}
+  </h1>
   {#if trace.error}
     <p class="error" role="alert">{trace.error}</p>
   {/if}
@@ -1026,9 +1027,24 @@
       padding: 3px 6px;
       font-size: 11px;
     }
+    /* Colours picked for a dark screen, redone for white paper. */
+    tr.selected {
+      background: none;
+    }
+    .warn {
+      color: #b45309;
+    }
+    .bad {
+      color: #b91c1c;
+    }
+    .range {
+      background: #475569;
+    }
     .divider,
+    .grip,
     .tools,
-    .scrub {
+    .scrub,
+    .bar-tip {
       display: none;
     }
     .graph {

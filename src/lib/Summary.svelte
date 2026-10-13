@@ -10,8 +10,10 @@
     focusSeconds: number;
     /** The user picked a target to look at. */
     onopen: (trace: Trace) => void;
+    /** The user asked to pause a running trace or resume a paused one. */
+    ontoggle: (trace: Trace) => void;
   };
-  let { traces, rev, focusSeconds, onopen }: Props = $props();
+  let { traces, rev, focusSeconds, onopen, ontoggle }: Props = $props();
 
   const SPARK_WIDTH = 160;
   const SPARK_HEIGHT = 24;
@@ -64,6 +66,7 @@
   <table>
     <thead>
       <tr>
+        <th></th>
         <th class="text">Target</th>
         <th class="text">IP</th>
         <th class="text">Probe</th>
@@ -82,6 +85,15 @@
       {#each rows as { trace, s, spark, state } (trace.id)}
         {@const { host, protocol, port } = trace.config}
         <tr>
+          <td class="toggle">
+            <button
+              class="go"
+              class:running={!trace.paused}
+              aria-label="{trace.paused ? 'Resume' : 'Pause'} the trace to {host}"
+              title={trace.paused ? "Resume trace" : "Pause trace"}
+              onclick={() => ontoggle(trace)}>{trace.paused ? "▶" : "⏸"}</button
+            >
+          </td>
           <td class="text">
             <span class="dot {state}" role="img" aria-label={state}></span>
             <button onclick={() => onopen(trace)}>{host}</button>
@@ -143,19 +155,44 @@
     background: var(--panel);
   }
   /* The target's name stretches over its row, so the whole row opens the tab. */
-  td button {
+  td.text button {
     all: unset;
     cursor: pointer;
     font-weight: 600;
   }
-  td button::after {
+  td.text button::after {
     content: "";
     position: absolute;
     inset: 0;
   }
-  td button:focus-visible::after {
+  td.text button:focus-visible::after {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+  .toggle {
+    width: 34px;
+    padding-right: 0;
+  }
+  /* Green to resume, yellow to pause, like the toolbar's button. It sits above the
+     row-wide click target, so pressing it does not open the tab. */
+  .go {
+    position: relative;
+    z-index: 1;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 2px solid #0b3d1e;
+    border-radius: 50%;
+    background: var(--good);
+    color: #062611;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .go.running {
+    border-color: #4a3703;
+    background: var(--warn);
+    color: #2b2001;
   }
   .dot {
     display: inline-block;

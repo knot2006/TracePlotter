@@ -5,12 +5,12 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeBody, Request};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round};
 
@@ -138,7 +138,6 @@ fn load_history(path: &Path, max: usize) -> Vec<Sample> {
 
 #[tauri::command(async)]
 fn start_trace(
-    app: AppHandle,
     // Id of the tab; names its history file, so tabs never share history.
     session: String,
     host: String,
@@ -178,7 +177,7 @@ fn start_trace(
     };
     let mut tracer = Some(build().map_err(|e| e.to_string())?);
 
-    let path = history_path(&app, &session)?;
+    let path = history_path(&session)?;
     let history = if with_history {
         load_history(&path, MAX_HISTORY)
     } else {
@@ -290,25 +289,102 @@ fn start_trace(
     Ok(Started { id, addr, history })
 }
 
+/// The folder for everything the app stores: trace history, the webview's storage (open
+/// tabs and settings) and the window's size. It sits next to the exe, not in the user
+/// profile, so the app is portable: copy the exe with this folder and nothing is left behind.
+fn data_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = std::env::current_exe().unwrap_or_default();
+        exe.parent()
+            .unwrap_or(Path::new("."))
+            .join("TracePlotter-data")
+    })
+}
+
 /// The history file of one tab, in a folder that is created on demand.
-fn history_path(app: &AppHandle, session: &str) -> Result<PathBuf, String> {
+fn history_path(session: &str) -> Result<PathBuf, String> {
     let name = file_safe(session);
     if name.is_empty() {
         return Err("missing session id".into());
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("history");
+    let dir = data_dir().join("history");
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     Ok(dir.join(format!("{name}.jsonl")))
 }
 
+/// Size, position and maximized state of the window, kept between launches.
+/// Position and size are in physical pixels, of the window while not maximized.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct WindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
+fn load_window_state() -> Option<WindowState> {
+    let text = fs::read_to_string(data_dir().join("window.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Remembers how the window is placed. Called when it is about to close.
+fn save_window_state(window: &tauri::Window) {
+    // A minimized window reports a position far off screen; keep what was saved before.
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let placed = match (window.outer_position(), window.inner_size()) {
+        (Ok(at), Ok(size)) => WindowState {
+            x: at.x,
+            y: at.y,
+            width: size.width,
+            height: size.height,
+            maximized,
+        },
+        _ => return,
+    };
+    // While maximized the window reports the screen's size; keep the size it goes back to.
+    let state = match load_window_state() {
+        Some(before) if maximized => WindowState { maximized, ..before },
+        _ => placed,
+    };
+    if let Ok(text) = serde_json::to_string(&state) {
+        let _ = fs::write(data_dir().join("window.json"), text);
+    }
+}
+
+/// Puts the window back where it was. The position is used only if it is still on a
+/// connected screen, so the window cannot open out of sight after a monitor is unplugged.
+fn restore_window_state(window: &tauri::WebviewWindow) {
+    let Some(state) = load_window_state() else {
+        return;
+    };
+    let _ = window.set_size(tauri::PhysicalSize::new(state.width, state.height));
+    const MARGIN: i32 = 50;
+    let on_screen = window.available_monitors().is_ok_and(|monitors| {
+        monitors.iter().any(|monitor| {
+            let (at, size) = (monitor.position(), monitor.size());
+            state.x + MARGIN >= at.x
+                && state.x + MARGIN < at.x + size.width as i32
+                && state.y + MARGIN >= at.y
+                && state.y + MARGIN < at.y + size.height as i32
+        })
+    });
+    if on_screen {
+        let _ = window.set_position(tauri::PhysicalPosition::new(state.x, state.y));
+    }
+    if state.maximized {
+        let _ = window.maximize();
+    }
+}
+
 /// Erases a tab's saved history. A trace still writing to it loses those rounds too.
 #[tauri::command]
-fn delete_history(app: AppHandle, session: String) -> Result<(), String> {
-    let path = history_path(&app, &session)?;
+fn delete_history(session: String) -> Result<(), String> {
+    let path = history_path(&session)?;
     match fs::remove_file(&path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             Err(format!("cannot delete {}: {e}", path.display()))
@@ -322,6 +398,27 @@ fn stop_trace(id: u32, traces: State<'_, Traces>) {
     if let Some(stop) = traces.stops.lock().unwrap().remove(&id) {
         stop.store(true, Ordering::Relaxed);
     }
+}
+
+/// The locale of the host's regional format (how it writes dates and times), such as
+/// "pl-PL". This is the Windows "Regional format" setting, which can differ from the
+/// display language the webview goes by. `None` where it cannot be read.
+#[tauri::command]
+fn host_locale() -> Option<String> {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetUserDefaultLocaleName(name: *mut u16, size: i32) -> i32;
+        }
+        // LOCALE_NAME_MAX_LENGTH is 85, including the terminating zero.
+        let mut name = [0u16; 85];
+        // SAFETY: the buffer is valid for `name.len()` UTF-16 units, the size passed.
+        let length = unsafe { GetUserDefaultLocaleName(name.as_mut_ptr(), name.len() as i32) };
+        (length > 1).then(|| String::from_utf16_lossy(&name[..length as usize - 1]))
+    }
+    #[cfg(not(windows))]
+    None
 }
 
 /// Hostname for a hop address, `None` when it has no PTR record.
@@ -434,13 +531,32 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        // Remembers the window's size, position and maximized state between launches.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Traces::default())
+        // The window is created here, not in tauri.conf.json, to point the webview's
+        // storage at the data folder. It stays hidden until it is placed where it was.
+        .setup(|app| {
+            fs::create_dir_all(data_dir())?;
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+                .title("TracePlotter")
+                .inner_size(1100.0, 720.0)
+                .min_inner_size(640.0, 420.0)
+                .data_directory(data_dir().join("webview"))
+                .visible(false)
+                .build()?;
+            restore_window_state(&window);
+            window.show()?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { .. } = event {
+                save_window_state(window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             start_trace,
             stop_trace,
             delete_history,
+            host_locale,
             reverse_dns,
             whois,
             export_file,
