@@ -25,6 +25,8 @@ tauri-plugin-dialog = "2"
 ureq = { version = "3", features = ["json"] }
 minisign-verify = "0.3"
 base64 = "0.23"
+# A small HTTP server for the MCP server (see mcp.rs).
+tiny_http = "0.12"
 
 [target.'cfg(not(windows))'.dependencies]
 dns-lookup = "4"

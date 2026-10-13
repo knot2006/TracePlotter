@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowE
 use tauri_plugin_dialog::DialogExt;
 use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tracer};
 
+mod mcp;
 #[cfg(windows)]
 mod winicmp;
 
@@ -1016,6 +1017,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Traces::default())
+        .manage(mcp::Mcp::default())
         // The window is created here, not in tauri.conf.json, to point the webview's
         // storage at the data folder. It stays hidden until it is placed where it was.
         .setup(|app| {
@@ -1054,7 +1056,10 @@ pub fn run() {
             export_file,
             check_update,
             install_update,
-            allow_icmp_replies
+            allow_icmp_replies,
+            mcp::mcp_flag,
+            mcp::mcp_serve,
+            mcp::mcp_respond
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

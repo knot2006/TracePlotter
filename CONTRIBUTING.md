@@ -28,6 +28,9 @@ Add `-- -- --demo` to work on the interface with made-up data and no probing:
 npm run tauri dev -- -- --demo
 ```
 
+Add `--mcp` as well to turn on the MCP server for that run, so that an agent can work against the
+demo data. [AGENTS.md](AGENTS.md) has more for coding agents.
+
 ## Test
 
 ```bash
@@ -63,6 +66,7 @@ app's `TracePlotter-data` folder next to it is deleted by `cargo clean`.
 - `src/lib/trace.ts`: a trace's data and its link to the backend.
 - `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
 - `src-tauri/src/lib.rs`: probing, history files, updates and the other backend commands.
+- `src-tauri/src/mcp.rs` and `src/lib/agent.ts`: the MCP server that lets AI agents read the traces.
 
 Dates and numbers of a trace are kept in plain objects that are changed in place; the interface
 redraws when a counter (`rev`) changes. That keeps a day of samples out of Svelte's reactivity.

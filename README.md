@@ -74,6 +74,31 @@ folder, so real tabs and history are left alone.
 .\TracePlotter.exe --demo
 ```
 
+## Asking AI agents about your connection
+
+TracePlotter can let AI agents such as Claude read its traces, so you can ask them things like "why
+is my connection to the game server lagging tonight?" or "which hop loses packets?". Turn it on
+under **Tools > Allow AI agents to connect (MCP server)**. The app then runs an MCP server at
+`http://127.0.0.1:3917/mcp` for as long as it is open; **Tools > Copy agent address** copies that
+address.
+
+Add it to your agent as an HTTP MCP server. For Claude Code:
+
+```powershell
+claude mcp add --transport http traceplotter http://127.0.0.1:3917/mcp
+```
+
+Clients that can only start local programs, rather than connect to an address, can reach it
+through a bridge such as `npx mcp-remote http://127.0.0.1:3917/mcp`.
+
+An agent can see every open target with its hops, loss, latency, jitter and MOS, the route changes
+and alerts, and how latency and loss changed over time. It can also start a trace in a new tab and
+pause one, but it cannot close tabs or erase history. Agents never probe faster than once a second,
+because many routers throttle replies to faster probes, which would look like packet loss.
+
+The server listens on this machine's loopback address only, and it turns away web pages, so only
+programs running on this computer can reach it. Switch it off with the same menu item.
+
 ## Contributing
 
 Building from source, running the tests and publishing a release are described in
