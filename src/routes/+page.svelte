@@ -46,7 +46,8 @@
 
   // Toolbar fields. They show the open tab's target; editing them describes a new one.
   let host = $state("");
-  let protocol = $state<Protocol>("icmp");
+  // On Windows new targets start with the Windows ICMP API, which needs no firewall rule.
+  let protocol = $state<Protocol>(navigator.userAgent.includes("Windows") ? "winicmp" : "icmp");
   let port = $state(0);
   let intervalMs = $state(1000);
   // How much of the newest history the table and graphs cover; remembered between launches.

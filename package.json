@@ -1,6 +1,6 @@
 {
   "name": "traceplotter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Open-source visual traceroute and ping monitor",
   "type": "module",
   "scripts": {

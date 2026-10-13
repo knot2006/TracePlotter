@@ -59,6 +59,7 @@
   import HopGraph from "./HopGraph.svelte";
   import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
+  import { whoisFacts, whoisRecord } from "./whois";
   import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, type Trace } from "./trace";
 
   type Props = {
@@ -287,6 +288,7 @@
   let eventsDialog: HTMLDialogElement;
   let whoisDialog: HTMLDialogElement;
   let whois = $state({ addr: "", text: "" });
+  const facts = $derived(whoisFacts(whois.text));
 
   /** Opens the alert thresholds; also called from the app menu. */
   export function openAlerts() {
@@ -861,7 +863,20 @@
 
   <dialog bind:this={whoisDialog} aria-labelledby="whois-title">
     <h2 id="whois-title">Whois {whois.addr}</h2>
-    <pre>{whois.text}</pre>
+    {#if facts.length}
+      <dl class="facts">
+        {#each facts as fact}
+          <dt>{fact.label}</dt>
+          <dd>{fact.value}</dd>
+        {/each}
+      </dl>
+      <details>
+        <summary>Full record</summary>
+        <pre>{whoisRecord(whois.text)}</pre>
+      </details>
+    {:else}
+      <pre>{whois.text}</pre>
+    {/if}
     <form method="dialog"><button>Close</button></form>
   </dialog>
 </div>
@@ -1182,14 +1197,38 @@
     border: 1px solid var(--line);
     border-radius: 4px;
   }
+  /* The dialog is the only thing that scrolls; its Close button stays in view at the bottom. */
   dialog form {
+    position: sticky;
+    bottom: 0;
     margin-top: 12px;
+    padding: 8px 0;
     text-align: right;
+    background: var(--panel);
+  }
+  .facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 16px;
+    margin: 0 0 12px;
+    min-width: 360px;
+  }
+  .facts dt {
+    color: var(--muted);
+  }
+  .facts dd {
+    margin: 0;
+    user-select: text;
+    overflow-wrap: anywhere;
+  }
+  dialog summary {
+    cursor: pointer;
+    color: var(--muted);
+    margin-bottom: 8px;
   }
   dialog pre {
+    user-select: text;
     margin: 0;
-    max-height: 55vh;
-    overflow: auto;
     font-size: 12px;
     white-space: pre-wrap;
   }
