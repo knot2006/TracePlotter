@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Tło ikony -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e1b4b" />
+    </linearGradient>
+
+    <!-- Wypełnienie wykresu opóźnień -->
+    <linearGradient id="areaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.0" />
+    </linearGradient>
+
+    <!-- Linia trasy pakietów -->
+    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="45%" stop-color="#22c55e" />
+      <stop offset="70%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+  </defs>
+
+  <!-- Zaokrąglony kafelek aplikacji -->
+  <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#bgGrad)" stroke="#334155" stroke-width="8" />
+
+  <!-- Siatka telemetryczna -->
+  <line x1="96" y1="160" x2="416" y2="160" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.5" />
+  <line x1="96" y1="240" x2="416" y2="240" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.5" />
+  <line x1="96" y1="320" x2="416" y2="320" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.5" />
+  <line x1="96" y1="400" x2="416" y2="400" stroke="#475569" stroke-width="4" opacity="0.8" />
+
+  <line x1="160" y1="110" x2="160" y2="400" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.3" />
+  <line x1="224" y1="110" x2="224" y2="400" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.3" />
+  <line x1="288" y1="110" x2="288" y2="400" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.3" />
+  <line x1="352" y1="110" x2="352" y2="400" stroke="#334155" stroke-width="2" stroke-dasharray="6 6" opacity="0.3" />
+
+  <!-- Obszar historii pingu -->
+  <path d="M 96 340 L 160 310 L 224 330 L 288 200 L 352 180 L 416 260 L 416 400 L 96 400 Z" fill="url(#areaGrad)" />
+
+  <!-- Ciągła linia trasy -->
+  <path d="M 96 340 L 160 310 L 224 330 L 288 200 L 352 180 L 416 260" fill="none" stroke="url(#lineGrad)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Węzły sieciowe (Hopy) -->
+  <circle cx="96" cy="340" r="14" fill="#0f172a" stroke="#38bdf8" stroke-width="8" />
+  <circle cx="160" cy="310" r="14" fill="#0f172a" stroke="#38bdf8" stroke-width="8" />
+  <circle cx="224" cy="330" r="14" fill="#0f172a" stroke="#22c55e" stroke-width="8" />
+  <circle cx="288" cy="200" r="16" fill="#0f172a" stroke="#f59e0b" stroke-width="9" />
+  <circle cx="352" cy="180" r="14" fill="#0f172a" stroke="#f59e0b" stroke-width="8" />
+  <circle cx="416" cy="260" r="14" fill="#0f172a" stroke="#38bdf8" stroke-width="8" />
+</svg>
