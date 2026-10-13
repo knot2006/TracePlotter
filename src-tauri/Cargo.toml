@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.1.2"
+version = "0.1.3"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 edition = "2024"
