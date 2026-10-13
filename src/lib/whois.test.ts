@@ -42,6 +42,17 @@ test("whoisFacts reads the fields of different registries", () => {
   assert.equal(arin.Route, "198.51.100.0/24");
   assert.equal(arin["Abuse contact"], "abuse@example.com");
   assert.deepEqual(whoisFacts("Lookup failed: timed out"), []);
+  // Line ends as some servers send them.
+  assert.deepEqual(whoisFacts(RIPE.replaceAll("\n", "\r\n")), whoisFacts(RIPE));
+  assert.ok(!whoisRecord(RIPE.replaceAll("\n", "\r\n")).includes("%"));
+});
+
+test("whoisFacts describes the most specific of several networks", () => {
+  const provider = "NetRange:       198.51.0.0 - 198.51.255.255\nNetName:        PROVIDER\nOrgName:        Provider Inc\n\n";
+  const both = Object.fromEntries(whoisFacts(provider + ARIN).map((fact) => [fact.label, fact.value]));
+  assert.equal(both.Range, "198.51.100.0 - 198.51.100.255");
+  assert.equal(both.Network, "EXAMPLE-NET");
+  assert.equal(both.Organisation, "Example LLC");
 });
 
 test("whoisRecord drops comment lines and runs of blank lines", () => {

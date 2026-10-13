@@ -21,6 +21,10 @@ use crate::HopSample;
 
 /// Furthest hop probed.
 const MAX_TTL: u8 = 30;
+/// While the target's hop number is not known, how many hops past the last one that
+/// answered a round probes, and how often a round probes all the way instead.
+const GAP: u8 = 3;
+const SWEEP_ROUNDS: u32 = 10;
 /// After the target answered, how long a round still waits for slower hops.
 const GRACE: Duration = Duration::from_millis(100);
 /// Room in a reply buffer beside the echoed payload: the reply header, an ICMP error
@@ -124,6 +128,19 @@ pub fn route(probes: &[Outcome]) -> (Vec<HopSample>, Option<u8>) {
     (hops, target.map(|i| i as u8 + 1))
 }
 
+/// The furthest hop number a round probes. With a known target that is the target's. While
+/// it is unknown, every `SWEEP_ROUNDS`th round, starting with the first, probes all the
+/// way to find it; the rounds between stop `GAP` hops past the last hop that answered.
+/// A target that never answers would otherwise draw `MAX_TTL` probes at once every round,
+/// and routers that limit their ICMP replies then stop answering for the nearer hops.
+fn reach(target: Option<u8>, answered: u8, unknown_rounds: u32) -> u8 {
+    match target {
+        Some(ttl) => ttl,
+        None if unknown_rounds % SWEEP_ROUNDS == 0 => MAX_TTL,
+        None => answered.saturating_add(GAP).min(MAX_TTL),
+    }
+}
+
 /// Traces one target, a round at a time. Must stay on the thread that created it: probes
 /// complete on that thread only.
 pub struct Pinger {
@@ -134,6 +151,10 @@ pub struct Pinger {
     slots: Box<[Slot]>,
     /// The target's hop number in the last round, `None` if it did not answer.
     target_ttl: Option<u8>,
+    /// The furthest hop number that answered in the last round, 0 if none did.
+    answered: u8,
+    /// Rounds in a row in which the target did not answer.
+    unknown_rounds: u32,
 }
 
 impl Pinger {
@@ -173,6 +194,8 @@ impl Pinger {
             timeout_ms: timeout.as_millis().min(60_000) as u32,
             slots,
             target_ttl: None,
+            answered: 0,
+            unknown_rounds: 0,
         })
     }
 
@@ -232,6 +255,9 @@ impl Pinger {
                     )
                 }
             };
+            // With a completion routine the call does not wait: it returns 0 with
+            // ERROR_IO_PENDING when the probe is out, and anything else is a failure
+            // without a completion to come.
             sent == 0 && GetLastError() == ERROR_IO_PENDING
         };
         if !pending {
@@ -244,14 +270,19 @@ impl Pinger {
     /// only while the target has not answered, and then no longer than the reply timeout.
     pub fn round(&mut self, interval: Duration) -> Vec<HopSample> {
         let start = Instant::now();
-        // Up to the target's last known hop number; all the way when that is not known.
-        // If the route got longer the target does not answer, and the next round finds it.
-        let limit = usize::from(self.target_ttl.unwrap_or(MAX_TTL));
+        // If the route got longer the target does not answer at its old hop number, and
+        // the next round probes all the way to find it again.
+        let limit = usize::from(reach(self.target_ttl, self.answered, self.unknown_rounds));
         for ttl in 1..=limit {
             // A probe still out from an earlier round keeps its slot until it completes.
             if !self.slots[ttl - 1].pending.get() {
                 self.send(ttl as u8);
             }
+            // Lets replies that are already in complete now. They are timed when their
+            // completion runs, so a near hop would otherwise be charged the time it
+            // takes to send the remaining probes.
+            // SAFETY: an alertable sleep of no length; it only runs queued completions.
+            unsafe { SleepEx(0, 1) };
         }
         let slots = &self.slots[..limit];
         loop {
@@ -280,6 +311,8 @@ impl Pinger {
             .collect();
         let (hops, target_ttl) = route(&probes);
         self.target_ttl = target_ttl;
+        self.answered = hops.iter().rev().find(|hop| hop.rtt.is_some()).map_or(0, |hop| hop.ttl);
+        self.unknown_rounds = if target_ttl.is_some() { 0 } else { self.unknown_rounds + 1 };
         hops
     }
 }
@@ -322,6 +355,17 @@ mod tests {
         assert_eq!(ttls(&[hop, hop]), (vec![1, 2], None));
         assert_eq!(ttls(&[LOST, LOST, LOST]), (vec![1], None));
         assert_eq!(route(&[hop, LOST]).0[1].rtt, None);
+    }
+
+    #[test]
+    fn reach_probes_all_the_way_only_now_and_then_for_a_silent_target() {
+        assert_eq!(reach(Some(9), 9, 0), 9);
+        // The first round, and the round after the target stopped answering.
+        assert_eq!(reach(None, 0, 0), MAX_TTL);
+        assert_eq!(reach(None, 6, 1), 6 + GAP);
+        assert_eq!(reach(None, 6, SWEEP_ROUNDS), MAX_TTL);
+        assert_eq!(reach(None, MAX_TTL, 3), MAX_TTL);
+        assert_eq!(reach(None, 0, 1), GAP);
     }
 
     /// Live check, needs network but not Administrator:

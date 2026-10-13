@@ -46,8 +46,10 @@
 
   // Toolbar fields. They show the open tab's target; editing them describes a new one.
   let host = $state("");
-  // On Windows new targets start with the Windows ICMP API, which needs no firewall rule.
-  let protocol = $state<Protocol>(navigator.userAgent.includes("Windows") ? "winicmp" : "icmp");
+  // The Windows ICMP API exists on Windows only. There new targets start with it, as it
+  // needs no firewall rule.
+  const WINDOWS = navigator.userAgent.includes("Windows");
+  let protocol = $state<Protocol>(WINDOWS ? "winicmp" : "icmp");
   let port = $state(0);
   let intervalMs = $state(1000);
   // How much of the newest history the table and graphs cover; remembered between launches.
@@ -291,15 +293,26 @@
     }
   }
 
+  // Traces that are restarting with new probe settings, and whether their settings
+  // changed again since that restart began.
+  const reprobing = new Map<Trace, boolean>();
+
   /** Saves a tab's changed probe settings; probing restarts with them at the next round. */
   async function reprobe(trace: Trace) {
     saveSession();
+    // A restart reads the settings when it begins, so a change during it needs another.
+    if (reprobing.has(trace)) return void reprobing.set(trace, true);
     if (trace.paused) return;
     try {
-      await setPaused(trace, true, bump);
-      await setPaused(trace, false, bump);
+      do {
+        reprobing.set(trace, false);
+        await setPaused(trace, true, bump);
+        await setPaused(trace, false, bump);
+      } while (reprobing.get(trace));
     } catch (e) {
       trace.error = `Could not restart: ${e}`;
+    } finally {
+      reprobing.delete(trace);
     }
     saveSession();
     rev++;
@@ -435,7 +448,9 @@
       required
     />
     <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
-      {#each Object.entries(PROTOCOLS) as [value, name]}<option {value}>{name}</option>{/each}
+      {#each Object.entries(PROTOCOLS) as [value, name]}
+        {#if WINDOWS || value !== "winicmp"}<option {value}>{name}</option>{/if}
+      {/each}
     </select>
     {#if usesPort(protocol)}
       <input class="port" type="number" min="1" max="65535" bind:value={port} aria-label="Port" required />

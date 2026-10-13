@@ -56,7 +56,8 @@ struct Traces {
     stops: Mutex<HashMap<u32, Arc<AtomicBool>>>,
 }
 
-/// Rounds in a row without a single reply before the tracer is rebuilt.
+/// Rounds in a row without a single reply before the tracer is rebuilt, for rounds that
+/// last one interval. Longer rounds (a reply timeout above the interval) count for more.
 const DEAD_ROUNDS: usize = 3;
 /// Wait before rebuilding a tracer that failed.
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -320,6 +321,8 @@ impl Recorder {
 fn trace_raw(
     build: impl Fn() -> Result<Tracer, trippy_core::Error>,
     mut tracer: Option<Tracer>,
+    // Silent rounds in a row after which the tracer is rebuilt.
+    dead_rounds: usize,
     addr: IpAddr,
     stop: &AtomicBool,
     recorder: &Recorder,
@@ -356,7 +359,7 @@ fn trace_raw(
                 }
                 if !silent {
                     silent_rounds.store(0, Ordering::Relaxed);
-                } else if silent_rounds.fetch_add(1, Ordering::Relaxed) + 1 >= DEAD_ROUNDS {
+                } else if silent_rounds.fetch_add(1, Ordering::Relaxed) + 1 >= dead_rounds {
                     silent_rounds.store(0, Ordering::Relaxed);
                     resume_unwind(Box::new(Restart));
                 }
@@ -478,6 +481,11 @@ fn start_trace(
 
     let stop = Arc::new(AtomicBool::new(false));
     traces.stops.lock().unwrap().insert(id, stop.clone());
+    // A silent round lasts the timeout. The rebuild should come after about DEAD_ROUNDS
+    // intervals whatever the timeout, so a long timeout does not keep a dead tracer for long.
+    let dead_rounds = (DEAD_ROUNDS as u128 * interval.as_millis())
+        .div_ceil(timeout.as_millis())
+        .max(1) as usize;
     let recorder = Recorder {
         channel,
         file,
@@ -487,7 +495,7 @@ fn start_trace(
     };
 
     std::thread::spawn(move || match build {
-        Some(build) => trace_raw(build, tracer, addr, &stop, &recorder),
+        Some(build) => trace_raw(build, tracer, dead_rounds, addr, &stop, &recorder),
         #[cfg(windows)]
         None => trace_windows(addr, packet_size, timeout, interval, &stop, &recorder),
         #[cfg(not(windows))]
