@@ -674,9 +674,12 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// Checks that `data` carries a valid signature by the key in `public_key`. Both the key
-/// and the signature are in the form the Tauri signer writes: base64 of a minisign file.
-fn verify_update(data: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
+/// Checks that `data` carries a valid signature by the key in `public_key` and returns
+/// the app version the signature was made for. Both the key and the signature are in the
+/// form the Tauri signer writes: base64 of a minisign file. The version is in the
+/// signature's trusted comment, which the signature covers, so it cannot be changed
+/// without the private key.
+fn verify_update(data: &[u8], signature: &str, public_key: &str) -> Result<String, String> {
     use base64::Engine;
     let text = |encoded: &str| {
         base64::engine::general_purpose::STANDARD
@@ -689,17 +692,30 @@ fn verify_update(data: &[u8], signature: &str, public_key: &str) -> Result<(), S
     let signature =
         minisign_verify::Signature::decode(&text(signature)?).map_err(|e| e.to_string())?;
     key.verify(data, &signature, true)
-        .map_err(|_| "the update's signature does not match; it was not installed".to_string())
+        .map_err(|_| "the update's signature does not match; it was not installed".to_string())?;
+    signature
+        .trusted_comment()
+        .split('\t')
+        .find_map(|field| field.strip_prefix("version:"))
+        .map(|version| version.trim().to_string())
+        .ok_or_else(|| "the update's signature names no version; it was not installed".into())
 }
 
+/// Requests with a limit on connecting and on each wait for data, not on the whole
+/// transfer: a slow connection may take minutes for the exe and still get it.
 fn http_get(url: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::get(url)
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(30))
+        .build()
+        .get(url)
         .set("User-Agent", concat!("TracePlotter/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(60))
         .call()
 }
 
 /// The latest published release, `None` when there is none (or the repo is not public).
+/// A release that is newer but lacks the exe or its signature is an error, not "none":
+/// otherwise a broken release would read as "you have the latest version".
 fn latest_release() -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
     let response = match http_get(&url) {
@@ -708,20 +724,26 @@ fn latest_release() -> Result<Option<Release>, String> {
         Err(e) => return Err(format!("could not look for updates: {e}")),
     };
     let release: serde_json::Value = response.into_json().map_err(|e| e.to_string())?;
+    let Some(tag) = release["tag_name"].as_str() else {
+        return Ok(None);
+    };
+    let version = tag.trim_start_matches('v').to_string();
     let asset = |name: &str| {
         release["assets"].as_array()?.iter().find_map(|asset| {
             (asset["name"] == name).then(|| asset["browser_download_url"].as_str())?
         })
     };
-    let (Some(tag), Some(exe_url), Some(signature_url)) = (
-        release["tag_name"].as_str(),
-        asset(UPDATE_EXE),
-        asset(UPDATE_SIGNATURE),
-    ) else {
-        return Ok(None);
+    let (Some(exe_url), Some(signature_url)) = (asset(UPDATE_EXE), asset(UPDATE_SIGNATURE)) else {
+        return if is_newer(&version, env!("CARGO_PKG_VERSION")) {
+            Err(format!(
+                "release {version} has no {UPDATE_EXE} with its {UPDATE_SIGNATURE}, so it cannot be installed from here"
+            ))
+        } else {
+            Ok(None)
+        };
     };
     Ok(Some(Release {
-        version: tag.trim_start_matches('v').to_string(),
+        version,
         notes: release["body"].as_str().unwrap_or_default().to_string(),
         exe_url: exe_url.to_string(),
         signature_url: signature_url.to_string(),
@@ -739,10 +761,17 @@ fn check_update() -> Result<Option<UpdateInfo>, String> {
         }))
 }
 
-/// Downloads the latest release, checks its signature, puts it in place of the running
-/// exe and restarts into it. The running exe cannot be overwritten but can be renamed, so
-/// it is moved aside as `.exe.old` (removed at the next start) and put back if writing the
-/// new one fails. Tabs and history are untouched: they live in the data folder.
+/// Downloads the latest release, checks it, puts it in place of the running exe and
+/// restarts into it. Tabs and history are untouched: they live in the data folder.
+///
+/// The download is accepted only if its signature is valid and was made for exactly the
+/// version the release claims, which must be newer than this one. Without the version
+/// check, an old signed exe could be offered again under a newer release name.
+///
+/// The running exe cannot be overwritten but can be renamed. The new exe is first written
+/// next to it as `.exe.new`; then the running one is renamed to `.exe.old` (removed at the
+/// next start) and the new one renamed into place. Only those two renames happen without
+/// an exe at its usual path, and the first is undone if the second fails.
 #[tauri::command(async)]
 fn install_update(app: AppHandle) -> Result<(), String> {
     let release = latest_release()?.ok_or("no update is published")?;
@@ -761,16 +790,31 @@ fn install_update(app: AppHandle) -> Result<(), String> {
         .take(UPDATE_MAX_BYTES)
         .read_to_end(&mut exe)
         .map_err(|e| format!("could not download the update: {e}"))?;
-    verify_update(&exe, &signature, UPDATE_PUBLIC_KEY)?;
+    let signed_version = verify_update(&exe, &signature, UPDATE_PUBLIC_KEY)?;
+    if signed_version != release.version {
+        return Err(format!(
+            "the download is version {signed_version}, not the {} the release claims; it was not installed",
+            release.version
+        ));
+    }
 
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let new = current.with_extension("exe.new");
     let old = current.with_extension("exe.old");
+    fs::write(&new, &exe).map_err(|e| format!("could not write the new exe: {e}"))?;
     let _ = fs::remove_file(&old);
-    fs::rename(&current, &old).map_err(|e| format!("could not replace the exe: {e}"))?;
-    if let Err(e) = fs::write(&current, &exe) {
-        let _ = fs::remove_file(&current);
-        let _ = fs::rename(&old, &current);
-        return Err(format!("could not write the new exe: {e}"));
+    let swapped = fs::rename(&current, &old).and_then(|()| {
+        fs::rename(&new, &current).inspect_err(|_| {
+            let _ = fs::rename(&old, &current);
+        })
+    });
+    if let Err(e) = swapped {
+        let _ = fs::remove_file(&new);
+        return Err(format!("could not replace the exe: {e}"));
+    }
+    // A restart does not pass through the window's close request, where this is saved.
+    if let Some(window) = app.get_webview_window("main") {
+        save_window_state(&window.as_ref().window());
     }
     app.restart()
 }

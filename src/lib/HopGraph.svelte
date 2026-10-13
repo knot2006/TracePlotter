@@ -204,6 +204,10 @@
         bind: { dblclick: () => null },
       },
       legend: { show: false },
+      // The same room on the right for both plots. Left to itself, the latency plot keeps
+      // some for its last time label and the jitter strip, which has no time axis, keeps
+      // none, so the strip ran on past the right edge of the graph below it.
+      padding: [null, 24, null, null] as [null, number, null, null],
     };
     const chart = new uPlot(
       {

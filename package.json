@@ -11,7 +11,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "test": "node --test src/lib/"
+    "test": "node --test src/lib/*.test.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {
@@ -29,5 +29,8 @@
     "svelte-check": "^4.6.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
+  },
+  "engines": {
+    "node": ">=26"
   }
 }

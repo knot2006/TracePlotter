@@ -1,0 +1,101 @@
+# Contributing to TracePlotter
+
+TracePlotter is a [Tauri 2](https://tauri.app) desktop app. The interface is
+[Svelte 5](https://svelte.dev) with [uPlot](https://github.com/leeoniya/uPlot) graphs, in `src/`.
+The backend is Rust, in `src-tauri/`, and probes with the
+[trippy-core](https://github.com/fujiapple852/trippy) engine. It is developed on Windows first; the
+code is kept portable.
+
+## What you need
+
+- Node.js 26 or newer
+- Rust (stable, MSVC toolchain)
+- Visual Studio Build Tools with "Desktop development with C++"
+
+## Run from source
+
+Use an **elevated** terminal. The exe asks for Administrator rights, and from a normal terminal it
+fails to start with `os error 740`.
+
+```bash
+npm install
+npm run tauri dev
+```
+
+Add `-- -- --demo` to work on the interface with made-up data and no probing:
+
+```bash
+npm run tauri dev -- -- --demo
+```
+
+## Test
+
+```bash
+npm run check
+npm test
+cargo test --lib --manifest-path src-tauri/Cargo.toml
+```
+
+The CI workflow runs these three on every push and pull request.
+
+A live probe check against a real host needs an elevated terminal and a network:
+
+```bash
+cargo test --lib --manifest-path src-tauri/Cargo.toml -- --ignored live_trace --nocapture
+```
+
+Set `TRACEPLOTTER_TARGET` to an IP address to change its target (default `1.1.1.1`).
+
+## Build
+
+```bash
+npm run tauri build -- --no-bundle
+```
+
+The exe is written to `src-tauri/target/release/traceplotter.exe`. That is a build folder: the
+app's `TracePlotter-data` folder next to it is deleted by `cargo clean`.
+
+## Where things are
+
+- `src/routes/+page.svelte`: window layout, tabs, toolbar, menus, the saved session.
+- `src/lib/TraceTab.svelte`: one tab, with the hop table, dialogs and exports.
+- `src/lib/HopGraph.svelte`: one latency graph with its jitter strip.
+- `src/lib/trace.ts`: a trace's data and its link to the backend.
+- `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
+- `src-tauri/src/lib.rs`: probing, history files, updates and the other backend commands.
+
+Dates and numbers of a trace are kept in plain objects that are changed in place; the interface
+redraws when a counter (`rev`) changes. That keeps a day of samples out of Svelte's reactivity.
+
+## Dependencies
+
+Dependabot opens weekly pull requests for npm packages, Rust crates and the workflows' actions.
+`trippy-core` is pinned to an exact version because its API is unstable: an update of it needs a
+build and the live probe check before it is merged.
+
+## Publishing a release
+
+1. Set the same new version in `package.json`, `src-tauri/Cargo.toml` and
+   `src-tauri/tauri.conf.json`, and commit.
+2. Tag that commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+
+The Release workflow then builds the exe, signs it for that version and publishes it with its
+signature. Installed copies find it through GitHub's latest release and install it only if the
+signature is valid and names the version the release claims.
+
+### The signing key
+
+The workflow needs the repository secret `TAURI_SIGNING_PRIVATE_KEY`: the contents of the private
+key made with `npm run tauri signer generate`. Its public half is `UPDATE_PUBLIC_KEY` in
+`src-tauri/src/lib.rs`. A key with a password also needs the secret
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+Whoever has the private key can publish updates that every installed copy accepts. Keep it out of
+the repository and keep a backup: with a new key, existing copies no longer accept updates.
+
+To check that a file signed with the key is accepted by the app's own verification:
+
+```bash
+npm run tauri signer sign -- -f path/to/private.key -p "" --app-version 1.2.3 sample.bin
+TRACEPLOTTER_SIGNED_FILE=sample.bin cargo test --lib --manifest-path src-tauri/Cargo.toml -- --ignored a_file_signed
+```

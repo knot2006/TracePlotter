@@ -1,9 +1,13 @@
 # Builds, signs and publishes a release when a version tag such as v0.2.0 is pushed.
 # The running app finds the release through GitHub's "latest release", downloads
-# TracePlotter.exe and installs it only if TracePlotter.exe.sig matches its built-in key.
+# TracePlotter.exe and installs it only if TracePlotter.exe.sig matches its built-in key
+# and was made for the version the release claims.
 #
 # Needs the repository secret TAURI_SIGNING_PRIVATE_KEY: the contents of the private key
 # made with `tauri signer generate`, whose public half is UPDATE_PUBLIC_KEY in lib.rs.
+# If that key has a password, it goes in the secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+#
+# The Rust tests are not repeated here; the CI workflow runs them for the same commit.
 name: Release
 
 on:
@@ -19,42 +23,52 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # The exe built here gets signed, so every action is pinned to a commit: a moved tag
+      # in someone else's repository must not be able to change what is signed.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
       # The app compares the tag with the version compiled into it, so they must agree.
-      - name: Check that the tag matches the app version
+      - name: Check that the tag matches the version in all three files
+        id: version
         shell: pwsh
         run: |
-          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $tauri = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          if ("v$version" -ne $env:TAG -or $cargo -ne $version) {
-            throw "Tag $env:TAG, tauri.conf.json $version and Cargo.toml $cargo must be the same version."
+          $npm = (Get-Content package.json | ConvertFrom-Json).version
+          if ("v$tauri" -ne $env:TAG -or $cargo -ne $tauri -or $npm -ne $tauri) {
+            throw "Tag $env:TAG, tauri.conf.json $tauri, Cargo.toml $cargo and package.json $npm must be the same version."
           }
+          "version=$tauri" >> $env:GITHUB_OUTPUT
 
       - run: npm ci
       - run: npm run check
       - run: npm test
       - run: npm run tauri build -- --no-bundle
-      - run: cargo test --lib --manifest-path src-tauri/Cargo.toml
 
+      # The version is written into the signature, and the app refuses a download whose
+      # signed version is not the one the release claims. The password is always passed,
+      # empty when the key has none, so the signer never stops to ask for it.
       - name: Sign the exe
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "The secret TAURI_SIGNING_PRIVATE_KEY is not set." }
           New-Item -ItemType Directory release | Out-Null
           Copy-Item src-tauri/target/release/traceplotter.exe release/TracePlotter.exe
-          npm run tauri signer sign -- release/TracePlotter.exe
+          npm run tauri signer sign -- -p "$env:KEY_PASSWORD" --app-version $env:VERSION release/TracePlotter.exe
           if (-not (Test-Path release/TracePlotter.exe.sig)) { throw "Signing produced no signature." }
           # A zip for people who download by hand.
           Compress-Archive -Path release/TracePlotter.exe, README.md, LICENSE -DestinationPath "release/TracePlotter-$env:TAG-windows-x64.zip"
