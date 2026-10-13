@@ -70,8 +70,9 @@ redraws when a counter (`rev`) changes. That keeps a day of samples out of Svelt
 ## Dependencies
 
 Dependabot opens weekly pull requests for npm packages, Rust crates and the workflows' actions.
-`trippy-core` is pinned to an exact version because its API is unstable: an update of it needs a
-build and the live probe check before it is merged.
+`trippy-core` is not pinned or capped, so new releases are taken as they come, breaking ones
+included. Its API is unstable, so when an update breaks the build we fix our code rather than hold
+the version back. An update of it needs a build and the live probe check before it is merged.
 
 ## Publishing a release
 
