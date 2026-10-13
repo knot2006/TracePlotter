@@ -633,6 +633,148 @@ fn export_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, S
     Ok(Some(path.display().to_string()))
 }
 
+/// Where releases are published: the app looks here for a newer version.
+const UPDATE_REPO: &str = "knot2006/TracePlotter";
+/// File names of a release's exe and of its signature.
+const UPDATE_EXE: &str = "TracePlotter.exe";
+const UPDATE_SIGNATURE: &str = "TracePlotter.exe.sig";
+/// The public half of the release signing key, as `tauri signer generate` prints it. An
+/// update is installed only if its signature was made with the private half, which stays
+/// with the publisher. Being in control of the download server is not enough to forge one.
+const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJEREM1Mzc5NUUwQ0I4NTUKUldSVnVBeGVlVlBjTFh6QzNrRjJpM3hubngvcTRMOE4wV3RIaDdZNmFWUlRqTmJXRnhUY09VakUK";
+/// Largest exe an update may be; the download stops there.
+const UPDATE_MAX_BYTES: u64 = 200 * 1024 * 1024;
+
+#[derive(Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: String,
+}
+
+struct Release {
+    version: String,
+    notes: String,
+    exe_url: String,
+    signature_url: String,
+}
+
+/// "1.2.3" or "v1.2.3" as numbers, to compare versions. `None` for anything else.
+fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.trim().trim_start_matches('v').split('.');
+    let mut next = || parts.next()?.parse().ok();
+    let version = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(version)
+}
+
+/// Whether `candidate` is a later version than `current`. Unreadable versions are not.
+fn is_newer(candidate: &str, current: &str) -> bool {
+    match (parse_version(candidate), parse_version(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => false,
+    }
+}
+
+/// Checks that `data` carries a valid signature by the key in `public_key`. Both the key
+/// and the signature are in the form the Tauri signer writes: base64 of a minisign file.
+fn verify_update(data: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
+    use base64::Engine;
+    let text = |encoded: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or("the signature is not readable")
+    };
+    let key = minisign_verify::PublicKey::decode(&text(public_key)?).map_err(|e| e.to_string())?;
+    let signature =
+        minisign_verify::Signature::decode(&text(signature)?).map_err(|e| e.to_string())?;
+    key.verify(data, &signature, true)
+        .map_err(|_| "the update's signature does not match; it was not installed".to_string())
+}
+
+fn http_get(url: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::get(url)
+        .set("User-Agent", concat!("TracePlotter/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(60))
+        .call()
+}
+
+/// The latest published release, `None` when there is none (or the repo is not public).
+fn latest_release() -> Result<Option<Release>, String> {
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+    let response = match http_get(&url) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(404, _)) => return Ok(None),
+        Err(e) => return Err(format!("could not look for updates: {e}")),
+    };
+    let release: serde_json::Value = response.into_json().map_err(|e| e.to_string())?;
+    let asset = |name: &str| {
+        release["assets"].as_array()?.iter().find_map(|asset| {
+            (asset["name"] == name).then(|| asset["browser_download_url"].as_str())?
+        })
+    };
+    let (Some(tag), Some(exe_url), Some(signature_url)) = (
+        release["tag_name"].as_str(),
+        asset(UPDATE_EXE),
+        asset(UPDATE_SIGNATURE),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(Release {
+        version: tag.trim_start_matches('v').to_string(),
+        notes: release["body"].as_str().unwrap_or_default().to_string(),
+        exe_url: exe_url.to_string(),
+        signature_url: signature_url.to_string(),
+    }))
+}
+
+/// A newer release than the running version, if one is published.
+#[tauri::command(async)]
+fn check_update() -> Result<Option<UpdateInfo>, String> {
+    Ok(latest_release()?
+        .filter(|release| is_newer(&release.version, env!("CARGO_PKG_VERSION")))
+        .map(|release| UpdateInfo {
+            version: release.version,
+            notes: release.notes,
+        }))
+}
+
+/// Downloads the latest release, checks its signature, puts it in place of the running
+/// exe and restarts into it. The running exe cannot be overwritten but can be renamed, so
+/// it is moved aside as `.exe.old` (removed at the next start) and put back if writing the
+/// new one fails. Tabs and history are untouched: they live in the data folder.
+#[tauri::command(async)]
+fn install_update(app: AppHandle) -> Result<(), String> {
+    let release = latest_release()?.ok_or("no update is published")?;
+    if !is_newer(&release.version, env!("CARGO_PKG_VERSION")) {
+        return Err("this is already the latest version".into());
+    }
+    let download = |e: ureq::Error| format!("could not download the update: {e}");
+    let signature = http_get(&release.signature_url)
+        .map_err(download)?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    let mut exe = Vec::new();
+    http_get(&release.exe_url)
+        .map_err(download)?
+        .into_reader()
+        .take(UPDATE_MAX_BYTES)
+        .read_to_end(&mut exe)
+        .map_err(|e| format!("could not download the update: {e}"))?;
+    verify_update(&exe, &signature, UPDATE_PUBLIC_KEY)?;
+
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let old = current.with_extension("exe.old");
+    let _ = fs::remove_file(&old);
+    fs::rename(&current, &old).map_err(|e| format!("could not replace the exe: {e}"))?;
+    if let Err(e) = fs::write(&current, &exe) {
+        let _ = fs::remove_file(&current);
+        let _ = fs::rename(&old, &current);
+        return Err(format!("could not write the new exe: {e}"));
+    }
+    app.restart()
+}
+
 /// Adds the inbound Windows Firewall rules that let ICMP replies reach raw sockets:
 /// echo reply, destination unreachable and time exceeded, for IPv4 and IPv6.
 /// Without them the firewall drops the replies and hops show as lost.
@@ -678,6 +820,10 @@ pub fn run() {
         // The window is created here, not in tauri.conf.json, to point the webview's
         // storage at the data folder. It stays hidden until it is placed where it was.
         .setup(|app| {
+            // The exe an update replaced; it could not be deleted while it was running.
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = fs::remove_file(exe.with_extension("exe.old"));
+            }
             fs::create_dir_all(data_dir())?;
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("TracePlotter")
@@ -704,6 +850,8 @@ pub fn run() {
             reverse_dns,
             whois,
             export_file,
+            check_update,
+            install_update,
             allow_icmp_replies
         ])
         .run(tauri::generate_context!())
@@ -768,6 +916,33 @@ mod tests {
         let lost = |ttl: u8| rounds.iter().filter(|r| r.hops[ttl as usize - 1].rtt.is_none()).count();
         assert!((40..110).contains(&lost(6)), "hop 6 lost {}", lost(6));
         assert!(lost(9) < 10);
+    }
+
+    #[test]
+    fn versions_compare_by_number_and_updates_need_a_valid_signature() {
+        assert!(is_newer("v0.2.0", "0.1.9"));
+        assert!(is_newer("0.10.0", "0.9.9"));
+        assert!(!is_newer("0.1.0", "0.1.0"));
+        assert!(!is_newer("0.1.0", "0.2.0"));
+        assert!(!is_newer("latest", "0.1.0"));
+        assert!(!is_newer("1.2", "0.1.0"));
+        // The built-in key is readable, and a made-up signature is turned down.
+        assert!(verify_update(b"exe", "bm90IGEgc2lnbmF0dXJl", UPDATE_PUBLIC_KEY).is_err());
+        assert!(verify_update(b"exe", "", UPDATE_PUBLIC_KEY).is_err());
+    }
+
+    /// Checks a file signed with the release key against the built-in public key:
+    /// set `TRACEPLOTTER_SIGNED_FILE` to a file that has its `.sig` next to it.
+    #[test]
+    #[ignore]
+    fn a_file_signed_with_the_release_key_verifies() {
+        let path = std::env::var("TRACEPLOTTER_SIGNED_FILE").unwrap();
+        let data = fs::read(&path).unwrap();
+        let signature = fs::read_to_string(format!("{path}.sig")).unwrap();
+        verify_update(&data, &signature, UPDATE_PUBLIC_KEY).unwrap();
+        let mut tampered = data.clone();
+        tampered.push(0);
+        assert!(verify_update(&tampered, &signature, UPDATE_PUBLIC_KEY).is_err());
     }
 
     /// Live check, needs Administrator and network:

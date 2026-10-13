@@ -24,6 +24,27 @@ open tabs and settings (`webview`) and the window's size and position (`window.j
 together with that folder to move the app; delete the folder to reset it. Nothing is written to the
 user profile.
 
+## Updates
+
+The app looks for a newer release on GitHub when it starts and under **Help > Check for
+updates…**. A found update is offered in a bar at the top; **Update and restart** downloads it,
+checks its signature, replaces the exe and restarts. Tabs and history stay. Nothing is downloaded
+without that click, and **Help > Check for updates at startup** switches the check off.
+
+An update is installed only if it is signed with the release key whose public half is built into
+the app, so a download that was tampered with is refused.
+
+### Publishing a release
+
+1. Set the same new version in `package.json`, `src-tauri/Cargo.toml` and
+   `src-tauri/tauri.conf.json`, and commit.
+2. Tag that commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+
+The Release workflow then builds the exe, signs it and publishes it with its signature. It needs
+the repository secret `TAURI_SIGNING_PRIVATE_KEY`, the contents of the private signing key. Whoever
+has that key can publish updates that every installed copy will accept, so keep it out of the
+repository and keep a backup: with a new key, existing copies no longer accept updates.
+
 ## Demo mode
 
 Start the exe with `--demo` to try the interface without probing anything. Every tab then shows

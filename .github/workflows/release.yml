@@ -1,0 +1,67 @@
+# Builds, signs and publishes a release when a version tag such as v0.2.0 is pushed.
+# The running app finds the release through GitHub's "latest release", downloads
+# TracePlotter.exe and installs it only if TracePlotter.exe.sig matches its built-in key.
+#
+# Needs the repository secret TAURI_SIGNING_PRIVATE_KEY: the contents of the private key
+# made with `tauri signer generate`, whose public half is UPDATE_PUBLIC_KEY in lib.rs.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The app compares the tag with the version compiled into it, so they must agree.
+      - name: Check that the tag matches the app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:TAG -or $cargo -ne $version) {
+            throw "Tag $env:TAG, tauri.conf.json $version and Cargo.toml $cargo must be the same version."
+          }
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run tauri build -- --no-bundle
+      - run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: Sign the exe
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "The secret TAURI_SIGNING_PRIVATE_KEY is not set." }
+          New-Item -ItemType Directory release | Out-Null
+          Copy-Item src-tauri/target/release/traceplotter.exe release/TracePlotter.exe
+          npm run tauri signer sign -- release/TracePlotter.exe
+          if (-not (Test-Path release/TracePlotter.exe.sig)) { throw "Signing produced no signature." }
+          # A zip for people who download by hand.
+          Compress-Archive -Path release/TracePlotter.exe, README.md, LICENSE -DestinationPath "release/TracePlotter-$env:TAG-windows-x64.zip"
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:TAG release/TracePlotter.exe release/TracePlotter.exe.sig "release/TracePlotter-$env:TAG-windows-x64.zip" --title "TracePlotter $($env:TAG.TrimStart('v'))" --generate-notes

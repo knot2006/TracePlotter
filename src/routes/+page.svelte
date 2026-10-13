@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getVersion } from "@tauri-apps/api/app";
   import { invoke } from "@tauri-apps/api/core";
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
@@ -65,6 +66,38 @@
   let busy = $state(false);
   let error = $state("");
   let notice = $state("");
+
+  // Updates. A newer release found on GitHub is offered in a bar at the top; nothing is
+  // downloaded until the user asks for it.
+  const AUTO_CHECK_KEY = "traceplotter.checkUpdatesAtStart";
+  let version = $state("");
+  let autoCheck = localStorage.getItem(AUTO_CHECK_KEY) !== "no";
+  let update = $state<{ version: string; notes: string } | null>(null);
+  let updating = $state(false);
+
+  /** Looks for a newer release. Only a check the user asked for reports "none" or an error. */
+  async function checkUpdates(asked: boolean) {
+    if (asked) error = notice = "";
+    try {
+      update = await invoke<{ version: string; notes: string } | null>("check_update");
+      if (asked && !update) notice = `TracePlotter ${version} is the latest version.`;
+    } catch (e) {
+      if (asked) error = String(e);
+    }
+  }
+
+  /** Downloads and verifies the update, replaces the exe and restarts the app. */
+  async function installUpdate() {
+    updating = true;
+    error = "";
+    try {
+      await invoke("install_update");
+    } catch (e) {
+      error = `Update failed: ${e}`;
+      updating = false;
+    }
+  }
+
   // Keys of the hop table columns the user has switched off in View > Columns.
   let hidden = $state<string[]>(DEFAULT_HIDDEN);
   let hostInput: HTMLInputElement;
@@ -180,6 +213,23 @@
           text: "Tools",
           items: [{ id: "firewall", text: "Allow ICMP replies in Windows Firewall…", action: allowIcmp }],
         },
+        {
+          text: "Help",
+          items: [
+            { id: "check-update", text: "Check for updates…", action: () => checkUpdates(true) },
+            {
+              id: "auto-check",
+              text: "Check for updates at startup",
+              checked: autoCheck,
+              action: () => {
+                autoCheck = !autoCheck;
+                localStorage.setItem(AUTO_CHECK_KEY, autoCheck ? "yes" : "no");
+              },
+            },
+            { item: "Separator" },
+            { id: "version", text: `TracePlotter ${version}`, enabled: false },
+          ],
+        },
       ],
     });
     await menu.setAsAppMenu();
@@ -264,6 +314,7 @@
   }
 
   onMount(async () => {
+    version = await getVersion().catch(() => "");
     // The webview's own right-click menu offers "Save as" and "Print"; exports live in File.
     document.addEventListener("contextmenu", (event) => {
       if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
@@ -306,10 +357,26 @@
         ? "summary"
         : (traces.find((trace) => trace.config.sessionId === last) ?? traces[0])?.id ?? null;
     tabsRestored = true;
+    if (autoCheck) checkUpdates(false);
   });
 </script>
 
 <header>
+  {#if update}
+    <div class="update" role="status">
+      <span>TracePlotter {update.version} is available (you have {version}).</span>
+      <button class="install" disabled={updating} onclick={installUpdate}>
+        {updating ? "Downloading…" : "Update and restart"}
+      </button>
+      <button disabled={updating} onclick={() => (update = null)}>Later</button>
+      {#if update.notes}
+        <details>
+          <summary>What is new</summary>
+          <pre>{update.notes}</pre>
+        </details>
+      {/if}
+    </div>
+  {/if}
   <div class="tabs" role="tablist">
     {#if traces.length}
       <div class="tab" class:active={activeId === "summary"}>
@@ -498,6 +565,48 @@
   header {
     background: var(--panel);
     border-bottom: 1px solid var(--line);
+  }
+
+  /* The offer of a newer version, across the top. */
+  .update {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 6px 12px;
+    background: #12314f;
+    color: #dbeafe;
+  }
+  .update button {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid #5b89b8;
+    border-radius: 6px;
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+  .update .install {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .update button:disabled {
+    opacity: 0.6;
+  }
+  .update details {
+    flex-basis: 100%;
+  }
+  .update summary {
+    cursor: pointer;
+  }
+  .update pre {
+    margin: 6px 0 4px;
+    max-height: 30vh;
+    overflow: auto;
+    font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+    white-space: pre-wrap;
   }
 
   .tabs {

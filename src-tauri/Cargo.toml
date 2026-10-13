@@ -23,6 +23,9 @@ dns-lookup = "3"
 tauri-plugin-notification = "2"
 serde_json = "1"
 tauri-plugin-dialog = "2"
+ureq = { version = "2", features = ["json"] }
+minisign-verify = "0.2"
+base64 = "0.22"
 
 # No `panic = "abort"`: stopping a trace unwinds out of trippy-core (see lib.rs).
 [profile.release]
