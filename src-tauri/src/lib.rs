@@ -136,6 +136,131 @@ fn load_history(path: &Path, max: usize) -> Vec<Sample> {
         .collect()
 }
 
+/// Whether the app was started with `--demo`. Every tab then shows a made-up route with
+/// documentation-only addresses instead of probing the network, for screenshots and for
+/// working on the interface. Demo data lives in its own folder, apart from real history.
+fn demo() -> bool {
+    static DEMO: OnceLock<bool> = OnceLock::new();
+    *DEMO.get_or_init(|| std::env::args().any(|arg| arg == "--demo"))
+}
+
+/// The demo route: address, name, usual latency in ms and share of probes lost per hop.
+/// The addresses between the home router and the target are from the ranges reserved
+/// for documentation (RFC 5737), so they belong to nobody.
+const DEMO_ROUTE: [(&str, &str, f64, f64); 9] = [
+    ("192.168.1.1", "router.home.arpa", 0.4, 0.0),
+    ("10.20.0.1", "gw.access.example.net", 1.3, 0.0),
+    ("198.51.100.17", "core1.waw.example.net", 4.1, 0.0),
+    ("198.51.100.42", "core2.waw.example.net", 4.6, 0.0),
+    ("203.0.113.9", "ix1.waw.example.org", 7.0, 0.0),
+    ("203.0.113.77", "", 7.4, 0.35),
+    ("192.0.2.33", "edge3.fra.example.com", 7.6, 0.0),
+    ("192.0.2.120", "", 7.9, 0.01),
+    ("8.8.8.8", "dns.google", 7.7, 0.004),
+];
+
+/// Pseudo-random numbers in 0..1 for the demo (xorshift); no need for a crate.
+struct DemoRng(u64);
+
+impl DemoRng {
+    fn next(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// One made-up round at Unix time `t` in ms: steady near hops, a slow swell and the odd
+/// spike shared by the hops beyond the provider's edge, and one hop that often stays silent.
+fn demo_sample(rng: &mut DemoRng, t: u64) -> Sample {
+    let swell = 1.0 + 0.5 * (t as f64 / 120_000.0).sin().max(0.0);
+    let spike = if rng.next() < 0.02 {
+        15.0 + 45.0 * rng.next()
+    } else {
+        0.0
+    };
+    let hops = DEMO_ROUTE
+        .iter()
+        .enumerate()
+        .map(|(i, (addr, _, usual, loss))| {
+            let far = i >= 2;
+            let rtt = usual * if far { swell } else { 1.0 }
+                + usual * 0.2 * rng.next()
+                + if far { spike } else { 0.0 };
+            let lost = rng.next() < *loss;
+            HopSample {
+                ttl: i as u8 + 1,
+                addr: (!lost).then(|| addr.parse().unwrap()),
+                rtt: (!lost).then(|| (rtt * 100.0).round() / 100.0),
+            }
+        })
+        .collect();
+    Sample { t, hops }
+}
+
+/// `start_trace` in demo mode: a tab with a quarter of an hour of made-up history that
+/// keeps getting made-up rounds. Nothing is sent on the network.
+fn start_demo(
+    session: &str,
+    interval_ms: u64,
+    with_history: bool,
+    channel: Channel<TraceEvent>,
+    traces: &Traces,
+) -> Result<Started, String> {
+    let interval_ms = interval_ms.clamp(200, 60_000);
+    let now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64)
+    };
+    let mut rng = DemoRng(now() | 1);
+    let path = history_path(session)?;
+    if with_history && !path.exists() {
+        let start = now();
+        let past: Vec<String> = (1..=900u64)
+            .rev()
+            .filter_map(|ago| {
+                serde_json::to_string(&demo_sample(&mut rng, start - ago * interval_ms)).ok()
+            })
+            .collect();
+        fs::write(&path, past.join("\n") + "\n").map_err(|e| e.to_string())?;
+    }
+    let history = if with_history {
+        load_history(&path, MAX_HISTORY)
+    } else {
+        Vec::new()
+    };
+    let file = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let id = traces.next_id.fetch_add(1, Ordering::Relaxed);
+    let stop = Arc::new(AtomicBool::new(false));
+    traces.stops.lock().unwrap().insert(id, stop.clone());
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(interval_ms));
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let sample = demo_sample(&mut rng, now());
+            if let Ok(line) = serde_json::to_string(&sample) {
+                let _ = writeln!(&file, "{line}");
+            }
+            if channel.send(TraceEvent::Sample(sample)).is_err() {
+                return;
+            }
+        }
+    });
+    let (target, ..) = DEMO_ROUTE[DEMO_ROUTE.len() - 1];
+    Ok(Started {
+        id,
+        addr: target.parse().unwrap(),
+        history,
+    })
+}
+
 #[tauri::command(async)]
 fn start_trace(
     // Id of the tab; names its history file, so tabs never share history.
@@ -149,6 +274,9 @@ fn start_trace(
     channel: Channel<TraceEvent>,
     traces: State<'_, Traces>,
 ) -> Result<Started, String> {
+    if demo() {
+        return start_demo(&session, interval_ms, with_history, channel, &traces);
+    }
     let host = host.trim().to_lowercase();
     let addr = (host.as_str(), 0)
         .to_socket_addrs()
@@ -296,9 +424,11 @@ fn data_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let exe = std::env::current_exe().unwrap_or_default();
-        exe.parent()
-            .unwrap_or(Path::new("."))
-            .join("TracePlotter-data")
+        exe.parent().unwrap_or(Path::new(".")).join(if demo() {
+            "TracePlotter-demo-data"
+        } else {
+            "TracePlotter-data"
+        })
     })
 }
 
@@ -424,6 +554,13 @@ fn host_locale() -> Option<String> {
 /// Hostname for a hop address, `None` when it has no PTR record.
 #[tauri::command(async)]
 fn reverse_dns(addr: IpAddr) -> Option<String> {
+    if demo() {
+        let text = addr.to_string();
+        return DEMO_ROUTE
+            .iter()
+            .find(|(hop, name, ..)| *hop == text && !name.is_empty())
+            .map(|(_, name, ..)| name.to_string());
+    }
     dns_lookup::lookup_addr(&addr)
         .ok()
         .filter(|name| *name != addr.to_string())
@@ -612,6 +749,18 @@ mod tests {
         assert_eq!(loaded[0].hops[0].rtt, Some(1.5));
         assert_eq!(kept.lines().count(), 3);
         assert_eq!(file_safe("..\\a/b:c"), ".._a_b_c");
+    }
+
+    #[test]
+    fn demo_rounds_cover_the_route_with_documentation_addresses() {
+        let mut rng = DemoRng(1);
+        let rounds: Vec<Sample> = (0..200).map(|i| demo_sample(&mut rng, i * 1000)).collect();
+        assert!(rounds.iter().all(|round| round.hops.len() == DEMO_ROUTE.len()));
+        assert!(rounds.iter().all(|round| round.hops.iter().all(|hop| hop.rtt.is_none_or(|rtt| rtt > 0.0))));
+        // The silent hop loses a fair share, the target next to nothing.
+        let lost = |ttl: u8| rounds.iter().filter(|r| r.hops[ttl as usize - 1].rtt.is_none()).count();
+        assert!((40..110).contains(&lost(6)), "hop 6 lost {}", lost(6));
+        assert!(lost(9) < 10);
     }
 
     /// Live check, needs Administrator and network:

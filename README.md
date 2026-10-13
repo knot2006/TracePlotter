@@ -24,6 +24,17 @@ open tabs and settings (`webview`) and the window's size and position (`window.j
 together with that folder to move the app; delete the folder to reset it. Nothing is written to the
 user profile.
 
+## Demo mode
+
+Start the exe with `--demo` to try the interface without probing anything. Every tab then shows
+the same made-up nine-hop route, built from addresses reserved for documentation, with a quarter
+of an hour of history already filled in. Demo data goes to a separate `TracePlotter-demo-data`
+folder, so real tabs and history are left alone.
+
+```powershell
+.\traceplotter.exe --demo
+```
+
 Not portable: the WebView2 runtime the app needs (part of Windows 11) and the Windows Firewall
 rules below, which belong to the machine.
 
