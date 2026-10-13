@@ -84,6 +84,7 @@ test("breaches looks at the latest probes only", () => {
 test("stats over replies and losses", () => {
   assert.deepEqual(stats([10, null, 20, 14, null]), {
     sent: 5,
+    received: 3,
     lossPct: 40,
     last: null,
     avg: (10 + 20 + 14) / 3,
@@ -96,6 +97,7 @@ test("stats over replies and losses", () => {
 test("stats with nothing received", () => {
   assert.deepEqual(stats([null, null]), {
     sent: 2,
+    received: 0,
     lossPct: 100,
     last: null,
     avg: null,

@@ -1,5 +1,7 @@
 export type HopStats = {
   sent: number;
+  /** Probes that got a reply. */
+  received: number;
   lossPct: number;
   last: number | null;
   avg: number | null;
@@ -186,6 +188,7 @@ export function stats(rtts: (number | null)[]): HopStats {
   const sent = rtts.length;
   return {
     sent,
+    received,
     lossPct: sent ? ((sent - received) / sent) * 100 : 0,
     last: sent ? rtts[sent - 1] : null,
     avg: received ? sum / received : null,
