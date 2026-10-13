@@ -27,7 +27,7 @@ minisign-verify = "0.2"
 base64 = "0.22"
 
 [target.'cfg(not(windows))'.dependencies]
-dns-lookup = "3"
+dns-lookup = "4"
 
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
 # reverse DNS without NetBIOS.
