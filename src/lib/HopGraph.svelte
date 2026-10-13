@@ -2,7 +2,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
-  import { BAD_MS, WARN_MS, jitterSeries, lossSeries } from "./stats";
+  import { BAD_MS, WARN_MS, jitterSeries, lossSeries, niceCeil } from "./stats";
   import { timeOfDay } from "./time";
   import type { Hop } from "./trace";
 
@@ -100,16 +100,35 @@
     return { xs, ys, js, ls, breaks, bucket };
   }
 
-  // Green, yellow and red latency zones behind the graph line.
+  // Green, yellow and red latency zones behind the graph line. They are drawn only over
+  // the stretches of time that have probes; where the trace was not running (before it
+  // began, while paused, while the app was closed) the graph stays plain.
   function drawBands(u: uPlot) {
     const { left, top, width, height } = u.bbox;
     const y = (ms: number) => Math.min(top + height, Math.max(top, u.valToPos(ms, "y", true)));
+    const x = (t: number) => Math.min(left + width, Math.max(left, u.valToPos(t, "x", true)));
     const edges = [top + height, y(WARN_MS), y(BAD_MS), top];
     const fills = ["rgba(34, 197, 94, 0.32)", "rgba(234, 179, 8, 0.34)", "rgba(239, 68, 68, 0.36)"];
-    fills.forEach((fill, i) => {
-      u.ctx.fillStyle = fill;
-      u.ctx.fillRect(left, edges[i + 1], width, edges[i] - edges[i + 1]);
-    });
+    const step = intervalMs / 1000;
+    const xs = u.data[0];
+    let from: number | null = null;
+    for (let i = 0; i <= xs.length; i++) {
+      // A stretch ends at a break point, or after the last probe.
+      const ends = i === xs.length || shown.breaks.has(xs[i]);
+      if (!ends) {
+        from ??= xs[i];
+        continue;
+      }
+      if (from !== null) {
+        // The last probe's value holds for one interval, so the stretch covers that too.
+        const [x0, x1] = [x(from), x(xs[i - 1] + step)];
+        fills.forEach((fill, band) => {
+          u.ctx.fillStyle = fill;
+          u.ctx.fillRect(x0, edges[band + 1], x1 - x0, edges[band] - edges[band + 1]);
+        });
+      }
+      from = null;
+    }
   }
 
   function readout(u: uPlot) {
@@ -186,14 +205,15 @@
     const withLoss = lossy;
     const axis = { stroke: "#9aa4b2", grid: { stroke: "rgba(255, 255, 255, 0.08)" }, ticks: { stroke: "#232a36" } };
     const range = (_u: uPlot, _min: number, max: number): [number, number] => [0, Math.max(1, max * 1.1)];
-    // The latency axis fits the values in view, with room above and below, instead of
-    // always starting at 0: a line between 7 and 9 ms then uses the graph's height, not
-    // its top edge. It still reaches down to 0 when the values come close to it.
-    const fit = (_u: uPlot, min: number | null, max: number | null): [number, number] => {
-      if (min == null || max == null) return [0, 1];
-      const room = Math.max((max - min) * 0.25, max * 0.05, 0.5);
-      return [Math.max(0, min - room), max + room];
-    };
+    // The latency axis starts at 0 and ends at a round number half as high again as the
+    // highest value in view. Starting at 0 keeps heights honest: a wobble of 1 ms on 10 ms
+    // looks small, not like the full-height swings an axis fitted to 10..12 would show.
+    // The headroom keeps the line off the top edge, and round ends keep the axis from
+    // jumping with every new maximum.
+    const fit = (_u: uPlot, _min: number | null, max: number | null): [number, number] => [
+      0,
+      niceCeil((max ?? 0) * 1.5),
+    ];
     const line = { width: 1.5, points: { show: false }, paths: uPlot.paths.stepped!({ align: 1 }) };
     const shared = {
       cursor: {

@@ -6,6 +6,7 @@ import {
   lossSeries,
   lowerBound,
   mos,
+  niceCeil,
   parseSpan,
   spanLabel,
   stats,
@@ -49,6 +50,16 @@ test("lowerBound finds the first time at or after the cutoff", () => {
   assert.equal(lowerBound([1, 2, 4, 8], 0), 0);
   assert.equal(lowerBound([1, 2, 4, 8], 9), 4);
   assert.equal(lowerBound([], 1), 0);
+});
+
+test("niceCeil rounds an axis end up to a round number", () => {
+  assert.equal(niceCeil(27), 30);
+  assert.equal(niceCeil(18.75), 20);
+  assert.equal(niceCeil(105), 150);
+  assert.equal(niceCeil(0.45), 0.5);
+  assert.equal(niceCeil(30), 30);
+  assert.equal(niceCeil(950), 1000);
+  assert.equal(niceCeil(0), 1);
 });
 
 test("textTable aligns each column to its widest cell", () => {

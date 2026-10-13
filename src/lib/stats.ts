@@ -14,6 +14,17 @@ export type HopStats = {
 export const WARN_MS = 100;
 export const BAD_MS = 200;
 
+/**
+ * The smallest round number at or above `value`, for the end of an axis: 1, 1.5, 2, 3, 4,
+ * 5, 6, 8 or 10 times a power of ten. Anything not above 0 gives 1.
+ */
+export function niceCeil(value: number): number {
+  if (!(value > 0)) return 1;
+  const power = 10 ** Math.floor(Math.log10(value));
+  const step = [1, 1.5, 2, 3, 4, 5, 6, 8, 10].find((s) => s * power >= value * (1 - 1e-9)) ?? 10;
+  return step * power;
+}
+
 /** Index of the first entry of ascending `times` that is `>= cutoff`. */
 export function lowerBound(times: number[], cutoff: number): number {
   let low = 0;
