@@ -3,7 +3,26 @@ import { sendNotification } from "@tauri-apps/plugin-notification";
 import { describe, type TraceEvent } from "./events";
 import { ALERT_WINDOW, breaches, stats } from "./stats";
 
-export type Protocol = "icmp" | "udp" | "tcp";
+/** `icmp`, `udp` and `tcp` probe through raw sockets; `winicmp` is ICMP through the Windows ICMP API. */
+export type Protocol = "winicmp" | "icmp" | "udp" | "tcp";
+
+/** Packet types by name, in the order they are offered. */
+export const PROTOCOLS: Record<Protocol, string> = {
+  winicmp: "ICMP (Windows API)",
+  icmp: "ICMP (raw socket)",
+  udp: "UDP",
+  tcp: "TCP",
+};
+
+export const usesPort = (protocol: Protocol) => protocol === "udp" || protocol === "tcp";
+
+/** A target's packet type in a few letters: "ICMP", "ICMP·WIN", "TCP:443". */
+export const protocolLabel = ({ protocol, port }: Pick<TraceConfig, "protocol" | "port">) =>
+  usesPort(protocol) ? `${protocol.toUpperCase()}:${port}` : protocol === "icmp" ? "ICMP" : "ICMP·WIN";
+
+export const DEFAULT_TIMEOUT_MS = 1000;
+/** The whole IP packet, in bytes. */
+export const DEFAULT_PACKET_SIZE = 84;
 
 /** What the session file remembers about a target. Alert thresholds of 0 are off. */
 export type TraceConfig = {
@@ -13,6 +32,10 @@ export type TraceConfig = {
   protocol: Protocol;
   port: number;
   intervalMs: number;
+  /** How long a probe may go unanswered before it counts as lost; never under the interval. */
+  timeoutMs?: number;
+  /** Size of a probe's IP packet in bytes. TCP probes ignore it. */
+  packetSize?: number;
   alertLatencyMs: number;
   alertLossPct: number;
   /** The user paused the trace; it then stays paused across launches. */
@@ -211,7 +234,7 @@ async function run(trace: Trace, onChange: () => void) {
   trace.error = null;
   // Samples that arrive before the history is replayed wait here, to keep time order.
   let early: Sample[] | null = [];
-  const { sessionId, host, protocol, port, intervalMs } = trace.config;
+  const { sessionId, host, protocol, port, intervalMs, timeoutMs, packetSize } = trace.config;
   const channel = new Channel<Message>();
   channel.onmessage = (message) => {
     // A run that was restarted since belongs to an erased session.
@@ -234,6 +257,8 @@ async function run(trace: Trace, onChange: () => void) {
     protocol,
     port,
     intervalMs,
+    timeoutMs: timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    packetSize: packetSize ?? DEFAULT_PACKET_SIZE,
     withHistory,
     channel,
   });

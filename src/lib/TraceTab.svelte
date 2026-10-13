@@ -59,7 +59,7 @@
   import HopGraph from "./HopGraph.svelte";
   import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
-  import { exportFile, type Trace } from "./trace";
+  import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, type Trace } from "./trace";
 
   type Props = {
     trace: Trace;
@@ -71,10 +71,12 @@
     focusSeconds: number;
     /** Called after the alert thresholds in `trace.config` change. */
     onsave: () => void;
+    /** Called after the probe settings in `trace.config` change, to probe with them. */
+    onprobe: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
   };
-  let { trace, rev, hidden, focusSeconds, onsave, oncolumn }: Props = $props();
+  let { trace, rev, hidden, focusSeconds, onsave, onprobe, oncolumn }: Props = $props();
 
   // The order of the columns after Hop, as keys. Changed by dragging a header or from its
   // right-click menu; shared by all tabs and remembered between launches. Columns the
@@ -272,7 +274,16 @@
     onsave();
   }
 
+  /** Takes over a probe setting, kept within the limits of its input. */
+  function setProbe(key: "timeoutMs" | "packetSize", input: HTMLInputElement, fallback: number) {
+    const value = Math.round(Number(input.value)) || fallback;
+    trace.config[key] = Math.min(Number(input.max), Math.max(Number(input.min), value));
+    input.value = String(trace.config[key]);
+    onprobe();
+  }
+
   let alertsDialog: HTMLDialogElement;
+  let probeDialog: HTMLDialogElement;
   let eventsDialog: HTMLDialogElement;
   let whoisDialog: HTMLDialogElement;
   let whois = $state({ addr: "", text: "" });
@@ -280,6 +291,11 @@
   /** Opens the alert thresholds; also called from the app menu. */
   export function openAlerts() {
     alertsDialog.showModal();
+  }
+
+  /** Opens the probe settings; also called from the app menu. */
+  export function openProbe() {
+    probeDialog.showModal();
   }
 
   async function lookUp(addr: string) {
@@ -463,7 +479,7 @@
     const { host, protocol, port } = trace.config;
     // A tab restored paused has not resolved its address yet.
     const addr = trace.addr ? ` (${trace.addr})` : "";
-    return `${host}${addr} ${protocol.toUpperCase()}${port ? `:${port}` : ""}`;
+    return `${host}${addr} ${protocolLabel({ protocol, port })}`;
   });
 
   const today = new Date().toDateString();
@@ -549,7 +565,9 @@
       The target has not answered yet, so the round trip shows 100 % loss.
       {#if trace.config.protocol === "icmp"}
         If it should answer, allow ICMP replies under Tools > Allow ICMP replies in Windows Firewall…, or trace it
-        with TCP or UDP.
+        with ICMP (Windows API), TCP or UDP.
+      {:else if trace.config.protocol === "winicmp"}
+        It may not answer pings; try TCP or UDP.
       {:else}
         It may not answer on this port; try another port or protocol.
       {/if}
@@ -641,6 +659,8 @@
                     onmousemove={(event) => (barTip = { x: event.clientX, y: event.clientY, key: rowKey(row) })}
                     onmouseleave={() => (barTip = null)}
                   >
+                    <!-- Packet loss as a red bar from the left: the full width is 100 %. -->
+                    {#if s.lossPct > 0}<span class="loss" style:width="{s.lossPct}%"></span>{/if}
                     {#if s.avg !== null && s.min !== null && s.max !== null}
                       <span class="range" style:left={pct(s.min)} style:right="calc(100% - {pct(s.max)})"></span>
                       <span class="avg" style:left={pct(s.avg)}></span>
@@ -738,6 +758,7 @@
       {:else}
         <div>Min {ms(s.min)} · Avg {ms(s.avg)} · Max {ms(s.max)} · Last {s.last === null ? "lost" : ms(s.last)} ms</div>
       {/if}
+      {#if s.lossPct > 0}<div class="bad">Loss {s.lossPct.toFixed(1)}% (red bar)</div>{/if}
       <div class="note">Wheel zooms · double-click fits</div>
     </div>
   {/if}
@@ -765,6 +786,37 @@
         onchange={(e) => setThreshold("alertLossPct", e.currentTarget.value)}
       />
       %
+    </label>
+    <form method="dialog"><button>Close</button></form>
+  </dialog>
+
+  <dialog bind:this={probeDialog} aria-labelledby="probe-title">
+    <h2 id="probe-title">Probe settings for {trace.config.host}</h2>
+    <p>
+      Packet type: {protocolLabel(trace.config)}. To use another, pick it in the toolbar and start the target again.
+    </p>
+    <label>
+      Wait for replies
+      <input
+        type="number"
+        min="100"
+        max="10000"
+        step="100"
+        value={trace.config.timeoutMs ?? DEFAULT_TIMEOUT_MS}
+        onchange={(e) => setProbe("timeoutMs", e.currentTarget, DEFAULT_TIMEOUT_MS)}
+      />
+      ms, at least the interval
+    </label>
+    <label>
+      Packet size
+      <input
+        type="number"
+        min="48"
+        max="1024"
+        value={trace.config.packetSize ?? DEFAULT_PACKET_SIZE}
+        onchange={(e) => setProbe("packetSize", e.currentTarget, DEFAULT_PACKET_SIZE)}
+      />
+      bytes, the whole IP packet (TCP ignores it)
     </label>
     <form method="dialog"><button>Close</button></form>
   </dialog>
@@ -1016,6 +1068,14 @@
     color: var(--muted);
     font-size: 11px;
   }
+  .loss {
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    min-width: 2px;
+    background: rgba(220, 38, 38, 0.75);
+  }
   /* The bar continues beyond the end of a zoomed scale. */
   .over {
     right: 0;
@@ -1198,7 +1258,7 @@
   .print-only {
     display: none;
   }
-  /* File > Export page as PDF prints the page: heading, full hop table, then the graphs. */
+  /* Edit > Export page as PDF prints the page: heading, full hop table, then the graphs. */
   @media print {
     .print-only {
       display: block;

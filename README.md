@@ -4,6 +4,7 @@
 Open-source visual traceroute and ping monitor.
 
 - Continuous traceroute over **ICMP, UDP or TCP** (IPv4 and IPv6)
+- ICMP through the Windows ICMP API or through raw sockets; reply timeout and packet size per target
 - One tab per target, several targets at once
 - Per-hop loss, last/avg/min/max latency and jitter
 - Latency, jitter and packet-loss graphs for any hop, with a slider to scroll back in time
@@ -19,9 +20,13 @@ its trace erases that tab's history.
 ## Requirements
 
 - Windows 10 or 11 with the WebView2 runtime (part of Windows 11).
-- **Administrator rights.** Probing uses raw sockets, so the exe asks for elevation (UAC) on start.
+- **Administrator rights.** Raw-socket, UDP and TCP probing needs them, so the exe asks for elevation
+  (UAC) on start.
 
 ### Windows firewall
+
+Traces with the packet type **ICMP (Windows API)** need no firewall rule. This section is for
+**ICMP (raw socket)**.
 
 Windows Defender Firewall drops incoming ICMP replies to raw sockets by default. Without a rule, hops
 show as lost and ICMP traces never reach the final hop. Allow them once with

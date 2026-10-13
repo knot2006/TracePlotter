@@ -1,6 +1,6 @@
 <script lang="ts">
   import { BAD_MS, WARN_MS, lowerBound, stats } from "./stats";
-  import type { Trace } from "./trace";
+  import { protocolLabel, type Trace } from "./trace";
 
   type Props = {
     traces: Trace[];
@@ -99,7 +99,7 @@
             <button onclick={() => onopen(trace)}>{host}</button>
           </td>
           <td class="text">{trace.addr}</td>
-          <td class="text">{protocol.toUpperCase()}{protocol === "icmp" ? "" : `:${port}`}</td>
+          <td class="text">{protocolLabel({ protocol, port })}</td>
           <td>{trace.pathEnd || "–"}</td>
           <td class:warn={s.lossPct > 0} class:bad={s.lossPct >= 10}>{s.lossPct.toFixed(1)}%</td>
           <td>{s.sent}</td>

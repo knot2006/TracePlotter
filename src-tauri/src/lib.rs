@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
-use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round};
+use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tracer};
+
+#[cfg(windows)]
+mod winicmp;
 
 // ponytail: a history file holds up to twice this many rounds (24 h at a 1 s interval)
 // and is read back in one piece when its tab starts. Rotate files if that gets slow.
@@ -261,14 +264,155 @@ fn start_demo(
     })
 }
 
+/// Where the rounds of a running trace go: its history file and the frontend.
+struct Recorder {
+    channel: Channel<TraceEvent>,
+    file: fs::File,
+    path: PathBuf,
+    /// The tab shows an error; the next recorded round clears it.
+    failing: AtomicBool,
+    /// Rounds appended since the file was last trimmed. Trimming every MAX_HISTORY
+    /// rounds keeps the file under twice that, however long the trace runs.
+    appended: AtomicUsize,
+}
+
+impl Recorder {
+    /// Shows an error in the tab until a round is recorded.
+    fn error(&self, message: String) {
+        self.failing.store(true, Ordering::Relaxed);
+        let _ = self.channel.send(TraceEvent::Error { message });
+    }
+
+    /// Saves one round and sends it to the frontend. `false` when the webview is gone,
+    /// so the trace should stop.
+    fn record(&self, hops: Vec<HopSample>) -> bool {
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let sample = Sample { t, hops };
+        // An empty message clears the error shown for an earlier failure.
+        if self.failing.swap(false, Ordering::Relaxed) {
+            let _ = self.channel.send(TraceEvent::Error {
+                message: String::new(),
+            });
+        }
+        let saved = serde_json::to_string(&sample)
+            .map_err(std::io::Error::other)
+            .and_then(|line| writeln!(&self.file, "{line}"));
+        if let Err(e) = saved {
+            self.error(format!("History is not being saved: {e}"));
+        } else if self.appended.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_HISTORY {
+            self.appended.store(0, Ordering::Relaxed);
+            trim_history(&self.path, MAX_HISTORY);
+        }
+        self.channel.send(TraceEvent::Sample(sample)).is_ok()
+    }
+}
+
+/// Runs a raw-socket trace until `stop` is set. `tracer` is the one built to check the
+/// settings; later ones come from `build`.
+///
+/// A tracer keeps the source address and sockets it started with. After the machine
+/// changes network (VPN, Wi-Fi, new default route) those are dead: every probe is lost or
+/// sending fails. So the tracer is rebuilt as soon as the source address for the target
+/// changes, and as a fallback after DEAD_ROUNDS silent rounds or any error. Rebuilding
+/// rediscovers the source address and the path.
+fn trace_raw(
+    build: impl Fn() -> Result<Tracer, trippy_core::Error>,
+    mut tracer: Option<Tracer>,
+    addr: IpAddr,
+    stop: &AtomicBool,
+    recorder: &Recorder,
+) {
+    let silent_rounds = AtomicUsize::new(0);
+    while !stop.load(Ordering::Relaxed) {
+        let source = local_source(addr);
+        let current = match tracer.take().map_or_else(&build, Ok) {
+            Ok(tracer) => tracer,
+            Err(e) => {
+                recorder.error(format!("Probing failed, retrying: {e}"));
+                std::thread::sleep(RETRY_DELAY);
+                continue;
+            }
+        };
+        // ponytail: trippy-core 0.13 has no way to cancel an endless trace, so the round
+        // callback unwinds out of it; stop and restart take effect at the next round.
+        // Replace with a real cancel if upstream adds one.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            current.run_with(|round| {
+                // Stopped (paused, closed, restarted): this round is not recorded.
+                if stop.load(Ordering::Relaxed) {
+                    resume_unwind(Box::new(Stopped));
+                }
+                // The machine now sends from another address: this round went out on
+                // the old route, so it is dropped and the tracer rebuilt right away.
+                if local_source(addr) != source {
+                    resume_unwind(Box::new(Restart));
+                }
+                let hops = round_to_hops(round);
+                let silent = hops.iter().all(|hop| hop.rtt.is_none());
+                if !recorder.record(hops) {
+                    resume_unwind(Box::new(Stopped));
+                }
+                if !silent {
+                    silent_rounds.store(0, Ordering::Relaxed);
+                } else if silent_rounds.fetch_add(1, Ordering::Relaxed) + 1 >= DEAD_ROUNDS {
+                    silent_rounds.store(0, Ordering::Relaxed);
+                    resume_unwind(Box::new(Restart));
+                }
+            })
+        }));
+        match result {
+            Ok(Ok(())) => return,
+            Err(payload) if payload.is::<Stopped>() => return,
+            Err(payload) if payload.is::<Restart>() => continue,
+            Ok(Err(e)) => recorder.error(format!("Probing failed, retrying: {e}")),
+            Err(_) => {
+                recorder.error("Trace stopped: probe thread panicked".into());
+                return;
+            }
+        }
+        std::thread::sleep(RETRY_DELAY);
+    }
+}
+
+/// Runs a trace over the Windows ICMP API until `stop` is set. It holds no socket or
+/// source address, so a change of network needs no rebuilding.
+#[cfg(windows)]
+fn trace_windows(
+    addr: IpAddr,
+    packet_size: u16,
+    timeout: Duration,
+    interval: Duration,
+    stop: &AtomicBool,
+    recorder: &Recorder,
+) {
+    let mut pinger = match winicmp::Pinger::new(addr, packet_size, timeout) {
+        Ok(pinger) => pinger,
+        Err(e) => return recorder.error(format!("Trace stopped: {e}")),
+    };
+    loop {
+        let hops = pinger.round(interval);
+        // Stopped (paused, closed, restarted): this round is not recorded.
+        if stop.load(Ordering::Relaxed) || !recorder.record(hops) {
+            return;
+        }
+    }
+}
+
 #[tauri::command(async)]
 fn start_trace(
     // Id of the tab; names its history file, so tabs never share history.
     session: String,
     host: String,
+    // "icmp", "udp" and "tcp" probe through raw sockets, "winicmp" through the Windows ICMP API.
     protocol: String,
     port: u16,
     interval_ms: u64,
+    // How long a probe may go unanswered before it counts as lost.
+    timeout_ms: u64,
+    // Size of a probe's whole IP packet in bytes. TCP probes have no payload and ignore it.
+    packet_size: u16,
     // False when resuming a paused trace, whose history the caller already holds.
     with_history: bool,
     channel: Channel<TraceEvent>,
@@ -284,26 +428,41 @@ fn start_trace(
         .next()
         .ok_or_else(|| format!("no address for {host}"))?
         .ip();
-    let (probe, ports) = match protocol.as_str() {
-        "icmp" => (Protocol::Icmp, PortDirection::None),
-        "udp" => (Protocol::Udp, PortDirection::FixedDest(Port(port))),
-        "tcp" => (Protocol::Tcp, PortDirection::FixedDest(Port(port))),
+    // `None` is the Windows ICMP API.
+    let raw = match protocol.as_str() {
+        "icmp" => Some((Protocol::Icmp, PortDirection::None)),
+        "udp" => Some((Protocol::Udp, PortDirection::FixedDest(Port(port)))),
+        "tcp" => Some((Protocol::Tcp, PortDirection::FixedDest(Port(port)))),
+        "winicmp" if cfg!(windows) => None,
         other => return Err(format!("unknown protocol {other}")),
     };
     let interval = Duration::from_millis(interval_ms.clamp(200, 60_000));
+    // A round lasts at least the interval, and a reply counts until its round ends.
+    let timeout = Duration::from_millis(timeout_ms.clamp(100, 10_000)).max(interval);
+    // From the smallest IPv6 probe to the most trippy-core sends.
+    let packet_size = packet_size.clamp(48, 1024);
     let id = traces.next_id.fetch_add(1, Ordering::Relaxed);
-    let build = move || {
-        Builder::new(addr)
-            .protocol(probe)
-            .port_direction(ports)
-            // Distinct identifiers keep concurrent ICMP traces from reading each other's
-            // replies. The identifier is 16 bits, so it repeats every 65,536 runs.
-            .trace_identifier(id as u16)
-            .min_round_duration(interval)
-            .max_round_duration(interval)
-            .build()
+    let build = raw.map(|(probe, ports)| {
+        move || {
+            Builder::new(addr)
+                .protocol(probe)
+                .port_direction(ports)
+                // Distinct identifiers keep concurrent ICMP traces from reading each other's
+                // replies. The identifier is 16 bits, so it repeats every 65,536 runs.
+                .trace_identifier(id as u16)
+                .packet_size(packet_size)
+                // A round ends at the interval once the target answered; without an
+                // answer it waits out the timeout.
+                .min_round_duration(interval)
+                .max_round_duration(timeout)
+                .build()
+        }
+    });
+    // Built here so that settings the tracer refuses are reported to the caller.
+    let tracer = match &build {
+        Some(build) => Some(build().map_err(|e| e.to_string())?),
+        None => None,
     };
-    let mut tracer = Some(build().map_err(|e| e.to_string())?);
 
     let path = history_path(&session)?;
     let history = if with_history {
@@ -319,99 +478,20 @@ fn start_trace(
 
     let stop = Arc::new(AtomicBool::new(false));
     traces.stops.lock().unwrap().insert(id, stop.clone());
+    let recorder = Recorder {
+        channel,
+        file,
+        path,
+        failing: AtomicBool::new(false),
+        appended: AtomicUsize::new(0),
+    };
 
-    std::thread::spawn(move || {
-        // A tracer keeps the source address and sockets it started with. After the machine
-        // changes network (VPN, Wi-Fi, new default route) those are dead: every probe is
-        // lost or sending fails. So the tracer is rebuilt as soon as the source address
-        // for the target changes, and as a fallback after DEAD_ROUNDS silent rounds or
-        // any error. Rebuilding rediscovers the source address and the path.
-        let silent_rounds = AtomicUsize::new(0);
-        let failing = AtomicBool::new(false);
-        // Rounds appended since the file was last trimmed. Trimming every MAX_HISTORY
-        // rounds keeps the file under twice that, however long the trace runs.
-        let appended = AtomicUsize::new(0);
-        while !stop.load(Ordering::Relaxed) {
-            let source = local_source(addr);
-            let current = match tracer.take().map_or_else(&build, Ok) {
-                Ok(tracer) => tracer,
-                Err(e) => {
-                    failing.store(true, Ordering::Relaxed);
-                    let _ = channel.send(TraceEvent::Error {
-                        message: format!("Probing failed, retrying: {e}"),
-                    });
-                    std::thread::sleep(RETRY_DELAY);
-                    continue;
-                }
-            };
-            // ponytail: trippy-core 0.13 has no way to cancel an endless trace, so the round
-            // callback unwinds out of it; stop and restart take effect at the next round.
-            // Replace with a real cancel if upstream adds one.
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                current.run_with(|round| {
-                    // Stopped (paused, closed, restarted): this round is not recorded.
-                    if stop.load(Ordering::Relaxed) {
-                        resume_unwind(Box::new(Stopped));
-                    }
-                    // The machine now sends from another address: this round went out on
-                    // the old route, so it is dropped and the tracer rebuilt right away.
-                    if local_source(addr) != source {
-                        resume_unwind(Box::new(Restart));
-                    }
-                    let t = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |d| d.as_millis() as u64);
-                    let sample = Sample {
-                        t,
-                        hops: round_to_hops(round),
-                    };
-                    let silent = sample.hops.iter().all(|hop| hop.rtt.is_none());
-                    // An empty message clears the error shown for an earlier failure.
-                    if failing.swap(false, Ordering::Relaxed) {
-                        let _ = channel.send(TraceEvent::Error {
-                            message: String::new(),
-                        });
-                    }
-                    let saved = serde_json::to_string(&sample)
-                        .map_err(std::io::Error::other)
-                        .and_then(|line| writeln!(&file, "{line}"));
-                    if let Err(e) = saved {
-                        failing.store(true, Ordering::Relaxed);
-                        let _ = channel.send(TraceEvent::Error {
-                            message: format!("History is not being saved: {e}"),
-                        });
-                    } else if appended.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_HISTORY {
-                        appended.store(0, Ordering::Relaxed);
-                        trim_history(&path, MAX_HISTORY);
-                    }
-                    // A failed send means the webview is gone, so stop as well.
-                    if channel.send(TraceEvent::Sample(sample)).is_err() {
-                        resume_unwind(Box::new(Stopped));
-                    }
-                    if !silent {
-                        silent_rounds.store(0, Ordering::Relaxed);
-                    } else if silent_rounds.fetch_add(1, Ordering::Relaxed) + 1 >= DEAD_ROUNDS {
-                        silent_rounds.store(0, Ordering::Relaxed);
-                        resume_unwind(Box::new(Restart));
-                    }
-                })
-            }));
-            let message = match result {
-                Ok(Ok(())) => return,
-                Err(payload) if payload.is::<Stopped>() => return,
-                Err(payload) if payload.is::<Restart>() => continue,
-                Ok(Err(e)) => format!("Probing failed, retrying: {e}"),
-                Err(_) => {
-                    let _ = channel.send(TraceEvent::Error {
-                        message: "Trace stopped: probe thread panicked".into(),
-                    });
-                    return;
-                }
-            };
-            failing.store(true, Ordering::Relaxed);
-            let _ = channel.send(TraceEvent::Error { message });
-            std::thread::sleep(RETRY_DELAY);
-        }
+    std::thread::spawn(move || match build {
+        Some(build) => trace_raw(build, tracer, addr, &stop, &recorder),
+        #[cfg(windows)]
+        None => trace_windows(addr, packet_size, timeout, interval, &stop, &recorder),
+        #[cfg(not(windows))]
+        None => {}
     });
 
     Ok(Started { id, addr, history })
@@ -557,6 +637,70 @@ fn host_locale() -> Option<String> {
     None
 }
 
+/// The DNS name under which an address has its PTR record.
+fn ptr_name(addr: IpAddr) -> String {
+    match addr {
+        IpAddr::V4(v4) => {
+            let [a, b, c, d] = v4.octets();
+            format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+        }
+        IpAddr::V6(v6) => {
+            let nibbles = v6.octets().into_iter().rev().map(|byte| format!("{:x}.{:x}.", byte & 15, byte >> 4));
+            nibbles.collect::<String>() + "ip6.arpa"
+        }
+    }
+}
+
+/// The name in an address's PTR record, asked from DNS only.
+///
+/// The system's own reverse lookup (`getnameinfo`) also tries NetBIOS: for an address
+/// without a PTR record it sends name queries to that address itself. A router answers
+/// those with "port unreachable", and many routers send only one ICMP error a second, so
+/// the answer to that second's probe was dropped and the hop showed packet loss.
+#[cfg(windows)]
+fn lookup_ptr(addr: IpAddr) -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::Dns::{
+        DNS_QUERY_NO_MULTICAST, DNS_QUERY_NO_NETBT, DNS_RECORDW, DNS_TYPE_PTR, DnsFree,
+        DnsFreeRecordList, DnsQuery_W,
+    };
+    let name: Vec<u16> = ptr_name(addr).encode_utf16().chain([0]).collect();
+    let mut records: *mut DNS_RECORDW = std::ptr::null_mut();
+    // SAFETY: `name` is zero-terminated. On success `records` is a list the API owns until
+    // `DnsFree`; a PTR record's data is a pointer to a zero-terminated name.
+    unsafe {
+        let status = DnsQuery_W(
+            name.as_ptr(),
+            DNS_TYPE_PTR,
+            DNS_QUERY_NO_NETBT | DNS_QUERY_NO_MULTICAST,
+            std::ptr::null_mut(),
+            (&raw mut records).cast(),
+            std::ptr::null_mut(),
+        );
+        if status != 0 || records.is_null() {
+            return None;
+        }
+        let mut found = None;
+        let mut record = records;
+        while !record.is_null() && found.is_none() {
+            if (*record).wType == DNS_TYPE_PTR {
+                let host = (*record).Data.PTR.pNameHost;
+                let length = (0..).take_while(|&i| *host.add(i) != 0).count();
+                found = Some(String::from_utf16_lossy(std::slice::from_raw_parts(host, length)));
+            }
+            record = (*record).pNext;
+        }
+        DnsFree(records.cast(), DnsFreeRecordList);
+        found
+    }
+}
+
+#[cfg(not(windows))]
+fn lookup_ptr(addr: IpAddr) -> Option<String> {
+    dns_lookup::lookup_addr(&addr)
+        .ok()
+        .filter(|name| *name != addr.to_string())
+}
+
 /// Hostname for a hop address, `None` when it has no PTR record.
 #[tauri::command(async)]
 fn reverse_dns(addr: IpAddr) -> Option<String> {
@@ -567,9 +711,7 @@ fn reverse_dns(addr: IpAddr) -> Option<String> {
             .find(|(hop, name, ..)| *hop == text && !name.is_empty())
             .map(|(_, name, ..)| name.to_string());
     }
-    dns_lookup::lookup_addr(&addr)
-        .ok()
-        .filter(|name| *name != addr.to_string())
+    lookup_ptr(addr)
 }
 
 const WHOIS_TIMEOUT: Duration = Duration::from_secs(8);
@@ -935,6 +1077,23 @@ mod tests {
             rtt: None,
         };
         assert_eq!(round_to_hops(&round), vec![lost(1), lost(2)]);
+    }
+
+    #[test]
+    fn ptr_names_reverse_the_address() {
+        assert_eq!(ptr_name("192.168.1.20".parse().unwrap()), "20.1.168.192.in-addr.arpa");
+        assert_eq!(
+            ptr_name("2001:db8::567:89ab".parse().unwrap()),
+            "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+        );
+    }
+
+    /// Live check, needs network: `cargo test --lib ptr -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_ptr_lookup_finds_a_name() {
+        assert_eq!(lookup_ptr("8.8.8.8".parse().unwrap()).as_deref(), Some("dns.google"));
+        assert_eq!(lookup_ptr("192.0.2.1".parse().unwrap()), None);
     }
 
     #[test]

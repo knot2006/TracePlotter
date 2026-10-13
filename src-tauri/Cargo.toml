@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.1.0"
+version = "0.1.1"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 edition = "2024"
@@ -19,13 +19,27 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 # API is documented as unstable, keep the exact pin.
 trippy-core = "=0.13.0"
-dns-lookup = "3"
 tauri-plugin-notification = "2"
 serde_json = "1"
 tauri-plugin-dialog = "2"
 ureq = { version = "2", features = ["json"] }
 minisign-verify = "0.2"
 base64 = "0.22"
+
+[target.'cfg(not(windows))'.dependencies]
+dns-lookup = "3"
+
+# The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
+# reverse DNS without NetBIOS.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
 
 # No `panic = "abort"`: stopping a trace unwinds out of trippy-core (see lib.rs).
 [profile.release]

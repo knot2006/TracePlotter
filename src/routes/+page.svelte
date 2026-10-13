@@ -9,15 +9,18 @@
   import { setLocale } from "$lib/time";
   import {
     closeTrace,
+    PROTOCOLS,
+    protocolLabel,
     restartTrace,
     setPaused,
     startTrace,
+    usesPort,
     type Protocol,
     type Trace,
     type TraceConfig,
   } from "$lib/trace";
 
-  const DEFAULT_PORT = { icmp: 0, udp: 33434, tcp: 443 };
+  const DEFAULT_PORT = { winicmp: 0, icmp: 0, udp: 33434, tcp: 443 };
   const SESSION_KEY = "traceplotter.session";
   const COLUMNS_KEY = "traceplotter.hiddenColumns";
   const SPAN_KEY = "traceplotter.timeSpan";
@@ -117,7 +120,7 @@
   // The open tab's component, for the menu's export actions.
   let tab = $state<TraceTab>();
 
-  const target = $derived({ host: host.trim().toLowerCase(), protocol, port: protocol === "icmp" ? 0 : port });
+  const target = $derived({ host: host.trim().toLowerCase(), protocol, port: usesPort(protocol) ? port : 0 });
   // The open tab, while the toolbar still describes it. Then the round button pauses or
   // resumes it; otherwise the button starts the target typed into the toolbar.
   const current = $derived(active && same(active.config, target) ? active : undefined);
@@ -176,15 +179,22 @@
           text: "File",
           items: [
             { id: "new", text: "New target", accelerator: "CmdOrCtrl+T", action: newTarget },
+            { id: "close", text: "Close tab", accelerator: "CmdOrCtrl+W", action: () => active && close(active) },
             { item: "Separator" },
+            { item: "CloseWindow", text: "Exit" },
+          ],
+        },
+        {
+          text: "Edit",
+          items: [
             { id: "txt", text: "Export MTR report (.txt)…", action: onTab((t) => t.exportTxt()) },
             // Opens the print dialog; "Save as PDF" there writes the file.
             { id: "pdf", text: "Export page as PDF…", accelerator: "CmdOrCtrl+P", action: onTab(() => window.print()) },
             { id: "csv", text: "Export samples (.csv)…", action: onTab((t) => t.exportCsv()) },
             { id: "png", text: "Export graph (.png)…", action: onTab((t) => t.exportPng()) },
             { item: "Separator" },
-            { id: "close", text: "Close tab", accelerator: "CmdOrCtrl+W", action: () => active && close(active) },
-            { item: "CloseWindow", text: "Exit" },
+            { id: "probe", text: "Probe settings…", action: onTab((t) => t.openProbe()) },
+            { id: "alerts", text: "Alerts…", action: onTab((t) => t.openAlerts()) },
           ],
         },
         {
@@ -205,7 +215,6 @@
           text: "Trace",
           items: [
             { id: "pause", text: "Pause / resume", action: () => active && togglePause(active) },
-            { id: "alerts", text: "Alerts…", action: onTab((t) => t.openAlerts()) },
             { id: "restart", text: "Restart and erase history…", action: () => active && restart(active) },
           ],
         },
@@ -281,20 +290,25 @@
     }
   }
 
-  /** Applies a new interval to the open tab; probing restarts with it at the next round. */
-  async function changeInterval() {
-    if (!current) return;
-    current.config.intervalMs = intervalMs;
+  /** Saves a tab's changed probe settings; probing restarts with them at the next round. */
+  async function reprobe(trace: Trace) {
     saveSession();
-    if (current.paused) return;
+    if (trace.paused) return;
     try {
-      await setPaused(current, true, bump);
-      await setPaused(current, false, bump);
+      await setPaused(trace, true, bump);
+      await setPaused(trace, false, bump);
     } catch (e) {
-      current.error = `Could not restart: ${e}`;
+      trace.error = `Could not restart: ${e}`;
     }
     saveSession();
     rev++;
+  }
+
+  /** Applies a new interval to the open tab. */
+  function changeInterval() {
+    if (!current) return;
+    current.config.intervalMs = intervalMs;
+    reprobe(current);
   }
 
   function newTarget() {
@@ -402,7 +416,7 @@
         <button role="tab" aria-selected={trace.id === activeId} onclick={() => (activeId = trace.id)}>
           <span class="dot {state}" role="img" aria-label={state}></span>
           {host}
-          <small>{protocol.toUpperCase()}{protocol === "icmp" ? "" : `:${port}`}</small>
+          <small>{protocolLabel({ protocol, port })}</small>
         </button>
         <button class="close" aria-label="Close {host}" onclick={() => close(trace)}>×</button>
       </div>
@@ -420,11 +434,9 @@
       required
     />
     <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
-      <option value="icmp">ICMP</option>
-      <option value="udp">UDP</option>
-      <option value="tcp">TCP</option>
+      {#each Object.entries(PROTOCOLS) as [value, name]}<option {value}>{name}</option>{/each}
     </select>
-    {#if protocol !== "icmp"}
+    {#if usesPort(protocol)}
       <input class="port" type="number" min="1" max="65535" bind:value={port} aria-label="Port" required />
     {/if}
     <button
@@ -498,6 +510,7 @@
         {hidden}
         {focusSeconds}
         onsave={saveSession}
+        onprobe={() => reprobe(active)}
         oncolumn={toggleColumn}
       />
     {/key}
@@ -620,9 +633,16 @@
     align-items: center;
     color: var(--muted);
   }
+  /* Dark with a stripe in the accent colour: white text and the status dot stay easy to
+     read, which they were not on a tab filled with the accent colour. */
   .tab.active {
-    background: var(--accent);
+    background: color-mix(in srgb, var(--accent) 24%, var(--bg));
+    box-shadow: inset 0 3px 0 var(--accent);
     color: #fff;
+    font-weight: 600;
+  }
+  .tab.active small {
+    font-weight: 400;
   }
   .tab button,
   .add {
@@ -779,7 +799,7 @@
     flex: 1;
     min-height: 0;
   }
-  /* Printing (File > Export page as PDF) uses a light theme: dark text on white paper.
+  /* Printing (Edit > Export page as PDF) uses a light theme: dark text on white paper.
      The page's own dark background is not printed, so the on-screen light text would
      vanish. Row colours and the graphs' dark panels are kept by print-color-adjust. */
   @media print {
