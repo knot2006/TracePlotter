@@ -3,10 +3,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
-  import Summary from "$lib/Summary.svelte";
-  import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "$lib/TraceTab.svelte";
-  import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "$lib/stats";
-  import { setLocale } from "$lib/time";
+  import Summary from "../lib/Summary.svelte";
+  import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
+  import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "../lib/stats";
+  import { setLocale } from "../lib/time";
   import {
     closeTrace,
     PROTOCOLS,
@@ -18,7 +18,7 @@
     type Protocol,
     type Trace,
     type TraceConfig,
-  } from "$lib/trace";
+  } from "../lib/trace";
 
   const DEFAULT_PORT = { winicmp: 0, icmp: 0, udp: 33434, tcp: 443 };
   const SESSION_KEY = "traceplotter.session";
