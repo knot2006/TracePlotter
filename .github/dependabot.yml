@@ -18,8 +18,8 @@ updates:
     schedule:
       interval: weekly
 
-  # Backend: Tauri, its plugins and trippy-core. trippy-core is pinned to an exact
-  # version because its API is unstable, so every update of it needs a build and a test.
+  # Backend: Tauri, its plugins and trippy-core. trippy-core has no upper bound, so its
+  # new releases arrive here too; one that changes the API fails CI until our code is fixed.
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
