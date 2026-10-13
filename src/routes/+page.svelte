@@ -25,7 +25,11 @@
 
   // The open tabs, restored on the next launch. Holds the same objects as `trace.config`.
   let session: TraceConfig[] = [];
-  const saveSession = () => localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  // Also the open tab: a restart gives its trace a new session id, which is how it is remembered.
+  const saveSession = () => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    saveActive();
+  };
   const same = (a: Pick<TraceConfig, "host" | "protocol" | "port">, b: typeof a) =>
     a.host === b.host && a.protocol === b.protocol && a.port === b.port;
 
@@ -66,6 +70,17 @@
   let hostInput: HTMLInputElement;
 
   const active = $derived(traces.find((t) => t.id === activeId));
+
+  // The tab that was open, to open it again on the next launch: its session id, or
+  // "summary" for All targets. Not written until the saved tabs are back, so that the
+  // empty start does not overwrite it.
+  const ACTIVE_KEY = "traceplotter.activeTab";
+  let tabsRestored = $state(false);
+  function saveActive() {
+    if (!tabsRestored) return;
+    localStorage.setItem(ACTIVE_KEY, activeId === "summary" ? "summary" : (active?.config.sessionId ?? ""));
+  }
+  $effect(saveActive);
   // The open tab's component, for the menu's export actions.
   let tab = $state<TraceTab>();
 
@@ -284,7 +299,13 @@
     );
     // In saved order, ahead of any tab the user opened meanwhile.
     traces = [...restored.filter((trace) => trace !== null), ...traces];
-    activeId ??= traces[0]?.id ?? null;
+    // The tab that was open last time, unless the user has already picked one.
+    const last = localStorage.getItem(ACTIVE_KEY);
+    activeId ??=
+      last === "summary" && traces.length
+        ? "summary"
+        : (traces.find((trace) => trace.config.sessionId === last) ?? traces[0])?.id ?? null;
+    tabsRestored = true;
   });
 </script>
 

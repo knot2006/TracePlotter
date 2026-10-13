@@ -16,6 +16,9 @@ const MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" man
 </assembly>"#;
 
 fn main() {
+    // The exe's icon is compiled into it here. Without this line a changed icon file does
+    // not rerun the build script, and the exe keeps the old icon.
+    println!("cargo:rerun-if-changed=icons");
     let windows = tauri_build::WindowsAttributes::new().app_manifest(MANIFEST);
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("failed to run tauri-build");

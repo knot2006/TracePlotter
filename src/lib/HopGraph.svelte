@@ -186,6 +186,14 @@
     const withLoss = lossy;
     const axis = { stroke: "#9aa4b2", grid: { stroke: "rgba(255, 255, 255, 0.08)" }, ticks: { stroke: "#232a36" } };
     const range = (_u: uPlot, _min: number, max: number): [number, number] => [0, Math.max(1, max * 1.1)];
+    // The latency axis fits the values in view, with room above and below, instead of
+    // always starting at 0: a line between 7 and 9 ms then uses the graph's height, not
+    // its top edge. It still reaches down to 0 when the values come close to it.
+    const fit = (_u: uPlot, min: number | null, max: number | null): [number, number] => {
+      if (min == null || max == null) return [0, 1];
+      const room = Math.max((max - min) * 0.25, max * 0.05, 0.5);
+      return [Math.max(0, min - room), max + room];
+    };
     const line = { width: 1.5, points: { show: false }, paths: uPlot.paths.stepped!({ align: 1 }) };
     const shared = {
       cursor: {
@@ -203,7 +211,7 @@
         width: chartEl.clientWidth,
         height: chartEl.clientHeight,
         scales: {
-          y: { range },
+          y: { range: fit },
           // Always the full 0 to 100 %, so the height of a loss bar is the share of probes
           // lost. Fitted to the highest bar, one lost probe in ten would fill the graph.
           loss: { range: [0, 100] },
