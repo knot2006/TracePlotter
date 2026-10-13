@@ -56,6 +56,8 @@ test("niceCeil rounds an axis end up to a round number", () => {
   assert.equal(niceCeil(27), 30);
   assert.equal(niceCeil(18.75), 20);
   assert.equal(niceCeil(105), 150);
+  assert.equal(niceCeil(63.6), 70);
+  assert.equal(niceCeil(82.9), 90);
   assert.equal(niceCeil(0.45), 0.5);
   assert.equal(niceCeil(30), 30);
   assert.equal(niceCeil(950), 1000);

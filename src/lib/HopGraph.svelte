@@ -205,14 +205,14 @@
     const withLoss = lossy;
     const axis = { stroke: "#9aa4b2", grid: { stroke: "rgba(255, 255, 255, 0.08)" }, ticks: { stroke: "#232a36" } };
     const range = (_u: uPlot, _min: number, max: number): [number, number] => [0, Math.max(1, max * 1.1)];
-    // The latency axis starts at 0 and ends at a round number half as high again as the
+    // The latency axis starts at 0 and ends at a round number a fifth above the
     // highest value in view. Starting at 0 keeps heights honest: a wobble of 1 ms on 10 ms
     // looks small, not like the full-height swings an axis fitted to 10..12 would show.
     // The headroom keeps the line off the top edge, and round ends keep the axis from
     // jumping with every new maximum.
     const fit = (_u: uPlot, _min: number | null, max: number | null): [number, number] => [
       0,
-      niceCeil((max ?? 0) * 1.5),
+      niceCeil((max ?? 0) * 1.2),
     ];
     const line = { width: 1.5, points: { show: false }, paths: uPlot.paths.stepped!({ align: 1 }) };
     const shared = {
