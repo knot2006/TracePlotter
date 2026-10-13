@@ -100,6 +100,8 @@
     } catch (e) {
       trace.error = `Could not resume: ${e}`;
     }
+    // Paused or running is part of the saved tab, so it comes back the same way.
+    saveSession();
     rev++;
   }
 
@@ -226,6 +228,7 @@
     } catch (e) {
       current.error = `Could not restart: ${e}`;
     }
+    saveSession();
     rev++;
   }
 
@@ -341,7 +344,7 @@
       class:running
       disabled={busy}
       aria-label={running ? "Pause trace" : current ? "Resume trace" : "Start trace"}
-      title={running ? "Pause trace" : current ? "Resume trace" : "Start trace"}
+      data-tip={running ? "Pause trace" : current ? "Resume trace" : "Start trace"}
     >
       {running ? "⏸" : "▶"}
     </button>
@@ -350,7 +353,7 @@
         class="restart"
         type="button"
         aria-label="Restart trace and erase its history"
-        title="Restart trace and erase its history"
+        data-tip="Restart trace and erase its history"
         onclick={() => restart(current)}>↻</button
       >
     {/if}
@@ -448,6 +451,28 @@
   :global(:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  /* The app's own tooltip, in the style of the graph and bar readouts: put the text in a
+     `data-tip` attribute. It shows below the element on hover and on keyboard focus. */
+  :global([data-tip]) {
+    position: relative;
+  }
+  :global([data-tip]:hover::after),
+  :global([data-tip]:focus-visible::after) {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    translate: -50%;
+    z-index: 20;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: rgba(15, 19, 25, 0.95);
+    color: var(--text);
+    font: 12px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    white-space: nowrap;
+    pointer-events: none;
   }
   header {
     background: var(--panel);

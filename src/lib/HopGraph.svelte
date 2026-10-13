@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Menu } from "@tauri-apps/api/menu";
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
   import { BAD_MS, WARN_MS, jitterSeries, lossSeries } from "./stats";
@@ -23,8 +24,24 @@
     onreset: () => void;
     /** Closes this graph. Left out for the only graph, which cannot be closed. */
     onclose?: () => void;
+    /** Saves just this graph as a PNG. */
+    onsave: () => void;
   };
-  let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose }: Props = $props();
+  let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose, onsave }: Props = $props();
+
+  /** Right-click menu of the graph. */
+  async function graphMenu(event: MouseEvent) {
+    event.preventDefault();
+    const menu = await Menu.new({
+      items: [
+        { id: "save", text: "Save this graph as PNG…", action: onsave },
+        { id: "live", text: "Back to live", action: onreset },
+        { item: "Separator" },
+        { id: "close", text: "Close this graph", enabled: !!onclose, action: () => onclose?.() },
+      ],
+    });
+    await menu.popup();
+  }
 
   const LOSS = "#f87171";
 
@@ -33,9 +50,10 @@
   let plot: uPlot | undefined;
   let jitterPlot: uPlot | undefined;
   // What the cursor points at, for the readout next to it.
-  let tip = $state<{ left: number; top: number; flip: boolean; lines: string[] } | null>(null);
+  // Placed in window coordinates, so it is not cut off at the edge of its own graph.
+  let tip = $state<{ left: number; top: number; flip: boolean; up: boolean; pinned: boolean; lines: string[] } | null>(null);
   // The data the plots currently hold, for that readout.
-  let shown = { js: [] as (number | null)[], breaks: new Set<number>() };
+  let shown = { js: [] as (number | null)[], breaks: new Set<number>(), bucket: 0 };
 
   // The loss axis shows only while the period has a lost probe.
   const lossy = $derived(hop.rtts.includes(null));
@@ -79,7 +97,7 @@
       js.push(resumed ? null : jitters[i]);
       ls.push(losses[i]);
     });
-    return { xs, ys, js, ls, breaks };
+    return { xs, ys, js, ls, breaks, bucket };
   }
 
   // Green, yellow and red latency zones behind the graph line.
@@ -119,16 +137,34 @@
           time,
           rtt == null ? "lost" : `${rtt.toFixed(1)} ms`,
           ...(jitter == null ? [] : [`jitter ${jitter.toFixed(1)} ms`]),
-          ...(loss ? [`loss ${loss.toFixed(0)} %`] : []),
+          // The loss is that of the stretch of time the probe falls in, not of the whole graph.
+          ...(loss ? [`loss ${loss.toFixed(0)} % in these ${Math.round(shown.bucket)} s`] : []),
         ];
-    tip = { left: u.over.offsetLeft + left, top: u.over.offsetTop + top, flip: left > u.over.clientWidth / 2, lines };
+    // Every stacked graph gets a readout for the same moment, because their cursors move
+    // together. They must not land on each other: the graph under the pointer shows its
+    // readout next to the pointer and keeps it inside its own area (above the pointer in
+    // the lower part); the others pin theirs to the top of their own area.
+    const area = u.over.getBoundingClientRect();
+    tip = {
+      left: area.left + left,
+      top: hovered ? area.top + top : area.top + 4,
+      // To the left of the cursor in the right half of the graph.
+      flip: left > area.width / 2,
+      up: hovered && top > area.height - 90,
+      pinned: !hovered,
+      lines,
+    };
   }
+
+  // Whether the pointer is over this graph, as opposed to a cursor synced from another one.
+  let hovered = false;
 
   let dragging = $state(false);
 
   // Grab the graph and pull it sideways: the period follows the pointer, so dragging to
   // the right brings earlier data into view.
   function startDrag(event: PointerEvent) {
+    // Left button only; the right button opens the graph's menu.
     if (event.button !== 0 || !plot) return;
     const width = plot.over.clientWidth;
     let lastX = event.clientX;
@@ -168,8 +204,9 @@
         height: chartEl.clientHeight,
         scales: {
           y: { range },
-          // At least 0 to 10 %, growing in steps of 10.
-          loss: { range: (_u, _min, max) => [0, Math.max(10, Math.ceil(max / 10) * 10)] },
+          // Always the full 0 to 100 %, so the height of a loss bar is the share of probes
+          // lost. Fitted to the highest bar, one lost probe in ten would fill the graph.
+          loss: { range: [0, 100] },
         },
         axes: [
           { ...axis, values: (_u, ticks) => ticks.map(timeOfDay) },
@@ -227,8 +264,8 @@
     lossy;
     jitterEl;
     if (!plot) return;
-    const { xs, ys, js, ls, breaks } = graphData();
-    shown = { js, breaks };
+    const { xs, ys, js, ls, breaks, bucket } = graphData();
+    shown = { js, breaks, bucket };
     const x = { min: from, max: Math.max(to, from + 1) };
     plot.setData([xs, ls, ys], false);
     plot.setScale("x", x);
@@ -237,7 +274,8 @@
   });
 </script>
 
-<div class="hop-graph">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="hop-graph" oncontextmenu={graphMenu}>
   {#if withJitter}
     <div class="jitter" bind:this={jitterEl}><span class="caption">Jitter (ms, running average)</span></div>
   {/if}
@@ -253,7 +291,11 @@
       onpan(Math.sign(event.deltaY) * 0.1);
     }}
     ondblclick={onreset}
-    onmouseleave={() => (tip = null)}
+    onmouseenter={() => (hovered = true)}
+    onmouseleave={() => {
+      hovered = false;
+      tip = null;
+    }}
   >
     <span class="title">
       {heading}
@@ -268,7 +310,7 @@
       {/if}
     </span>
     {#if tip}
-      <div class="tip" class:flip={tip.flip} style:left="{tip.left}px" style:top="{tip.top}px">
+      <div class="tip" class:flip={tip.flip} class:up={tip.up} class:pinned={tip.pinned} style:left="{tip.left}px" style:top="{tip.top}px">
         {#each tip.lines as line}<div>{line}</div>{/each}
       </div>
     {/if}
@@ -344,9 +386,11 @@
     outline: 2px solid var(--accent);
   }
   .tip {
-    position: absolute;
-    z-index: 2;
-    translate: 12px 12px;
+    position: fixed;
+    z-index: 10;
+    --dx: 12px;
+    --dy: 12px;
+    translate: var(--dx) var(--dy);
     padding: 4px 8px;
     border: 1px solid var(--line);
     border-radius: 4px;
@@ -357,7 +401,13 @@
     pointer-events: none;
   }
   .tip.flip {
-    translate: calc(-100% - 12px) 12px;
+    --dx: calc(-100% - 12px);
+  }
+  .tip.up {
+    --dy: calc(-100% - 12px);
+  }
+  .tip.pinned {
+    --dy: 0px;
   }
   .tip div:first-child {
     color: var(--muted);

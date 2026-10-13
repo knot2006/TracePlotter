@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sendNotification } from "@tauri-apps/plugin-notification";
+import { describe, type TraceEvent } from "./events";
 import { ALERT_WINDOW, breaches, stats } from "./stats";
 
 export type Protocol = "icmp" | "udp" | "tcp";
@@ -14,6 +15,8 @@ export type TraceConfig = {
   intervalMs: number;
   alertLatencyMs: number;
   alertLossPct: number;
+  /** The user paused the trace; it then stays paused across launches. */
+  paused?: boolean;
 };
 
 export type Hop = {
@@ -26,12 +29,6 @@ export type Hop = {
   rtts: (number | null)[];
 };
 
-export type TraceEvent = {
-  /** Unix seconds. */
-  t: number;
-  kind: "route" | "alert" | "recover";
-  text: string;
-};
 
 export type Trace = {
   /** Stable for the life of the tab. */
@@ -124,12 +121,12 @@ const PATH_END_ROUNDS = 10;
 /** Adds one round to the trace. `live` rounds, unlike replayed history, can notify. */
 function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void) {
   const t = sample.t / 1000;
-  const changes: string[] = [];
+  const changes: TraceEvent[] = [];
   // A round that reached its final hop tells how long the path is now.
   const last = sample.hops.at(-1);
   if (last && last.rtt !== null) {
     if (trace.pathLength && last.ttl !== trace.pathLength) {
-      changes.push(`Path length changed: ${trace.pathLength} → ${last.ttl} hops`);
+      changes.push({ t, kind: "length", from: trace.pathLength, to: last.ttl });
     }
     trace.pathLength = last.ttl;
   }
@@ -161,7 +158,7 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
     const hop = trace.hops[probe.ttl - 1];
     const moved = !!probe.addr && probe.addr !== hop.addr;
     if (probe.addr && (moved || (live && hop.name === null && nameIsDue(probe.addr)))) {
-      if (moved && hop.addr) changes.push(`Hop ${hop.ttl} changed: ${hop.addr} → ${probe.addr}`);
+      if (moved && hop.addr) changes.push({ t, kind: "hop", ttl: hop.ttl, from: hop.addr, to: probe.addr });
       const addr = probe.addr;
       hop.addr = addr;
       if (moved) hop.name = null;
@@ -174,11 +171,11 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
     }
     record(hop, t, probe.rtt);
   }
-  for (const text of changes) addEvent(trace, { t, kind: "route", text });
+  for (const change of changes) addEvent(trace, change);
   if (live && changes.length && t - trace.routeNotified >= ROUTE_NOTICE_SECONDS) {
     trace.routeNotified = t;
     const more = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
-    sendNotification({ title: `TracePlotter: route to ${trace.config.host} changed`, body: changes[0] + more });
+    sendNotification({ title: `TracePlotter: route to ${trace.config.host} changed`, body: describe(changes[0]) + more });
   }
 }
 
@@ -270,10 +267,19 @@ export async function startTrace(config: TraceConfig, onChange: () => void, keep
     pathEnd: 0,
     routeNotified: 0,
   };
+  // A tab the user had paused comes back paused: its history is shown, probing is not started.
+  if (config.paused) {
+    trace.paused = true;
+    const history = await invoke<Sample[]>("read_history", { session: config.sessionId }).catch(() => []);
+    for (const sample of history) apply(trace, sample, false, onChange);
+    trace.loaded = true;
+    return trace;
+  }
   try {
     await run(trace, onChange);
   } catch (e) {
     if (!keepOnFailure) throw e;
+    // Paused for now only; `config.paused` stays off so the next launch tries again.
     trace.paused = true;
     trace.error = `Could not start: ${e}`;
   }
@@ -300,6 +306,7 @@ export async function restartTrace(trace: Trace, onChange: () => void) {
   await stopTrace(trace);
   const erased = trace.config.sessionId;
   trace.config.sessionId = crypto.randomUUID();
+  trace.config.paused = false;
   Object.assign(trace, {
     hops: [],
     events: [],
@@ -330,6 +337,8 @@ export async function setPaused(trace: Trace, paused: boolean, onChange: () => v
     await run(trace, onChange);
     trace.paused = false;
   }
+  // Remembered with the tab; the caller saves the session.
+  trace.config.paused = paused;
 }
 
 /** Asks where to save the bytes, `name` being the suggestion. Returns the path, or null if cancelled. */

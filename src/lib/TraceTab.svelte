@@ -55,6 +55,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { Menu } from "@tauri-apps/api/menu";
+  import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
   import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, mtrReport, stats } from "./stats";
   import { dateTime, timeOfDay } from "./time";
@@ -188,9 +189,11 @@
 
   const grade = (avg: number | null) =>
     avg === null ? "none" : avg >= BAD_MS ? "bad" : avg >= WARN_MS ? "warn" : "good";
+  // The events as list entries, newest first; a whole re-routing is one entry.
   const events = $derived.by(() => {
     rev;
-    return { count: trace.events.length, latest: trace.events.slice(-100).reverse() };
+    const groups = groupEvents(trace.events);
+    return { count: groups.length, latest: groups.slice(-100).reverse() };
   });
   const alerting = $derived.by(() => {
     rev;
@@ -389,7 +392,9 @@
 
   const label = $derived.by(() => {
     const { host, protocol, port } = trace.config;
-    return `${host} (${trace.addr}) ${protocol.toUpperCase()}${port ? `:${port}` : ""}`;
+    // A tab restored paused has not resolved its address yet.
+    const addr = trace.addr ? ` (${trace.addr})` : "";
+    return `${host}${addr} ${protocol.toUpperCase()}${port ? `:${port}` : ""}`;
   });
 
   const today = new Date().toDateString();
@@ -419,12 +424,14 @@
     save(fileName("csv"), new TextEncoder().encode(lines.join("\n") + "\n"));
   }
 
-  // The graphs, one under the other. Their canvases are transparent, so they are redrawn
-  // on the app background, each under a caption.
-  export function exportPng() {
+  // The graphs, one under the other, or with `only` just the graph at that position.
+  // Their canvases are transparent, so they are redrawn on the app background, each
+  // under a caption.
+  export function exportPng(only?: number) {
     const canvases = graphs.flatMap((graph, i) => {
       const canvas = graph?.canvas();
-      return canvas && graphHops[i] ? [{ canvas, caption: headingOf(graphHops[i]) }] : [];
+      const wanted = only === undefined || only === i;
+      return wanted && canvas && graphHops[i] ? [{ canvas, caption: headingOf(graphHops[i]) }] : [];
     });
     if (!canvases.length) return;
     const captionHeight = 28 * devicePixelRatio;
@@ -586,6 +593,7 @@
       {@const key = hop === view.target ? ROUND_TRIP : hop.ttl}
       <HopGraph
         onclose={graphHops.length > 1 ? () => (graphed = graphed.filter((k) => k !== key)) : undefined}
+        onsave={() => exportPng(i)}
         bind:this={graphs[i]}
         {hop}
         heading={headingOf(hop)}
@@ -627,7 +635,7 @@
       {:else}
         <div>Min {ms(s.min)} · Avg {ms(s.avg)} · Max {ms(s.max)} · Last {s.last === null ? "lost" : ms(s.last)} ms</div>
       {/if}
-      <div class="hint">Wheel zooms the bars, double-click fits them again.</div>
+      <div class="note">Wheel zooms · double-click fits</div>
     </div>
   {/if}
 
@@ -662,9 +670,35 @@
     <h2 id="events-title">Events for {trace.config.host}</h2>
     <ul class="events">
       {#each events.latest as event}
-        <li class={event.kind}><time>{clock(event.t)}</time> {event.text}</li>
+        <li>
+          <div class="event-head">
+            <span class="tag {event.kind}">
+              {event.kind === "route" ? "Route changed" : event.kind === "alert" ? "Alert" : "Recovered"}
+            </span>
+            <span class="what">
+              {#if event.kind === "route"}
+                {#if event.length}{event.length.from} → {event.length.to} hops{/if}
+                {#if event.length && event.hops.length}·{/if}
+                {#if event.hops.length}{event.hops.length} {event.hops.length === 1 ? "hop" : "hops"} moved{/if}
+              {:else}
+                {event.text}
+              {/if}
+            </span>
+            <time>{clock(event.t)}</time>
+          </div>
+          {#if event.kind === "route" && event.hops.length}
+            <div class="moves">
+              {#each event.hops as hop}
+                <span class="ttl">Hop {hop.ttl}</span>
+                <span>{hop.from}</span>
+                <span class="arrow">→</span>
+                <span>{hop.to}</span>
+              {/each}
+            </div>
+          {/if}
+        </li>
       {:else}
-        <li>No route changes or alerts yet.</li>
+        <li class="none">No route changes or alerts yet.</li>
       {/each}
     </ul>
     <form method="dialog"><button>Close</button></form>
@@ -772,8 +806,13 @@
   tbody tr:hover {
     background: var(--panel);
   }
-  tr.selected {
-    background: #17293a;
+  /* Rows that have a graph: a clear blue tint and a blue bar on the left edge. */
+  tr.selected,
+  tr.selected:hover {
+    background: #1c3f63;
+  }
+  tr.selected td:first-child {
+    box-shadow: inset 4px 0 var(--accent);
   }
   tr.round-trip {
     border-top: 2px solid var(--muted);
@@ -862,8 +901,9 @@
     white-space: nowrap;
     pointer-events: none;
   }
-  .bar-tip .hint {
+  .bar-tip .note {
     color: var(--muted);
+    font-size: 11px;
   }
   /* The bar continues beyond the end of a zoomed scale. */
   .over {
@@ -982,7 +1022,10 @@
     font-size: 12px;
     white-space: pre-wrap;
   }
+  /* One entry per re-routing, alert or recovery: a coloured tag, a summary and the time
+     on one line, then for a re-routing the hops that moved, as aligned columns. */
   .events {
+    min-width: min(560px, 80vw);
     margin: 0;
     padding: 0;
     max-height: 55vh;
@@ -990,16 +1033,56 @@
     list-style: none;
     font-size: 13px;
   }
+  .events li {
+    padding: 8px 4px;
+    border-top: 1px solid var(--line);
+  }
+  .events li:first-child {
+    border-top: 0;
+  }
+  .events .none {
+    color: var(--muted);
+  }
+  .event-head {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .event-head .what {
+    flex: 1;
+  }
   .events time {
-    margin-right: 8px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .events .alert {
-    color: #f87171;
+  .tag {
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    background: #1e3a5f;
+    color: #bfdbfe;
   }
-  .events .recover {
-    color: #4ade80;
+  .tag.alert {
+    background: #4c1d1d;
+    color: #fecaca;
+  }
+  .tag.recover {
+    background: #14532d;
+    color: #bbf7d0;
+  }
+  .moves {
+    display: grid;
+    grid-template-columns: max-content max-content max-content max-content;
+    gap: 2px 12px;
+    margin: 6px 0 0 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .moves .ttl,
+  .moves .arrow {
+    color: var(--muted);
   }
   .print-only {
     display: none;
@@ -1032,6 +1115,9 @@
     /* Colours picked for a dark screen, redone for white paper. */
     tr.selected {
       background: none;
+    }
+    tr.selected td:first-child {
+      box-shadow: none;
     }
     .warn {
       color: #b45309;

@@ -511,6 +511,12 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
     }
 }
 
+/// A tab's saved history without starting its trace, for a tab that is restored paused.
+#[tauri::command(async)]
+fn read_history(session: String) -> Result<Vec<Sample>, String> {
+    Ok(load_history(&history_path(&session)?, MAX_HISTORY))
+}
+
 /// Erases a tab's saved history. A trace still writing to it loses those rounds too.
 #[tauri::command]
 fn delete_history(session: String) -> Result<(), String> {
@@ -692,6 +698,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_trace,
             stop_trace,
+            read_history,
             delete_history,
             host_locale,
             reverse_dns,
