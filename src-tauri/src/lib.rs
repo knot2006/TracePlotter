@@ -843,16 +843,21 @@ fn verify_update(data: &[u8], signature: &str, public_key: &str) -> Result<Strin
         .ok_or_else(|| "the update's signature names no version; it was not installed".into())
 }
 
-/// Requests with a limit on connecting and on each wait for data, not on the whole
-/// transfer: a slow connection may take minutes for the exe and still get it.
-fn http_get(url: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(30))
+/// Requests a URL and returns the answer's body. Connecting and the wait for the answer
+/// to start are kept short; the body gets ten minutes, so that a slow connection still
+/// gets the exe.
+fn http_get(url: &str) -> Result<ureq::Body, ureq::Error> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(600)))
         .build()
+        .into();
+    let response = agent
         .get(url)
-        .set("User-Agent", concat!("TracePlotter/", env!("CARGO_PKG_VERSION")))
-        .call()
+        .header("User-Agent", concat!("TracePlotter/", env!("CARGO_PKG_VERSION")))
+        .call()?;
+    Ok(response.into_body())
 }
 
 /// The latest published release, `None` when there is none (or the repo is not public).
@@ -860,12 +865,12 @@ fn http_get(url: &str) -> Result<ureq::Response, ureq::Error> {
 /// otherwise a broken release would read as "you have the latest version".
 fn latest_release() -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
-    let response = match http_get(&url) {
+    let mut response = match http_get(&url) {
         Ok(response) => response,
-        Err(ureq::Error::Status(404, _)) => return Ok(None),
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(format!("could not look for updates: {e}")),
     };
-    let release: serde_json::Value = response.into_json().map_err(|e| e.to_string())?;
+    let release: serde_json::Value = response.read_json().map_err(|e| e.to_string())?;
     let Some(tag) = release["tag_name"].as_str() else {
         return Ok(None);
     };
@@ -923,7 +928,7 @@ fn install_update(app: AppHandle) -> Result<(), String> {
     let download = |e: ureq::Error| format!("could not download the update: {e}");
     let signature = http_get(&release.signature_url)
         .map_err(download)?
-        .into_string()
+        .read_to_string()
         .map_err(|e| e.to_string())?;
     let mut exe = Vec::new();
     http_get(&release.exe_url)
@@ -1135,6 +1140,19 @@ mod tests {
         // The built-in key is readable, and a made-up signature is turned down.
         assert!(verify_update(b"exe", "bm90IGEgc2lnbmF0dXJl", UPDATE_PUBLIC_KEY).is_err());
         assert!(verify_update(b"exe", "", UPDATE_PUBLIC_KEY).is_err());
+    }
+
+    /// Live check, needs network: `cargo test --lib live_http -- --ignored`
+    #[test]
+    #[ignore]
+    fn live_http_requests_work() {
+        let url = "https://api.github.com/repos/rust-lang/rust/releases/latest";
+        let release: serde_json::Value = http_get(url).unwrap().read_json().unwrap();
+        assert!(release["tag_name"].is_string());
+        // A missing page is an error with its status, which is how "no release" is told.
+        let missing = http_get("https://api.github.com/repos/rust-lang/no-such-repo-here");
+        assert!(matches!(missing, Err(ureq::Error::StatusCode(404))));
+        assert!(latest_release().is_ok());
     }
 
     /// Checks a file signed with the release key against the built-in public key:
