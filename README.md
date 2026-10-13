@@ -1,4 +1,5 @@
 # TracePlotter
+<img width="1404" height="965" alt="image" src="https://github.com/user-attachments/assets/5c11aa92-9f6f-4e8b-b414-088da4ea6c57" />
 
 Open-source visual traceroute and ping monitor.
 
