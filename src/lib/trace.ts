@@ -91,7 +91,7 @@ export type Trace = {
   routeNotified: number;
 };
 
-type Sample = { t: number; hops: { ttl: number; addr: string | null; rtt: number | null }[] };
+export type Sample = { t: number; hops: { ttl: number; addr: string | null; rtt: number | null }[] };
 type Message = ({ kind: "sample" } & Sample) | { kind: "error"; message: string };
 
 const TRIM_BATCH = 1000;
@@ -120,6 +120,11 @@ function reverseDns(addr: string) {
     names.set(addr, entry);
   }
   return names.get(addr)!.name;
+}
+
+/** Raises a desktop notification, unless they are switched off in the settings. */
+function notify(title: string, body: string) {
+  if (settings.notifications) sendNotification({ title, body });
 }
 
 function addEvent(trace: Trace, event: TraceEvent) {
@@ -203,7 +208,7 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
   if (live && changes.length && t - trace.routeNotified >= ROUTE_NOTICE_SECONDS) {
     trace.routeNotified = t;
     const more = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
-    sendNotification({ title: `TracePlotter: route to ${trace.config.host} changed`, body: describe(changes[0]) + more });
+    notify(`TracePlotter: route to ${trace.config.host} changed`, describe(changes[0]) + more);
   }
 }
 
@@ -223,7 +228,7 @@ function checkAlert(trace: Trace) {
   const s = stats(target.rtts.slice(-ALERT_WINDOW));
   const text = `Last ${s.sent} probes: ${s.avg === null ? "no replies" : `${s.avg.toFixed(1)} ms average`}, ${s.lossPct.toFixed(0)}% loss`;
   addEvent(trace, { t, kind: "alert", text });
-  sendNotification({ title: `TracePlotter: ${host}`, body: text });
+  notify(`TracePlotter: ${host}`, text);
 }
 
 let nextId = 0;

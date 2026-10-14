@@ -14,13 +14,16 @@ Open-source visual traceroute and ping monitor.
 - Open targets are restored on the next launch, with 24 h of history per target (1 h to 7 days in the
   settings)
 - Export the hop table as text, samples as CSV, the graph as PNG and the page as PDF
+- Import a samples CSV again (**File > Import samples (.csv)…**), to look at a capture made earlier
+  or on another machine: it opens as a paused tab
 
 Every tab is its own session, even when two tabs trace the same host. Closing a tab or restarting
 its trace erases that tab's history.
 
 The **Settings** tab at the end of the tab strip (**File > Settings…**, Ctrl+,) holds what a new
 target starts with, the latency limits of the green, yellow and red colours, the length of the
-history, the columns of the hop table, the port of the MCP server and the update check.
+history, the columns of the hop table, the port of the MCP server, the update check and
+a switch for desktop notifications.
 
 ## Requirements
 

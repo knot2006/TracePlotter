@@ -26,6 +26,8 @@ export type Settings = {
   badMs: number;
   /** How much history a tab keeps. */
   historyHours: number;
+  /** Whether alerts and route changes raise a desktop notification. */
+  notifications: boolean;
 };
 
 export const DEFAULTS: Settings = {
@@ -39,6 +41,7 @@ export const DEFAULTS: Settings = {
   warnMs: 100,
   badMs: 200,
   historyHours: 24,
+  notifications: true,
 };
 
 /** The lowest and highest value of each setting that is a free number. */
@@ -71,6 +74,7 @@ export function cleanSettings(raw: unknown, windows: boolean): Settings {
   if (INTERVALS.includes(Number(given.intervalMs))) clean.intervalMs = Number(given.intervalMs);
   const protocol = given.protocol as Protocol;
   if (PROTOCOLS.includes(protocol) && (windows || protocol !== "winicmp")) clean.protocol = protocol;
+  if (typeof given.notifications === "boolean") clean.notifications = given.notifications;
   // Red starts above yellow.
   clean.badMs = Math.max(clean.badMs, clean.warnMs + 1);
   return clean;

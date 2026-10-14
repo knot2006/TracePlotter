@@ -5,6 +5,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
+  import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import Settings from "../lib/Settings.svelte";
   import { INTERVALS, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
@@ -340,6 +341,7 @@
           items: [
             { id: "new", text: "New target", accelerator: "CmdOrCtrl+T", action: newTarget },
             { id: "close", text: "Close tab", accelerator: "CmdOrCtrl+W", action: () => active && close(active) },
+            { id: "import", text: "Import samples (.csv)…", action: importSamples },
             { item: "Separator" },
             { id: "settings", text: "Settings…", accelerator: "CmdOrCtrl+,", action: openSettings },
             ...(WINDOWS
@@ -427,6 +429,38 @@
     traces = [...traces, trace];
     activeId = trace.id;
     return trace;
+  }
+
+  /**
+   * Opens a samples export (.csv) as a paused tab that holds its rounds, to look at a
+   * capture made earlier or elsewhere. The export does not say how it was probed: the tab
+   * gets the host from the file's name and the packet type of new targets, for when it is
+   * resumed.
+   */
+  async function importSamples() {
+    error = notice = "";
+    try {
+      const picked = await invoke<[string, string] | null>("import_file");
+      if (!picked) return;
+      const [name, text] = picked;
+      const samples = parseSamplesCsv(text);
+      const target = {
+        host: hostFromFileName(name).toLowerCase(),
+        protocol: settings.protocol,
+        port: DEFAULT_PORT[settings.protocol],
+      };
+      const config = { ...newConfig(target, guessInterval(samples)), paused: true };
+      const history = samples.map((sample) => JSON.stringify(sample)).join("\n") + "\n";
+      await invoke("import_history", new TextEncoder().encode(history), { headers: { "x-session": config.sessionId } });
+      const trace = await open(config);
+      session = [...session, config];
+      saveSession();
+      // A history longer than the settings keep is cut to its newest part.
+      const kept = trace.target.times.length;
+      notice = `Imported ${kept === samples.length ? kept : `the newest ${kept} of ${samples.length}`} rounds from ${name}.`;
+    } catch (e) {
+      error = `Not imported: ${e instanceof Error ? e.message : e}`;
+    }
   }
 
   /** Erases the tab's history and starts its trace again from nothing. */

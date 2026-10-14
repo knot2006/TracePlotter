@@ -57,6 +57,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
+  import { exportName } from "./import";
   import { settings } from "./settings";
   import { ALERT_WINDOW, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
@@ -463,11 +464,6 @@
     if (text) statusTimer = setTimeout(() => (exportStatus = ""), 6000);
   }
 
-  function fileName(extension: string) {
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-    return `traceplotter-${trace.config.host}-${stamp}.${extension}`;
-  }
-
   // Asks where to save; a cancelled dialog comes back as null.
   async function save(name: string, data: Uint8Array) {
     try {
@@ -509,7 +505,7 @@
         ...shown.map((column) => column.value(row).replaceAll("–", "-")),
       ]),
     );
-    save(fileName("txt"), new TextEncoder().encode(report));
+    save(exportName(trace.config.host, "report", "txt"), new TextEncoder().encode(report));
   }
 
   // One row per probe, whole history. The IP is the hop's current address, not the one at probe time.
@@ -521,7 +517,7 @@
         lines.push(`${time},${hop.ttl},${hop.addr ?? ""},${hop.rtts[i] ?? ""}`);
       }
     }
-    save(fileName("csv"), new TextEncoder().encode(lines.join("\n") + "\n"));
+    save(exportName(trace.config.host, "samples", "csv"), new TextEncoder().encode(lines.join("\n") + "\n"));
   }
 
   // The graphs, one under the other, or with `only` just the graph at that position.
@@ -551,7 +547,7 @@
       y += captionHeight + canvas.height;
     }
     image.toBlob(async (blob) => {
-      if (blob) save(fileName("png"), new Uint8Array(await blob.arrayBuffer()));
+      if (blob) save(exportName(trace.config.host, "graph", "png"), new Uint8Array(await blob.arrayBuffer()));
     });
   }
 </script>

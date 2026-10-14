@@ -39,6 +39,16 @@ Do not run the full `npm run tauri build`, nor the ignored `live_trace` test, in
 machine: they need Windows and a real network, and the test Administrator rights as well. Leave
 those to a person.
 
+When a person asks for an exe to try on their own Windows machine, build it with the `fast` Cargo
+profile. It compiles on all cores in about half the time of `release`, and the exe behaves the same:
+
+```bash
+npm run tauri build -- --no-bundle -- --profile fast
+```
+
+The exe is written to `src-tauri/target/fast/traceplotter.exe`. The `release` profile is for
+published builds, which the Release workflow makes; do not hand out a `fast` build as a release.
+
 ## Conventions
 
 - Write code that reads like the code around it. Comments say why, in full sentences; they are as

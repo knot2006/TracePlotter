@@ -16,5 +16,8 @@ export function setLocale(name: string | null) {
 /** Date and time of a Unix time in seconds. */
 export const dateTime = (t: number) => new Date(t * 1000).toLocaleString(locale);
 
+/** Date of a Unix time in seconds. */
+export const dateOnly = (t: number) => new Date(t * 1000).toLocaleDateString(locale);
+
 /** Time of day of a Unix time in seconds. */
 export const timeOfDay = (t: number) => new Date(t * 1000).toLocaleTimeString(locale);

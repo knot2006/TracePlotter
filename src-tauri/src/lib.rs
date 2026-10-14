@@ -895,6 +895,52 @@ fn http_get(url: &str) -> Result<ureq::Body, ureq::Error> {
     Ok(response.into_body())
 }
 
+/// Largest samples export that can be imported; four days at a one-second interval.
+const IMPORT_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Asks the user for a samples export (.csv) and returns its file name and text, `None`
+/// if cancelled. The webview reads it into rounds (see import.ts).
+#[tauri::command(async)]
+fn import_file(app: AppHandle) -> Result<Option<(String, String)>, String> {
+    let mut dialog = app.dialog().file().add_filter("CSV", &["csv"]);
+    if let Ok(downloads) = app.path().download_dir() {
+        dialog = dialog.set_directory(downloads);
+    }
+    let Some(path) = dialog.blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let cannot = |e: std::io::Error| format!("cannot read {}: {e}", path.display());
+    if fs::metadata(&path).map_err(cannot)?.len() > IMPORT_MAX_BYTES {
+        return Err(format!("{} is too large to import", path.display()));
+    }
+    let text = fs::read_to_string(&path).map_err(cannot)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    Ok(Some((name, text)))
+}
+
+/// Saves the raw request body as the history of the new tab named in the `x-session`
+/// header: one round per line, as `Recorder` writes them. Lines that are not rounds are
+/// skipped when the history is read. A session that has a history keeps it.
+#[tauri::command(async)]
+fn import_history(request: Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("import needs a binary body".into());
+    };
+    let session = request
+        .headers()
+        .get("x-session")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("import needs a session id")?;
+    let path = history_path(session)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 /// The latest published release, `None` when there is none (or the repo is not public).
 /// A release that is newer but lacks the exe or its signature is an error, not "none":
 /// otherwise a broken release would read as "you have the latest version".
@@ -1163,6 +1209,8 @@ pub fn run() {
             reverse_dns,
             whois,
             export_file,
+            import_file,
+            import_history,
             check_update,
             install_update,
             allow_icmp_replies,

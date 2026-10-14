@@ -135,6 +135,25 @@
   </section>
 
   <section>
+    <h2>Notifications</h2>
+    <label class="row">
+      <span>
+        Desktop notifications
+        <small>For alerts and route changes. Both are listed under Events of their tab either way</small>
+      </span>
+      <input
+        type="checkbox"
+        checked={shown.notifications}
+        onchange={(event) => {
+          changeSetting("notifications", event.currentTarget.checked);
+          shown = { ...settings };
+          onchange("notifications");
+        }}
+      />
+    </label>
+  </section>
+
+  <section>
     <h2>History</h2>
     <label class="row">
       <span>Keep per target <small>Older rounds are dropped, on screen and on disk</small></span>
