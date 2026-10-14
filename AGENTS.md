@@ -27,6 +27,7 @@ Run these before proposing a change, in this order. The backend embeds the built
 npm run check
 npm test
 npm run build
+cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 

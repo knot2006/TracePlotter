@@ -136,7 +136,7 @@ pub fn route(probes: &[Outcome]) -> (Vec<HopSample>, Option<u8>) {
 fn reach(target: Option<u8>, answered: u8, unknown_rounds: u32) -> u8 {
     match target {
         Some(ttl) => ttl,
-        None if unknown_rounds % SWEEP_ROUNDS == 0 => MAX_TTL,
+        None if unknown_rounds.is_multiple_of(SWEEP_ROUNDS) => MAX_TTL,
         None => answered.saturating_add(GAP).min(MAX_TTL),
     }
 }

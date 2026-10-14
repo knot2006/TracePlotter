@@ -22,6 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           toolchain: stable
+          components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
@@ -30,4 +31,5 @@ jobs:
       - run: npm test
       # The backend embeds the built frontend, so that has to exist first.
       - run: npm run build
+      - run: cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --lib --manifest-path src-tauri/Cargo.toml

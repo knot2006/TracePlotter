@@ -404,6 +404,8 @@ fn trace_windows(
     }
 }
 
+// One argument per probe setting: the webview passes them by name.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 fn start_trace(
     // Id of the tab; names its history file, so tabs never share history.

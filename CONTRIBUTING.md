@@ -36,10 +36,11 @@ demo data. [AGENTS.md](AGENTS.md) has more for coding agents.
 ```bash
 npm run check
 npm test
+cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-The CI workflow runs these three on every push and pull request.
+The CI workflow runs these on every push and pull request.
 
 A live probe check against a real host needs an elevated terminal and a network:
 

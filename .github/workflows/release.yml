@@ -55,6 +55,23 @@ jobs:
       - run: npm test
       - run: npm run tauri build -- --no-bundle
 
+      # The licences of what is built into the exe, for the zip: the crates through
+      # cargo-about (settings in src-tauri/about.toml), then the frontend packages that end
+      # up in the bundle. A crate under a licence about.toml does not accept fails here.
+      - name: Collect third-party licences
+        shell: pwsh
+        run: |
+          cargo install cargo-about --locked --version 0.9.2 --features cli
+          cargo about generate --locked --manifest-path src-tauri/Cargo.toml -c src-tauri/about.toml src-tauri/about.hbs -o THIRD-PARTY-LICENSES.txt
+          if ($LASTEXITCODE) { throw "cargo-about failed." }
+          $frontend = [ordered]@{
+            "svelte" = "LICENSE.md"; "@sveltejs/kit" = "LICENSE"; "uplot" = "LICENSE"; "@tauri-apps/api" = "LICENSE-MIT"
+          }
+          foreach ($package in $frontend.Keys) {
+            $text = Get-Content -Raw "node_modules/$package/$($frontend[$package])"
+            Add-Content THIRD-PARTY-LICENSES.txt "$('=' * 80)`n$package`n`n$text`n"
+          }
+
       # The version is written into the signature, and the app refuses a download whose
       # signed version is not the one the release claims. The password is always passed,
       # empty when the key has none, so the signer never stops to ask for it.
@@ -71,7 +88,7 @@ jobs:
           npm run tauri signer sign -- -p "$env:KEY_PASSWORD" --app-version $env:VERSION release/TracePlotter.exe
           if (-not (Test-Path release/TracePlotter.exe.sig)) { throw "Signing produced no signature." }
           # A zip for people who download by hand.
-          Compress-Archive -Path release/TracePlotter.exe, README.md, LICENSE -DestinationPath "release/TracePlotter-$env:TAG-windows-x64.zip"
+          Compress-Archive -Path release/TracePlotter.exe, README.md, LICENSE, THIRD-PARTY-LICENSES.txt -DestinationPath "release/TracePlotter-$env:TAG-windows-x64.zip"
 
       - name: Publish the release
         shell: pwsh
