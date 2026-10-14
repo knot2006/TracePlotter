@@ -102,6 +102,13 @@ export function spanLabel(seconds: number): string {
   return `${count} ${unit.name}${count === 1 ? "" : "s"}`;
 }
 
+/** A time span as it can be typed: "10m", or "all" for everything. */
+export function spanShort(seconds: number): string {
+  if (!seconds) return "all";
+  const unit = SPAN_UNITS.find((u) => seconds % u.seconds === 0)!;
+  return `${seconds / unit.seconds}${unit.letter}`;
+}
+
 /** Number of latest probes an alert looks at. */
 export const ALERT_WINDOW = 10;
 

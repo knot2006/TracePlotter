@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULTS, cleanSettings, historyRounds } from "./settings.ts";
+import { DEFAULTS, cleanSettings, historyRounds, intervalLabel, parseInterval } from "./settings.ts";
 
 test("missing and unusable settings get their defaults", () => {
   assert.deepEqual(cleanSettings(null, false), DEFAULTS);
@@ -32,6 +32,21 @@ test("red latency starts above yellow", () => {
   const clean = cleanSettings({ warnMs: 300, badMs: 200 }, false);
   assert.equal(clean.warnMs, 300);
   assert.equal(clean.badMs, 301);
+});
+
+test("a typed interval is read in seconds unless it says otherwise, from 0.1 to 60 seconds", () => {
+  assert.equal(parseInterval("2"), 2000);
+  assert.equal(parseInterval("1,5 s"), 1500);
+  assert.equal(parseInterval(".25"), 250);
+  assert.equal(parseInterval("750ms"), 750);
+  assert.equal(parseInterval("1 minute"), 60_000);
+  assert.equal(parseInterval("0.01"), 100);
+  assert.equal(parseInterval("5m"), 60_000);
+  assert.equal(parseInterval(intervalLabel(2500)), 2500);
+  assert.equal(parseInterval(intervalLabel(1000)), 1000);
+  assert.equal(parseInterval("2 hours"), null);
+  assert.equal(parseInterval("fast"), null);
+  assert.equal(parseInterval(""), null);
 });
 
 test("history is counted in rounds of the tab's interval, up to a cap", () => {

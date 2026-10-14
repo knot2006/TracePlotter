@@ -9,6 +9,7 @@ import {
   niceCeil,
   parseSpan,
   spanLabel,
+  spanShort,
   stats,
   textTable,
 } from "./stats.ts";
@@ -30,6 +31,9 @@ test("time spans are parsed from short forms and written out in words", () => {
   assert.equal(spanLabel(7200), "2 hours");
   assert.equal(spanLabel(0), "All");
   assert.equal(parseSpan(spanLabel(600)), 600);
+  assert.equal(spanShort(5400), "90m");
+  assert.equal(spanShort(0), "all");
+  assert.equal(parseSpan(spanShort(21600)), 21600);
 });
 
 test("lossSeries gives each probe the loss of its time bucket", () => {

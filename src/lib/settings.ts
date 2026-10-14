@@ -12,6 +12,22 @@ export const MACOS = typeof navigator !== "undefined" && navigator.userAgent.inc
 /** The times between rounds the app offers, in ms. */
 export const INTERVALS = [500, 1000, 2500, 5000, 10000];
 
+/** A time between rounds in seconds, as the menus show it: "2.5 seconds". */
+export const intervalLabel = (ms: number) => `${ms / 1000} ${ms === 1000 ? "second" : "seconds"}`;
+
+/**
+ * Reads a typed time between rounds ("1.5", "1.5s", "750ms", "1m") in ms, within the
+ * 0.1 to 60 seconds the backend probes at. Without a unit it is in seconds.
+ */
+export function parseInterval(text: string): number | null {
+  const match = /^(\d+(?:[.,]\d+)?|[.,]\d+)\s*([a-z]*)$/.exec(text.trim().toLowerCase());
+  if (!match) return null;
+  const unit = match[2].startsWith("ms") || match[2].startsWith("mil") ? 1 : match[2].startsWith("m") ? 60_000 : 1000;
+  if (match[2] && unit === 1000 && !match[2].startsWith("s")) return null;
+  const ms = Math.round(Number(match[1].replace(",", ".")) * unit);
+  return Math.min(60_000, Math.max(100, ms));
+}
+
 const PROTOCOLS: Protocol[] = ["winicmp", "icmp", "udp", "tcp"];
 
 /** The settings of the Settings tab. They belong to the app, not to one target. */

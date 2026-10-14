@@ -6,10 +6,13 @@
   import { onMount } from "svelte";
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
+  import Picker from "../lib/Picker.svelte";
   import Settings from "../lib/Settings.svelte";
   import {
     INTERVALS,
+    intervalLabel,
     MACOS,
+    parseInterval,
     RAW_SOCKET_RIGHTS,
     SYSTEM_ICMP,
     WINDOWS,
@@ -18,7 +21,7 @@
   } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
-  import { parseSpan, spanLabel } from "../lib/stats";
+  import { parseSpan, spanLabel, spanShort } from "../lib/stats";
   import { setLocale } from "../lib/time";
   import {
     closeTrace,
@@ -70,17 +73,10 @@
   const storedSpan = Number(localStorage.getItem(SPAN_KEY) ?? 600);
   const initialSpan = Number.isFinite(storedSpan) && storedSpan >= 0 ? storedSpan : 600;
   let focusSeconds = $state(initialSpan);
-  // What the time span box shows: the span in words, or what is being typed.
-  let spanText = $state(spanLabel(initialSpan));
 
-  /** Takes over what was typed or picked ("30s", "5m", "2h", "all") and writes it out in words. */
-  function applySpan() {
-    const typed = parseSpan(spanText);
-    if (typed !== null) {
-      focusSeconds = typed;
-      localStorage.setItem(SPAN_KEY, String(typed));
-    }
-    spanText = spanLabel(focusSeconds);
+  function changeSpan(seconds: number) {
+    focusSeconds = seconds;
+    localStorage.setItem(SPAN_KEY, String(seconds));
   }
   let busy = $state(false);
   let error = $state("");
@@ -737,13 +733,16 @@
       aria-label="Host or IP"
       required
     />
-    <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
-      {#each Object.entries(PROTOCOLS) as [value, name]}
-        {#if SYSTEM_ICMP || value !== "winicmp"}
-          <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : ""}</option>
-        {/if}
-      {/each}
-    </select>
+    <Picker
+      value={protocol}
+      options={(Object.keys(PROTOCOLS) as Protocol[]).filter((value) => SYSTEM_ICMP || value !== "winicmp")}
+      label={(value) => PROTOCOLS[value] + (!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : "")}
+      onpick={(value) => {
+        protocol = value;
+        port = DEFAULT_PORT[value];
+      }}
+      ariaLabel="Protocol"
+    />
     {#if usesPort(protocol)}
       <input class="port" type="number" min="1" max="65535" bind:value={port} aria-label="Port" required />
     {/if}
@@ -767,32 +766,32 @@
     {/if}
     <label>
       Interval
-      <select bind:value={intervalMs} onchange={changeInterval}>
-        {#each INTERVALS as ms}<option value={ms}>{ms / 1000} {ms === 1000 ? "second" : "seconds"}</option>{/each}
-      </select>
+      <Picker
+        value={intervalMs}
+        options={INTERVALS}
+        label={intervalLabel}
+        onpick={(ms) => {
+          intervalMs = ms;
+          changeInterval();
+        }}
+        parse={parseInterval}
+        short={(ms) => `${ms / 1000}s`}
+        title="Time between rounds. Pick one or type, from 0.1s to 60s, for example 1.5s or 750ms."
+        width="104px"
+      />
     </label>
     <label>
       Time span
-      <!-- Emptied on focus: the list only offers entries that match the text in the box.
-           Enter must not reach the form, where it would start or pause the trace. -->
-      <input
-        class="span"
-        list="spans"
-        placeholder="30s, 5m, 2h, all"
+      <Picker
+        value={focusSeconds}
+        options={SPANS}
+        label={spanLabel}
+        onpick={changeSpan}
+        parse={parseSpan}
+        short={spanShort}
         title="How much of the newest history the table and graphs cover. Pick one or type, for example 30s, 5m, 2h or all."
-        bind:value={spanText}
-        onfocus={() => (spanText = "")}
-        onchange={applySpan}
-        onblur={applySpan}
-        onkeydown={(event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          event.currentTarget.blur();
-        }}
+        width="104px"
       />
-      <datalist id="spans">
-        {#each SPANS as seconds}<option value={spanLabel(seconds)}></option>{/each}
-      </datalist>
     </label>
     <div class="legend" role="img" aria-label="Latency colours: green under {limits.warn} ms, yellow under {limits.bad} ms, red above">
       <span class="good"></span>
@@ -1063,9 +1062,6 @@
   .port {
     width: 76px;
   }
-  .span {
-    width: 120px;
-  }
   .go {
     width: 34px;
     height: 34px;
@@ -1104,26 +1100,30 @@
   }
   .legend {
     display: flex;
-    width: 150px;
-    height: 16px;
-    border-radius: 3px;
+    width: 165px;
+    height: 20px;
+    border-radius: 4px;
     overflow: hidden;
-    font-size: 10px;
-    line-height: 16px;
-    color: #111;
+    font-size: 12px;
+    line-height: 20px;
+    font-variant-numeric: tabular-nums;
   }
   .legend span {
     flex: 1;
-    padding-left: 2px;
+    padding-left: 5px;
   }
+  /* The tints of the graphs' latency bands and the colours of slow values in the table.
+     The fainter tints of the hops' bars look dimmer here, on the toolbar's lighter panel. */
   .legend .good {
-    background: var(--good);
+    background: rgba(34, 197, 94, 0.32);
   }
   .legend .warn {
-    background: var(--warn);
+    background: rgba(234, 179, 8, 0.34);
+    color: #fbbf24;
   }
   .legend .bad {
-    background: var(--bad);
+    background: rgba(239, 68, 68, 0.36);
+    color: #f87171;
   }
   .error {
     color: #f87171;

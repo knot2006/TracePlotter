@@ -6,6 +6,7 @@
     SYSTEM_ICMP,
     WINDOWS,
     changeSetting,
+    intervalLabel,
     settings,
     type Settings,
   } from "./settings";
@@ -98,7 +99,7 @@
     <label class="row">
       <span>Interval</span>
       <select value={shown.intervalMs} onchange={(event) => set("intervalMs", event.currentTarget)}>
-        {#each INTERVALS as ms}<option value={ms}>{ms / 1000} {ms === 1000 ? "second" : "seconds"}</option>{/each}
+        {#each INTERVALS as ms}<option value={ms}>{intervalLabel(ms)}</option>{/each}
       </select>
     </label>
     <label class="row">
