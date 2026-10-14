@@ -11,17 +11,25 @@ Open-source visual traceroute and ping monitor.
 - MOS (estimated call quality) per hop
 - Route changes are logged and notified; the trace recovers by itself after a network change
 - Alerts on latency or loss of the round trip, with a desktop notification
-- Open targets are restored on the next launch, with up to 24 h of history per target
+- Open targets are restored on the next launch, with 24 h of history per target (1 h to 7 days in the
+  settings)
 - Export the hop table as text, samples as CSV, the graph as PNG and the page as PDF
 
 Every tab is its own session, even when two tabs trace the same host. Closing a tab or restarting
 its trace erases that tab's history.
 
+The **Settings** tab at the end of the tab strip (**File > Settings…**, Ctrl+,) holds what a new
+target starts with, the latency limits of the green, yellow and red colours, the length of the
+history, the columns of the hop table, the port of the MCP server and the update check.
+
 ## Requirements
 
 - Windows 10 or 11 with the WebView2 runtime (part of Windows 11).
-- **Administrator rights.** Raw-socket, UDP and TCP probing needs them, so the exe asks for elevation
-  (UAC) on start.
+- **Administrator rights only for raw sockets.** The app starts without them, and traces with the
+  packet type ICMP (Windows API), which new targets start with, need none. ICMP (raw socket), UDP and
+  TCP probes and adding the firewall rules below do: when one of them is asked for, the app offers
+  **Restart as Administrator** (also in the File menu and the Settings tab). Open tabs and their
+  history are kept.
 
 ### Windows firewall
 
@@ -80,7 +88,7 @@ TracePlotter can let AI agents such as Claude read its traces, so you can ask th
 is my connection to the game server lagging tonight?" or "which hop loses packets?". Turn it on
 under **Tools > Allow AI agents to connect (MCP server)**. The app then runs an MCP server at
 `http://127.0.0.1:3917/mcp` for as long as it is open; **Tools > Copy agent address** copies that
-address.
+address. If another program holds port 3917, pick another in the Settings tab.
 
 Add it to your agent as an HTTP MCP server. For Claude Code:
 

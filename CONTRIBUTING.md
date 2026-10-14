@@ -14,18 +14,20 @@ code is kept portable.
 
 ## Run from source
 
-Use an **elevated** terminal. The exe asks for Administrator rights, and from a normal terminal it
-fails to start with `os error 740`.
+A normal terminal will do. Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need
+Administrator rights; for those, start the terminal elevated or use **File > Restart as
+Administrator…** in the app.
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-Add `-- -- --demo` to work on the interface with made-up data and no probing:
+Add `-- -- -- --demo` to work on the interface with made-up data and no probing. npm on Windows
+takes the first `--` for itself; elsewhere two are enough, and the third does no harm:
 
 ```bash
-npm run tauri dev -- -- --demo
+npm run tauri dev -- -- -- --demo
 ```
 
 Add `--mcp` as well to turn on the MCP server for that run, so that an agent can work against the
@@ -59,11 +61,19 @@ npm run tauri build -- --no-bundle
 The exe is written to `src-tauri/target/release/traceplotter.exe`. That is a build folder: the
 app's `TracePlotter-data` folder next to it is deleted by `cargo clean`.
 
+The release build optimises on one core and takes a few minutes. For a local test build, the
+`fast` profile compiles on all cores and writes `src-tauri/target/fast/traceplotter.exe`:
+
+```bash
+npm run tauri build -- --no-bundle -- --profile fast
+```
+
 ## Where things are
 
 - `src/routes/+page.svelte`: window layout, tabs, toolbar, menus, the saved session.
 - `src/lib/TraceTab.svelte`: one tab, with the hop table, dialogs and exports.
 - `src/lib/HopGraph.svelte`: one latency graph with its jitter strip.
+- `src/lib/Settings.svelte` and `settings.ts`: the Settings tab and the app-wide settings it changes.
 - `src/lib/trace.ts`: a trace's data and its link to the backend.
 - `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
 - `src-tauri/src/lib.rs`: probing, history files, updates and the other backend commands.

@@ -1,0 +1,317 @@
+<script lang="ts">
+  import { INTERVALS, LIMITS, WINDOWS, changeSetting, settings, type Settings } from "./settings";
+  import { ALERT_WINDOW } from "./stats";
+  import { COLUMNS } from "./TraceTab.svelte";
+  import { PROTOCOLS } from "./trace";
+
+  type Props = {
+    version: string;
+    /** Keys of the hop table columns that are switched off. */
+    hidden: string[];
+    /** Whether the app looks for a newer release when it starts. */
+    autoCheck: boolean;
+    /** Whether the MCP server runs, and the address agents connect to while it does. */
+    mcpOn: boolean;
+    mcpUrl: string | null;
+    /** Whether the app has Administrator rights, and the call to restart with them. */
+    elevated: boolean;
+    onelevate: () => void;
+    /** Called to show or hide the column with this key. */
+    oncolumn: (key: string) => void;
+    onautocheck: (on: boolean) => void;
+    /** Starts or stops the MCP server; done when `mcpOn` tells whether it worked. */
+    onagents: (on: boolean) => Promise<void>;
+    oncopy: () => void;
+    /** Looks for a newer release now. */
+    oncheck: () => void;
+    onfirewall: () => void;
+    /** Called after the setting with this key in `settings` changed. */
+    onchange: (key: keyof Settings) => void;
+  };
+  let {
+    version,
+    hidden,
+    autoCheck,
+    mcpOn,
+    mcpUrl,
+    elevated,
+    onelevate,
+    oncolumn,
+    onautocheck,
+    onagents,
+    oncopy,
+    oncheck,
+    onfirewall,
+    onchange,
+  }: Props = $props();
+
+  // `settings` is a plain object; this copy of it is what redraws the fields.
+  let shown = $state({ ...settings });
+
+  /** Takes over a field's value and writes back what it became within its limits. */
+  function set(key: keyof Settings, field: HTMLInputElement | HTMLSelectElement) {
+    changeSetting(key, field.value);
+    shown = { ...settings };
+    field.value = String(settings[key]);
+    onchange(key);
+  }
+
+  /** Attributes of the number field of a setting. */
+  const number = (key: keyof typeof LIMITS) => ({
+    type: "number",
+    min: LIMITS[key][0],
+    max: LIMITS[key][1],
+    value: shown[key],
+    onchange: (event: Event) => set(key, event.currentTarget as HTMLInputElement),
+  });
+</script>
+
+<!-- One card per subject. A row is a setting: its name and a note on the left, its field
+     on the right. -->
+<div class="settings">
+<div class="cards">
+  <section>
+    <h2>New targets</h2>
+    <p>What a new tab starts with. Open tabs keep their own: change those in the toolbar and under Edit.</p>
+    <label class="row">
+      <span>Packet type</span>
+      <select value={shown.protocol} onchange={(event) => set("protocol", event.currentTarget)}>
+        {#each Object.entries(PROTOCOLS) as [value, name]}
+          {#if WINDOWS || value !== "winicmp"}
+            <option {value}>{name}{!elevated && value !== "winicmp" ? " (needs Administrator)" : ""}</option>
+          {/if}
+        {/each}
+      </select>
+    </label>
+    <label class="row">
+      <span>Interval</span>
+      <select value={shown.intervalMs} onchange={(event) => set("intervalMs", event.currentTarget)}>
+        {#each INTERVALS as ms}<option value={ms}>{ms / 1000} {ms === 1000 ? "second" : "seconds"}</option>{/each}
+      </select>
+    </label>
+    <label class="row">
+      <span>Wait for replies <small>At least the interval</small></span>
+      <span><input {...number("timeoutMs")} step="100" /> ms</span>
+    </label>
+    <label class="row">
+      <span>Packet size <small>The whole IP packet; TCP ignores it</small></span>
+      <span><input {...number("packetSize")} /> bytes</span>
+    </label>
+
+    <h3>Alerts</h3>
+    <p>Raised when the round trip's last {ALERT_WINDOW} probes go over a limit. 0 switches a limit off.</p>
+    <label class="row">
+      <span>Average latency over</span>
+      <span><input {...number("alertLatencyMs")} /> ms</span>
+    </label>
+    <label class="row">
+      <span>Packet loss of at least</span>
+      <span><input {...number("alertLossPct")} /> %</span>
+    </label>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <h3>Latency colours</h3>
+    <p>Where the table, the bars and the graphs turn from green to yellow and from yellow to red.</p>
+    <label class="row">
+      <span><i class="swatch warn"></i>Yellow from</span>
+      <span><input {...number("warnMs")} /> ms</span>
+    </label>
+    <label class="row">
+      <span><i class="swatch bad"></i>Red from</span>
+      <span><input {...number("badMs")} /> ms</span>
+    </label>
+
+    <h3>Hop table columns</h3>
+    <div class="columns">
+      {#each COLUMNS as column (column.key)}
+        <label>
+          <input type="checkbox" checked={!hidden.includes(column.key)} onchange={() => oncolumn(column.key)} />
+          {column.label}
+        </label>
+      {/each}
+    </div>
+  </section>
+
+  <section>
+    <h2>History</h2>
+    <label class="row">
+      <span>Keep per target <small>Older rounds are dropped, on screen and on disk</small></span>
+      <span><input {...number("historyHours")} /> hours</span>
+    </label>
+    <p>At most 345,600 rounds are kept per target, which at an interval of one second is four days.</p>
+  </section>
+
+  <section>
+    <h2>AI agents</h2>
+    <p>
+      Lets AI agents on this computer read the traces, start new ones and pause them, through an MCP server on the
+      loopback address. Web pages and other machines cannot reach it.
+    </p>
+    <label class="row">
+      <span>Allow AI agents to connect</span>
+      <!-- Starting can fail (the port is taken), so the tick follows what happened. -->
+      <input
+        type="checkbox"
+        checked={mcpOn}
+        onchange={async (event) => {
+          const box = event.currentTarget;
+          await onagents(box.checked);
+          box.checked = mcpOn;
+        }}
+      />
+    </label>
+    <label class="row">
+      <span>Port</span>
+      <input {...number("mcpPort")} />
+    </label>
+    <div class="row">
+      <span>Address</span>
+      {#if mcpUrl}
+        <span><code>{mcpUrl}</code> <button onclick={oncopy}>Copy</button></span>
+      {:else}
+        <span class="muted">Not running</span>
+      {/if}
+    </div>
+  </section>
+
+  {#if WINDOWS}
+    <section>
+      <h2>Administrator rights</h2>
+      <p>
+        ICMP (raw socket), UDP and TCP probes use raw sockets, which Windows allows only with Administrator rights.
+        Adding firewall rules needs them too. ICMP (Windows API) does not.
+      </p>
+      <div class="row">
+        <span>TracePlotter is running {elevated ? "with" : "without"} them</span>
+        {#if !elevated}<button onclick={onelevate}>Restart as Administrator</button>{/if}
+      </div>
+      <div class="row">
+        <span>
+          Windows Firewall
+          <small>ICMP (raw socket) traces lose hops, the final one included, until ICMP replies are let in</small>
+        </span>
+        <button onclick={onfirewall}>Allow ICMP replies…</button>
+      </div>
+    </section>
+  {/if}
+
+  <section>
+    <h2>Updates</h2>
+    <label class="row">
+      <span>Check for updates at startup</span>
+      <input type="checkbox" checked={autoCheck} onchange={(event) => onautocheck(event.currentTarget.checked)} />
+    </label>
+    <div class="row">
+      <span>TracePlotter {version}</span>
+      <button onclick={oncheck}>Check for updates…</button>
+    </div>
+  </section>
+</div>
+</div>
+
+<style>
+  .settings {
+    height: 100%;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: 16px;
+  }
+  /* Cards side by side as the window allows, each as tall as its own content. Not on the
+     scrolling element: with a set height, columns would run off to the side. */
+  .cards {
+    columns: 380px;
+    column-gap: 16px;
+  }
+  section {
+    break-inside: avoid;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+  h2 {
+    margin: 0 0 8px;
+    font-size: 16px;
+  }
+  h3 {
+    margin: 16px 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h2 + h3 {
+    margin-top: 0;
+  }
+  p {
+    margin: 0 0 8px;
+    color: var(--muted);
+  }
+  .row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 30px;
+    padding: 4px 0;
+    border-top: 1px solid var(--line);
+  }
+  .row > :last-child {
+    flex: none;
+  }
+  small {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .muted {
+    color: var(--muted);
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    border-radius: 2px;
+  }
+  .swatch.warn {
+    background: var(--warn);
+  }
+  .swatch.bad {
+    background: var(--bad);
+  }
+  .columns {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 4px 12px;
+  }
+  input[type="number"] {
+    width: 72px;
+    padding: 2px 6px;
+    font: inherit;
+    text-align: right;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  select {
+    padding: 2px 6px;
+  }
+  code {
+    user-select: text;
+  }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+</style>

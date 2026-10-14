@@ -57,7 +57,8 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
-  import { ALERT_WINDOW, BAD_MS, WARN_MS, lowerBound, mos, stats, textTable } from "./stats";
+  import { settings } from "./settings";
+  import { ALERT_WINDOW, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
   import { whoisFacts, whoisRecord } from "./whois";
   import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, type Trace } from "./trace";
@@ -204,8 +205,8 @@
   }
   // Green, yellow and red latency zones behind the bars, on the same scale as the bars.
   const bands = $derived.by(() => {
-    const warn = Math.min(100, (WARN_MS / scale) * 100);
-    const bad = Math.min(100, (BAD_MS / scale) * 100);
+    const warn = Math.min(100, (settings.warnMs / scale) * 100);
+    const bad = Math.min(100, (settings.badMs / scale) * 100);
     return `linear-gradient(to right, var(--good-bg) 0 ${warn}%, var(--warn-bg) ${warn}% ${bad}%, var(--bad-bg) ${bad}% 100%)`;
   });
 
@@ -243,7 +244,7 @@
   }
 
   const grade = (avg: number | null) =>
-    avg === null ? "none" : avg >= BAD_MS ? "bad" : avg >= WARN_MS ? "warn" : "good";
+    avg === null ? "none" : avg >= settings.badMs ? "bad" : avg >= settings.warnMs ? "warn" : "good";
   // The events as list entries, newest first; a whole re-routing is one entry.
   const events = $derived.by(() => {
     rev;

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { BAD_MS, WARN_MS, lowerBound, stats } from "./stats";
+  import { settings } from "./settings";
+  import { lowerBound, stats } from "./stats";
   import { protocolLabel, type Trace } from "./trace";
 
   type Props = {
@@ -48,7 +49,7 @@
 
   const ms = (v: number | null) => (v === null ? "–" : v.toFixed(1));
   const grade = (avg: number | null) =>
-    avg === null ? "none" : avg >= BAD_MS ? "bad" : avg >= WARN_MS ? "warn" : "good";
+    avg === null ? "none" : avg >= settings.badMs ? "bad" : avg >= settings.warnMs ? "warn" : "good";
 
   const rows = $derived.by(() => {
     rev;

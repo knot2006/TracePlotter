@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { describe, type TraceEvent } from "./events";
+import { DEFAULTS, historyRounds, settings } from "./settings";
 import { ALERT_WINDOW, breaches, stats } from "./stats";
 
 /** `icmp`, `udp` and `tcp` probe through raw sockets; `winicmp` is ICMP through the Windows ICMP API. */
@@ -16,13 +17,16 @@ export const PROTOCOLS: Record<Protocol, string> = {
 
 export const usesPort = (protocol: Protocol) => protocol === "udp" || protocol === "tcp";
 
+/** Whether the packet type goes through a raw socket, which on Windows needs Administrator rights. */
+export const usesRawSocket = (protocol: Protocol) => protocol !== "winicmp";
+
 /** A target's packet type in a few letters: "ICMP", "ICMP·WIN", "TCP:443". */
 export const protocolLabel = ({ protocol, port }: Pick<TraceConfig, "protocol" | "port">) =>
   usesPort(protocol) ? `${protocol.toUpperCase()}:${port}` : protocol === "icmp" ? "ICMP" : "ICMP·WIN";
 
-export const DEFAULT_TIMEOUT_MS = 1000;
-/** The whole IP packet, in bytes. */
-export const DEFAULT_PACKET_SIZE = 84;
+// For tabs saved before these were settings of a tab.
+export const DEFAULT_TIMEOUT_MS = DEFAULTS.timeoutMs;
+export const DEFAULT_PACKET_SIZE = DEFAULTS.packetSize;
 
 /** What the session file remembers about a target. Alert thresholds of 0 are off. */
 export type TraceConfig = {
@@ -90,8 +94,6 @@ export type Trace = {
 type Sample = { t: number; hops: { ttl: number; addr: string | null; rtt: number | null }[] };
 type Message = ({ kind: "sample" } & Sample) | { kind: "error"; message: string };
 
-// Matches the backend's MAX_HISTORY: 24 h at a 1 s interval.
-const MAX_SAMPLES = 86_400;
 const TRIM_BATCH = 1000;
 const MAX_EVENTS = 500;
 
@@ -125,14 +127,15 @@ function addEvent(trace: Trace, event: TraceEvent) {
   if (trace.events.length > MAX_EVENTS) trace.events.shift();
 }
 
-function record(hop: Hop, t: number, rtt: number | null) {
+/** Adds a probe to the hop, which keeps its newest `max` and at most a batch more. */
+function record(hop: Hop, t: number, rtt: number | null, max: number) {
   hop.times.push(t);
   hop.rtts.push(rtt);
   // The oldest are dropped in batches: taking one off the front of a long array moves
   // every other element, which adds up when it happens for every hop every round.
-  if (hop.times.length >= MAX_SAMPLES + TRIM_BATCH) {
-    hop.times.splice(0, TRIM_BATCH);
-    hop.rtts.splice(0, TRIM_BATCH);
+  if (hop.times.length >= max + TRIM_BATCH) {
+    hop.times.splice(0, hop.times.length - max);
+    hop.rtts.splice(0, hop.rtts.length - max);
   }
 }
 
@@ -144,6 +147,8 @@ const PATH_END_ROUNDS = 10;
 /** Adds one round to the trace. `live` rounds, unlike replayed history, can notify. */
 function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void) {
   const t = sample.t / 1000;
+  // Read every round, so that a new history length in the settings applies to open tabs.
+  const max = historyRounds(settings.historyHours, trace.config.intervalMs);
   const changes: TraceEvent[] = [];
   // A round that reached its final hop tells how long the path is now.
   const last = sample.hops.at(-1);
@@ -173,7 +178,7 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
   // name resolves to another address on a later start.
   const reply = last && last.rtt !== null ? last : undefined;
   if (reply) trace.target.ttl = reply.ttl;
-  record(trace.target, t, reply ? reply.rtt : null);
+  record(trace.target, t, reply ? reply.rtt : null, max);
   for (const probe of sample.hops) {
     while (trace.hops.length < probe.ttl) {
       trace.hops.push({ ttl: trace.hops.length + 1, addr: null, name: null, times: [], rtts: [] });
@@ -192,7 +197,7 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
         }
       });
     }
-    record(hop, t, probe.rtt);
+    record(hop, t, probe.rtt, max);
   }
   for (const change of changes) addEvent(trace, change);
   if (live && changes.length && t - trace.routeNotified >= ROUTE_NOTICE_SECONDS) {
@@ -295,7 +300,7 @@ export async function startTrace(config: TraceConfig, onChange: () => void, keep
   // A tab the user had paused comes back paused: its history is shown, probing is not started.
   if (config.paused) {
     trace.paused = true;
-    const history = await invoke<Sample[]>("read_history", { session: config.sessionId }).catch(() => []);
+    const history = await invoke<Sample[]>("read_history", { session: config.sessionId, intervalMs: config.intervalMs }).catch(() => []);
     for (const sample of history) apply(trace, sample, false, onChange);
     trace.loaded = true;
     return trace;

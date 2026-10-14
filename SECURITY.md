@@ -1,7 +1,7 @@
 # Security
 
-TracePlotter runs with Administrator rights, sends probes to the network, updates itself and can
-run a local server for AI agents. A flaw in any of these matters, so reports are welcome.
+TracePlotter can run with Administrator rights, sends probes to the network, updates itself and
+can run a local server for AI agents. A flaw in any of these matters, so reports are welcome.
 
 ## Supported versions
 

@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,9 +18,24 @@ mod mcp;
 #[cfg(windows)]
 mod winicmp;
 
-// ponytail: a history file holds up to twice this many rounds (24 h at a 1 s interval)
+/// Hours of history a tab keeps. The Settings tab changes it through `set_history_hours`.
+static HISTORY_HOURS: AtomicU64 = AtomicU64::new(24);
+// ponytail: a history file holds up to twice this many rounds (4 days at a 1 s interval)
 // and is read back in one piece when its tab starts. Rotate files if that gets slow.
-const MAX_HISTORY: usize = 86_400;
+const MAX_HISTORY: usize = 345_600;
+
+/// How many rounds a tab keeps: the hours of history at its interval, up to MAX_HISTORY.
+fn history_rounds(interval_ms: u64) -> usize {
+    let rounds = HISTORY_HOURS.load(Ordering::Relaxed) * 3_600_000 / interval_ms.max(1);
+    (rounds as usize).clamp(1, MAX_HISTORY)
+}
+
+/// Sets how many hours of history tabs keep. Running traces follow at their next trim,
+/// saved histories when they are next read.
+#[tauri::command]
+fn set_history_hours(hours: u64) {
+    HISTORY_HOURS.store(hours.clamp(1, 168), Ordering::Relaxed);
+}
 
 /// One probe result for one hop in one round. `rtt` is `None` when the probe was lost.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,7 +247,7 @@ fn start_demo(
         fs::write(&path, past.join("\n") + "\n").map_err(|e| e.to_string())?;
     }
     let history = if with_history {
-        load_history(&path, MAX_HISTORY)
+        load_history(&path, history_rounds(interval_ms))
     } else {
         Vec::new()
     };
@@ -273,7 +288,9 @@ struct Recorder {
     path: PathBuf,
     /// The tab shows an error; the next recorded round clears it.
     failing: AtomicBool,
-    /// Rounds appended since the file was last trimmed. Trimming every MAX_HISTORY
+    /// The trace's interval, which sets how many rounds the file keeps.
+    interval_ms: u64,
+    /// Rounds appended since the file was last trimmed. Trimming every `history_rounds`
     /// rounds keeps the file under twice that, however long the trace runs.
     appended: AtomicUsize,
 }
@@ -303,9 +320,9 @@ impl Recorder {
             .and_then(|line| writeln!(&self.file, "{line}"));
         if let Err(e) = saved {
             self.error(format!("History is not being saved: {e}"));
-        } else if self.appended.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_HISTORY {
+        } else if self.appended.fetch_add(1, Ordering::Relaxed) + 1 >= history_rounds(self.interval_ms) {
             self.appended.store(0, Ordering::Relaxed);
-            trim_history(&self.path, MAX_HISTORY);
+            trim_history(&self.path, history_rounds(self.interval_ms));
         }
         self.channel.send(TraceEvent::Sample(sample)).is_ok()
     }
@@ -442,6 +459,12 @@ fn start_trace(
         "winicmp" if cfg!(windows) => None,
         other => return Err(format!("unknown protocol {other}")),
     };
+    if raw.is_some() && !is_elevated() {
+        return Err(format!(
+            "{} probes use raw sockets, which need Administrator rights. Restart TracePlotter as Administrator (File menu) or use ICMP (Windows API).",
+            protocol.to_uppercase()
+        ));
+    }
     let interval = Duration::from_millis(interval_ms.clamp(200, 60_000));
     // A round lasts at least the interval, and a reply counts until its round ends.
     let timeout = Duration::from_millis(timeout_ms.clamp(100, 10_000)).max(interval);
@@ -472,7 +495,7 @@ fn start_trace(
 
     let path = history_path(&session)?;
     let history = if with_history {
-        load_history(&path, MAX_HISTORY)
+        load_history(&path, history_rounds(interval.as_millis() as u64))
     } else {
         Vec::new()
     };
@@ -494,6 +517,7 @@ fn start_trace(
         file,
         path,
         failing: AtomicBool::new(false),
+        interval_ms: interval.as_millis() as u64,
         appended: AtomicUsize::new(0),
     };
 
@@ -604,8 +628,8 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
 
 /// A tab's saved history without starting its trace, for a tab that is restored paused.
 #[tauri::command(async)]
-fn read_history(session: String) -> Result<Vec<Sample>, String> {
-    Ok(load_history(&history_path(&session)?, MAX_HISTORY))
+fn read_history(session: String, interval_ms: u64) -> Result<Vec<Sample>, String> {
+    Ok(load_history(&history_path(&session)?, history_rounds(interval_ms)))
 }
 
 /// Erases a tab's saved history. A trace still writing to it loses those rounds too.
@@ -994,7 +1018,7 @@ fn allow_icmp_replies() -> Result<(), String> {
             New-NetFirewallRule -Name TRACEPLOTTER_ICMPV6 -DisplayName 'TracePlotter ICMPv6 replies' \
                 -Direction Inbound -Protocol ICMPv6 -IcmpType 129, 1, 3 -Action Allow | Out-Null";
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        // Full path: this process is elevated, so PATH must not pick the binary.
+        // Full path: this process is elevated when this works, so PATH must not pick the binary.
         let root = std::env::var("SystemRoot").map_err(|e| e.to_string())?;
         let output = std::process::Command::new(format!(
             r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -1013,8 +1037,90 @@ fn allow_icmp_replies() -> Result<(), String> {
     Err("Firewall rules are only needed on Windows".into())
 }
 
+/// Whether the process has Administrator rights, which raw sockets and firewall rules need
+/// on Windows. Elsewhere the system decides per socket, and in demo mode nothing is
+/// probed, so both say yes.
+#[tauri::command]
+fn is_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        demo() || unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
+    }
+    #[cfg(not(windows))]
+    true
+}
+
+/// Switch that names the process a restarted one takes over from.
+const AFTER: &str = "--after";
+
+/// Starts the exe again with Administrator rights, which Windows asks the user to allow,
+/// and closes this one. Tabs and history are kept, as across any restart.
+#[tauri::command]
+fn restart_elevated(app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |text: &std::ffi::OsStr| text.encode_wide().chain([0]).collect::<Vec<u16>>();
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // The switches this run was started with, and this process for the new one to wait for.
+        let mut args: Vec<String> = std::env::args()
+            .filter(|arg| arg == "--demo" || arg == "--mcp")
+            .collect();
+        args.extend([AFTER.to_string(), std::process::id().to_string()]);
+        let started = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                wide("runas".as_ref()).as_ptr(),
+                wide(exe.as_os_str()).as_ptr(),
+                wide(args.join(" ").as_ref()).as_ptr(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+        // Anything up to 32 is an error; the usual one is the user saying no.
+        if started as usize <= 32 {
+            return Err("TracePlotter was not restarted: Administrator rights were not given".into());
+        }
+        // An exit does not pass through the window's close request, where this is saved.
+        if let Some(window) = app.get_webview_window("main") {
+            save_window_state(&window.as_ref().window());
+        }
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Restarting as Administrator is for Windows".into())
+    }
+}
+
+/// After `restart_elevated`: waits for the instance this one replaces to close. Two
+/// instances with different rights cannot share the webview's data folder.
+// ponytail: waits for the app's process only. If its webview processes linger and the
+// window fails to open, wait for the data folder's lock file as well.
+#[cfg(windows)]
+fn wait_for_predecessor() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let pid = std::env::args()
+        .skip_while(|arg| arg != AFTER)
+        .nth(1)
+        .and_then(|pid| pid.parse::<u32>().ok());
+    let Some(pid) = pid else { return };
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if !process.is_null() {
+            WaitForSingleObject(process, 10_000);
+            CloseHandle(process);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    wait_for_predecessor();
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1051,6 +1157,7 @@ pub fn run() {
             start_trace,
             stop_trace,
             read_history,
+            set_history_hours,
             delete_history,
             host_locale,
             reverse_dns,
@@ -1059,6 +1166,8 @@ pub fn run() {
             check_update,
             install_update,
             allow_icmp_replies,
+            is_elevated,
+            restart_elevated,
             mcp::mcp_flag,
             mcp::mcp_serve,
             mcp::mcp_respond
@@ -1114,6 +1223,14 @@ mod tests {
     fn live_ptr_lookup_finds_a_name() {
         assert_eq!(lookup_ptr("8.8.8.8".parse().unwrap()).as_deref(), Some("dns.google"));
         assert_eq!(lookup_ptr("192.0.2.1".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn history_is_counted_in_rounds_of_the_interval_up_to_a_cap() {
+        // At the 24 hours it starts with; no test changes them.
+        assert_eq!(history_rounds(1000), 86_400);
+        assert_eq!(history_rounds(10_000), 8640);
+        assert_eq!(history_rounds(200), MAX_HISTORY);
     }
 
     #[test]

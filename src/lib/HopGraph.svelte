@@ -2,7 +2,8 @@
   import { Menu } from "@tauri-apps/api/menu";
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
-  import { BAD_MS, WARN_MS, jitterSeries, lossSeries, niceCeil } from "./stats";
+  import { settings } from "./settings";
+  import { jitterSeries, lossSeries, niceCeil } from "./stats";
   import { timeOfDay } from "./time";
   import type { Hop } from "./trace";
 
@@ -107,7 +108,7 @@
     const { left, top, width, height } = u.bbox;
     const y = (ms: number) => Math.min(top + height, Math.max(top, u.valToPos(ms, "y", true)));
     const x = (t: number) => Math.min(left + width, Math.max(left, u.valToPos(t, "x", true)));
-    const edges = [top + height, y(WARN_MS), y(BAD_MS), top];
+    const edges = [top + height, y(settings.warnMs), y(settings.badMs), top];
     const fills = ["rgba(34, 197, 94, 0.32)", "rgba(234, 179, 8, 0.34)", "rgba(239, 68, 68, 0.36)"];
     const step = intervalMs / 1000;
     const xs = u.data[0];

@@ -5,9 +5,11 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
+  import Settings from "../lib/Settings.svelte";
+  import { INTERVALS, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
-  import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "../lib/stats";
+  import { parseSpan, spanLabel } from "../lib/stats";
   import { setLocale } from "../lib/time";
   import {
     closeTrace,
@@ -17,6 +19,7 @@
     setPaused,
     startTrace,
     usesPort,
+    usesRawSocket,
     type Protocol,
     type Trace,
     type TraceConfig,
@@ -40,20 +43,19 @@
     a.host === b.host && a.protocol === b.protocol && a.port === b.port;
 
   let traces = $state.raw<Trace[]>([]);
-  // The open tab: a trace's id, the overview of all targets, or none (a new target is being typed).
-  let activeId = $state<number | "summary" | null>(null);
+  // The open tab: a trace's id, the overview of all targets, the settings, or none (a new
+  // target is being typed).
+  let activeId = $state<number | "summary" | "settings" | null>(null);
   // Traces are plain objects mutated in place; bumping `rev` is what redraws.
   let rev = $state(0);
   const bump = () => rev++;
 
-  // Toolbar fields. They show the open tab's target; editing them describes a new one.
+  // Toolbar fields. They show the open tab's target; editing them describes a new one,
+  // which starts from the defaults in the settings.
   let host = $state("");
-  // The Windows ICMP API exists on Windows only. There new targets start with it, as it
-  // needs no firewall rule.
-  const WINDOWS = navigator.userAgent.includes("Windows");
-  let protocol = $state<Protocol>(WINDOWS ? "winicmp" : "icmp");
-  let port = $state(0);
-  let intervalMs = $state(1000);
+  let protocol = $state<Protocol>(settings.protocol);
+  let port = $state(DEFAULT_PORT[settings.protocol]);
+  let intervalMs = $state(settings.intervalMs);
   // How much of the newest history the table and graphs cover; remembered between launches.
   // In seconds, 0 for everything.
   const storedSpan = Number(localStorage.getItem(SPAN_KEY) ?? 600);
@@ -79,7 +81,7 @@
   // downloaded until the user asks for it.
   const AUTO_CHECK_KEY = "traceplotter.checkUpdatesAtStart";
   let version = $state("");
-  let autoCheck = localStorage.getItem(AUTO_CHECK_KEY) !== "no";
+  let autoCheck = $state(localStorage.getItem(AUTO_CHECK_KEY) !== "no");
   let update = $state<{ version: string; notes: string } | null>(null);
   let updating = $state(false);
 
@@ -106,29 +108,91 @@
     }
   }
 
+  // Administrator rights. The app starts without them; raw sockets and firewall rules need
+  // them on Windows, so it offers to restart with them where those are asked for. Taken as
+  // given until the backend has answered.
+  let elevated = $state(true);
+
+  /** Starts the app again as Administrator, after the Windows prompt, and closes this one. */
+  function restartElevated() {
+    error = notice = "";
+    invoke("restart_elevated").catch((e) => (error = String(e)));
+  }
+
   // Agent access: the MCP server that lets AI agents read the traces and start new ones.
   // Off until the user turns it on; it listens on this machine's loopback address only.
   const MCP_KEY = "traceplotter.mcpServer";
-  const MCP_PORT = 3917;
-  let mcpOn = localStorage.getItem(MCP_KEY) === "on";
+  let mcpOn = $state(localStorage.getItem(MCP_KEY) === "on");
   let mcpUrl = $state<string | null>(null);
 
   /** Starts or stops the MCP server. `chosen` is the user's choice, which is remembered and confirmed. */
   async function setAgentAccess(on: boolean, chosen: boolean) {
     error = notice = "";
     try {
-      mcpUrl = await invoke<string | null>("mcp_serve", { port: on ? MCP_PORT : null });
+      mcpUrl = await invoke<string | null>("mcp_serve", { port: on ? settings.mcpPort : null });
       mcpOn = on;
       if (chosen) localStorage.setItem(MCP_KEY, on ? "on" : "off");
       if (chosen) notice = mcpUrl ? `Agents can connect to ${mcpUrl}` : "Agent access is off.";
     } catch (e) {
+      // The server that ran before, if any, was stopped to make way for this one.
+      mcpUrl = null;
       error = `Agent access not started: ${e}`;
     }
     buildMenu().catch((e) => (error = `Menu failed: ${e}`));
   }
 
+  function copyAgentAddress() {
+    if (!mcpUrl) return;
+    navigator.clipboard
+      .writeText(mcpUrl)
+      .then(() => (notice = "Agent address copied."))
+      .catch((e) => (error = `Not copied: ${e}`));
+  }
+
+  function setAutoCheck(on: boolean) {
+    autoCheck = on;
+    localStorage.setItem(AUTO_CHECK_KEY, on ? "yes" : "no");
+    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+  }
+
+  /** Opens the settings. The host box is emptied, as it is for All targets. */
+  function openSettings() {
+    activeId = "settings";
+    host = "";
+  }
+
+  /** Sets the toolbar to what a new target starts with. */
+  function toDefaults() {
+    protocol = settings.protocol;
+    port = DEFAULT_PORT[protocol];
+    intervalMs = settings.intervalMs;
+  }
+
+  /** Puts a setting changed in the Settings tab to work where a new value is not simply read. */
+  function settingChanged(key: keyof AppSettings) {
+    // With no target open the toolbar describes a new one.
+    if (!active) toDefaults();
+    if (key === "mcpPort" && mcpOn) setAgentAccess(true, false);
+    if (key === "historyHours") {
+      invoke("set_history_hours", { hours: settings.historyHours }).catch((e) => (error = String(e)));
+    }
+    // The toolbar's legend shows the latency limits.
+    rev++;
+  }
+
+  /** A new tab's settings: the target and interval given, the rest from the defaults. */
+  const newConfig = (target: Pick<TraceConfig, "host" | "protocol" | "port">, intervalMs: number): TraceConfig => ({
+    sessionId: crypto.randomUUID(),
+    ...target,
+    intervalMs,
+    timeoutMs: settings.timeoutMs,
+    packetSize: settings.packetSize,
+    alertLatencyMs: settings.alertLatencyMs,
+    alertLossPct: settings.alertLossPct,
+  });
+
   /** The intervals the toolbar offers that agents may use. */
-  const AGENT_INTERVALS = [1000, 2500, 5000, 10000];
+  const AGENT_INTERVALS = INTERVALS.filter((ms) => ms >= AGENT_MIN_INTERVAL_MS);
 
   /**
    * Starts tracing a host for an agent, in a new tab next to the others, or resumes the
@@ -155,10 +219,7 @@
       if (existing.paused) await togglePause(existing);
       return { started: existing.paused ? "could not resume" : "resumed", ...describeTrace(existing, 600) };
     }
-    const trace = await startTrace(
-      { sessionId: crypto.randomUUID(), host, protocol, port, intervalMs: interval, alertLatencyMs: 0, alertLossPct: 0 },
-      bump,
-    );
+    const trace = await startTrace(newConfig({ host, protocol, port }, interval), bump);
     traces = [...traces, trace];
     session = [...session, trace.config];
     saveSession();
@@ -197,6 +258,7 @@
   let tabsRestored = $state(false);
   function saveActive() {
     if (!tabsRestored) return;
+    // The settings are not a tab to come back to: the next launch opens the first target.
     localStorage.setItem(ACTIVE_KEY, activeId === "summary" ? "summary" : (active?.config.sessionId ?? ""));
   }
   $effect(saveActive);
@@ -208,6 +270,13 @@
   // resumes it; otherwise the button starts the target typed into the toolbar.
   const current = $derived(active && same(active.config, target) ? active : undefined);
   const running = $derived(rev >= 0 && !!current && !current.paused);
+  // A raw-socket packet type is picked in the toolbar or used by a tab, and cannot work.
+  const wantsAdmin = $derived(
+    !elevated && (usesRawSocket(protocol) || traces.some((trace) => usesRawSocket(trace.config.protocol))),
+  );
+  // The latency limits in the legend. `settings` is a plain object, so they are read again
+  // when `rev` changes.
+  const limits = $derived(rev >= 0 ? { warn: settings.warnMs, bad: settings.badMs } : { warn: 0, bad: 0 });
 
   $effect(() => {
     if (!active) return;
@@ -241,6 +310,14 @@
 
   async function allowIcmp() {
     error = notice = "";
+    if (!elevated) {
+      const restart = confirm(
+        "Adding Windows Firewall rules needs Administrator rights.\n\n" +
+          "Restart TracePlotter as Administrator? Open tabs and their history are kept.",
+      );
+      if (restart) restartElevated();
+      return;
+    }
     const ok = confirm(
       "Add Windows Firewall rules that let ICMP replies reach TracePlotter?\n\n" +
         "They allow inbound echo reply, destination unreachable and time exceeded, for IPv4 and IPv6. " +
@@ -263,6 +340,11 @@
           items: [
             { id: "new", text: "New target", accelerator: "CmdOrCtrl+T", action: newTarget },
             { id: "close", text: "Close tab", accelerator: "CmdOrCtrl+W", action: () => active && close(active) },
+            { item: "Separator" },
+            { id: "settings", text: "Settings…", accelerator: "CmdOrCtrl+,", action: openSettings },
+            ...(WINDOWS
+              ? [{ id: "elevate", text: "Restart as Administrator…", enabled: !elevated, action: restartElevated }]
+              : []),
             { item: "Separator" },
             { item: "CloseWindow", text: "Exit" },
           ],
@@ -316,13 +398,7 @@
               id: "agents-address",
               text: mcpUrl ? `Copy agent address (${mcpUrl})` : "Copy agent address",
               enabled: !!mcpUrl,
-              action: () => {
-                if (!mcpUrl) return;
-                navigator.clipboard
-                  .writeText(mcpUrl)
-                  .then(() => (notice = "Agent address copied."))
-                  .catch((e) => (error = `Not copied: ${e}`));
-              },
+              action: copyAgentAddress,
             },
           ],
         },
@@ -334,10 +410,7 @@
               id: "auto-check",
               text: "Check for updates at startup",
               checked: autoCheck,
-              action: () => {
-                autoCheck = !autoCheck;
-                localStorage.setItem(AUTO_CHECK_KEY, autoCheck ? "yes" : "no");
-              },
+              action: () => setAutoCheck(!autoCheck),
             },
             { item: "Separator" },
             { id: "version", text: `TracePlotter ${version}`, enabled: false },
@@ -377,13 +450,7 @@
       if (current) {
         await togglePause(current);
       } else {
-        const { config } = await open({
-          sessionId: crypto.randomUUID(),
-          ...target,
-          intervalMs,
-          alertLatencyMs: 0,
-          alertLossPct: 0,
-        });
+        const { config } = await open(newConfig(target, intervalMs));
         session = [...session, config];
         saveSession();
       }
@@ -429,6 +496,7 @@
   function newTarget() {
     activeId = null;
     host = "";
+    toDefaults();
     hostInput.focus();
   }
 
@@ -444,6 +512,7 @@
 
   onMount(async () => {
     version = await getVersion().catch(() => "");
+    elevated = await invoke<boolean>("is_elevated").catch(() => true);
     // The webview's own right-click menu offers "Save as" and "Print"; exports live in File.
     document.addEventListener("contextmenu", (event) => {
       if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
@@ -457,6 +526,8 @@
     buildMenu().catch((e) => (error = `Menu failed: ${e}`));
     // Before any tab shows a date: the host's own date and time format.
     setLocale(await invoke<string | null>("host_locale").catch(() => null));
+    // Before any history is read: how much of it the backend keeps.
+    await invoke("set_history_hours", { hours: settings.historyHours }).catch(() => {});
     try {
       const stored = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "[]");
       session = Array.isArray(stored) ? stored : [];
@@ -510,6 +581,14 @@
       {/if}
     </div>
   {/if}
+  {#if wantsAdmin}
+    <div class="update" role="status">
+      <span>
+        ICMP (raw socket), UDP and TCP probes need Administrator rights, which TracePlotter is running without.
+      </span>
+      <button class="install" onclick={restartElevated}>Restart as Administrator</button>
+    </div>
+  {/if}
   <div class="tabs" role="tablist">
     {#if traces.length}
       <div class="tab" class:active={activeId === "summary"}>
@@ -541,6 +620,11 @@
       </div>
     {/each}
     <button class="add" aria-label="New target" title="New target (Ctrl+T)" onclick={newTarget}>+</button>
+    <div class="tab settings" class:active={activeId === "settings"}>
+      <button class="all" role="tab" aria-selected={activeId === "settings"} title="Settings (Ctrl+,)" onclick={openSettings}>
+        ⚙ Settings
+      </button>
+    </div>
   </div>
 
   <form class="toolbar" onsubmit={go}>
@@ -554,7 +638,9 @@
     />
     <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
       {#each Object.entries(PROTOCOLS) as [value, name]}
-        {#if WINDOWS || value !== "winicmp"}<option {value}>{name}</option>{/if}
+        {#if WINDOWS || value !== "winicmp"}
+          <option {value}>{name}{!elevated && value !== "winicmp" ? " (needs Administrator)" : ""}</option>
+        {/if}
       {/each}
     </select>
     {#if usesPort(protocol)}
@@ -581,11 +667,7 @@
     <label>
       Interval
       <select bind:value={intervalMs} onchange={changeInterval}>
-        <option value={500}>0.5 seconds</option>
-        <option value={1000}>1 second</option>
-        <option value={2500}>2.5 seconds</option>
-        <option value={5000}>5 seconds</option>
-        <option value={10000}>10 seconds</option>
+        {#each INTERVALS as ms}<option value={ms}>{ms / 1000} {ms === 1000 ? "second" : "seconds"}</option>{/each}
       </select>
     </label>
     <label>
@@ -611,10 +693,10 @@
         {#each SPANS as seconds}<option value={spanLabel(seconds)}></option>{/each}
       </datalist>
     </label>
-    <div class="legend" role="img" aria-label="Latency colours: green under {WARN_MS} ms, yellow under {BAD_MS} ms, red above">
+    <div class="legend" role="img" aria-label="Latency colours: green under {limits.warn} ms, yellow under {limits.bad} ms, red above">
       <span class="good"></span>
-      <span class="warn">{WARN_MS}ms</span>
-      <span class="bad">{BAD_MS}ms</span>
+      <span class="warn">{limits.warn}ms</span>
+      <span class="bad">{limits.bad}ms</span>
     </div>
     {#if error}<span class="error" role="alert">{error}</span>{/if}
     {#if notice}<span role="status">{notice}</span>{/if}
@@ -635,6 +717,23 @@
         oncolumn={toggleColumn}
       />
     {/key}
+  {:else if activeId === "settings"}
+    <Settings
+      {version}
+      {hidden}
+      {autoCheck}
+      {mcpOn}
+      {mcpUrl}
+      {elevated}
+      onelevate={restartElevated}
+      oncolumn={toggleColumn}
+      onautocheck={setAutoCheck}
+      onagents={(on) => setAgentAccess(on, true)}
+      oncopy={copyAgentAddress}
+      oncheck={() => checkUpdates(true)}
+      onfirewall={allowIcmp}
+      onchange={settingChanged}
+    />
   {:else if activeId === "summary" && traces.length}
     <Summary {traces} {rev} {focusSeconds} onopen={(trace) => (activeId = trace.id)} ontoggle={togglePause} />
   {:else}
@@ -701,7 +800,7 @@
     border-bottom: 1px solid var(--line);
   }
 
-  /* The offer of a newer version, across the top. */
+  /* The offer of a newer version or of a restart as Administrator, across the top. */
   .update {
     display: flex;
     flex-wrap: wrap;
@@ -776,6 +875,10 @@
   }
   .tab .all {
     padding-right: 12px;
+  }
+  /* At the far end of the strip, apart from the targets. */
+  .tab.settings {
+    margin-left: auto;
   }
   .tab button:focus-visible,
   .add:focus-visible {

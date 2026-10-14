@@ -14,6 +14,7 @@ on `windows-latest`, but the code is kept portable: anything Windows-only sits b
 The map of the code is under "Where things are" in CONTRIBUTING.md. In short, `src/routes/+page.svelte`
 holds the window, tabs, menus and saved session; `src/lib/TraceTab.svelte` one tab; `src/lib/trace.ts`
 a trace's data and its link to the backend; `src/lib/stats.ts` and `events.ts` the calculations;
+`src/lib/settings.ts` the app-wide settings and `Settings.svelte` their tab;
 `src/lib/agent.ts` the answers of the MCP server; `src-tauri/src/lib.rs` probing, history, updates
 and the other commands; `src-tauri/src/mcp.rs` the MCP server; `src-tauri/src/winicmp.rs` the
 Windows ICMP API.
@@ -35,7 +36,8 @@ On Linux the Rust build needs the WebKitGTK development packages (`libwebkit2gtk
 `libgtk-3-dev`, `librsvg2-dev`).
 
 Do not run the full `npm run tauri build`, nor the ignored `live_trace` test, in a sandbox or cloud
-machine: they need Windows, Administrator rights and a real network. Leave those to a person.
+machine: they need Windows and a real network, and the test Administrator rights as well. Leave
+those to a person.
 
 ## Conventions
 
@@ -58,7 +60,7 @@ quarter of an hour of history, and keeps its data in a separate `TracePlotter-de
 Use it for screenshots and for interface work:
 
 ```bash
-npm run tauri dev -- -- --demo
+npm run tauri dev -- -- -- --demo
 ```
 
 ## The MCP server
@@ -72,7 +74,7 @@ For development, run the demo with the server on and point an agent at it; this 
 `.mcp.json` already does that for Claude Code:
 
 ```bash
-npm run tauri dev -- -- --demo --mcp
+npm run tauri dev -- -- -- --demo --mcp
 ```
 
 The tools are `list_targets`, `get_hops`, `get_route_changes` and `get_latency_history`, which only

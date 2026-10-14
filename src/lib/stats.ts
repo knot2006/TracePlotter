@@ -10,10 +10,6 @@ export type HopStats = {
   jitter: number | null;
 };
 
-/** Latency in ms where the colour coding turns yellow, then red. */
-export const WARN_MS = 100;
-export const BAD_MS = 200;
-
 /**
  * The smallest round number at or above `value`, for the end of an axis: 1, 1.5, 2, 2.5, 3,
  * 4, 5, 6, 7, 8, 9 or 10 times a power of ten. Anything not above 0 gives 1.

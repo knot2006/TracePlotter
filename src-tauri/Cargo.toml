@@ -34,7 +34,7 @@ tiny_http = "0.12"
 dns-lookup = "4"
 
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
-# reverse DNS without NetBIOS.
+# reverse DNS without NetBIOS. Also the check for Administrator rights and the restart with them.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -43,6 +43,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_System_IO",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
 ] }
 
 # No `panic = "abort"`: stopping a trace unwinds out of trippy-core (see lib.rs).
@@ -51,3 +52,9 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+# For local test builds: compiles on all cores. Published builds use `release`.
+[profile.fast]
+inherits = "release"
+codegen-units = 16
+lto = "thin"
