@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.1.4"
+version = "0.1.5"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
