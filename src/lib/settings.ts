@@ -17,14 +17,17 @@ export const intervalLabel = (ms: number) => `${ms / 1000} ${ms === 1000 ? "seco
 
 /**
  * Reads a typed time between rounds ("1.5", "1.5s", "750ms", "1m") in ms, within the
- * 0.1 to 60 seconds the backend probes at. Without a unit it is in seconds.
+ * 0.1 to 60 seconds the backend probes at. A number without a unit is in seconds up to 60,
+ * where the menus stop, and in ms above that: "500" means 500 ms, not the 60 s it would clamp to.
  */
 export function parseInterval(text: string): number | null {
   const match = /^(\d+(?:[.,]\d+)?|[.,]\d+)\s*([a-z]*)$/.exec(text.trim().toLowerCase());
   if (!match) return null;
-  const unit = match[2].startsWith("ms") || match[2].startsWith("mil") ? 1 : match[2].startsWith("m") ? 60_000 : 1000;
+  const count = Number(match[1].replace(",", "."));
+  const bare = count > 60 ? 1 : 1000;
+  const unit = !match[2] ? bare : match[2].startsWith("ms") || match[2].startsWith("mil") ? 1 : match[2].startsWith("m") ? 60_000 : 1000;
   if (match[2] && unit === 1000 && !match[2].startsWith("s")) return null;
-  const ms = Math.round(Number(match[1].replace(",", ".")) * unit);
+  const ms = Math.round(count * unit);
   return Math.min(60_000, Math.max(100, ms));
 }
 

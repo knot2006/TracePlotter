@@ -36,6 +36,9 @@ test("red latency starts above yellow", () => {
 
 test("a typed interval is read in seconds unless it says otherwise, from 0.1 to 60 seconds", () => {
   assert.equal(parseInterval("2"), 2000);
+  assert.equal(parseInterval("60"), 60_000);
+  assert.equal(parseInterval("500"), 500);
+  assert.equal(parseInterval("90 s"), 60_000);
   assert.equal(parseInterval("1,5 s"), 1500);
   assert.equal(parseInterval(".25"), 250);
   assert.equal(parseInterval("750ms"), 750);

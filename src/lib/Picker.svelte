@@ -24,8 +24,7 @@
   let open = $state(false);
   // Index of the option the arrow keys are on, -1 for none.
   let active = $state(-1);
-  // What is being typed, or null to show the value. Emptied on focus so that typing replaces
-  // the value; the placeholder still shows it.
+  // What is being typed, or null to show the value.
   let typed = $state<string | null>(null);
 
   function show() {
@@ -33,32 +32,51 @@
     open = true;
   }
 
-  /** Takes a picked or typed value (null keeps the old one) and closes the menu. */
-  function take(picked: T | null) {
+  /** The option the arrow keys are on, else what was typed, else null to keep the value. */
+  const current = () => (active >= 0 ? options[active] : typed && parse ? parse(typed) : null);
+
+  // Every pick, by key or click, ends by letting go of the box, and this takes it; leaving
+  // the box with Tab or a click elsewhere takes the same as Enter would. The next click then
+  // opens the menu afresh.
+  function take() {
+    const picked = current();
     open = false;
     typed = null;
+    active = -1;
     if (picked !== null && picked !== value) onpick(picked);
   }
 
-  /** The box lets go after every pick, so the next click opens the menu afresh. */
-  function done(picked: T | null) {
-    take(picked);
-    input.blur();
-  }
-
   function onkeydown(event: KeyboardEvent) {
+    const last = options.length - 1;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (!open) return show();
-      active = (active + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length;
+      if (event.key === "ArrowDown") active = active >= last ? 0 : active + 1;
+      else active = active <= 0 ? last : active - 1;
+    } else if ((event.key === "Home" || event.key === "End") && (open || !parse)) {
+      // In a box that takes typing, a closed menu leaves these keys to the caret.
+      event.preventDefault();
+      if (!open) show();
+      active = event.key === "Home" ? 0 : last;
     } else if (event.key === "Enter") {
       // Enter must not reach a form around the box, where it may start something.
       event.preventDefault();
-      if (!open) return show();
-      done(active >= 0 ? options[active] : typed && parse ? parse(typed) : null);
-    } else if (event.key === "Escape" && open) {
+      if (!open && typed === null) return show();
+      input.blur();
+    } else if (event.key === "Escape" && (open || typed !== null)) {
       event.preventDefault();
-      done(null);
+      typed = null;
+      active = -1;
+      input.blur();
+    } else if (!parse && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      // As in a select: a letter goes to the next option that starts with it.
+      const key = event.key.toLowerCase();
+      const from = open ? active : options.indexOf(value);
+      const next = options.findIndex((_, i) => i > from && label(options[i]).toLowerCase().startsWith(key));
+      const found = next >= 0 ? next : options.findIndex((option) => label(option).toLowerCase().startsWith(key));
+      if (found < 0) return;
+      if (!open) show();
+      active = found;
     }
   }
 
@@ -66,7 +84,15 @@
   function onclick(event: MouseEvent) {
     event.preventDefault();
     const option = (event.target as HTMLElement).closest<HTMLElement>("[data-index]");
-    if (option) done(options[Number(option.dataset.index)]);
+    if (!option) return;
+    active = Number(option.dataset.index);
+    input.blur();
+  }
+
+  /** Opens the menu from a click, with the text selected so that typing replaces it. */
+  function showFromClick() {
+    show();
+    if (parse) input.select();
   }
 </script>
 
@@ -75,7 +101,7 @@
     bind:this={input}
     role="combobox"
     aria-expanded={open}
-    aria-controls="{id}-menu"
+    aria-controls={open ? `${id}-menu` : undefined}
     aria-activedescendant={open && active >= 0 ? `${id}-${active}` : undefined}
     autocomplete="off"
     readonly={!parse}
@@ -84,16 +110,12 @@
     {title}
     placeholder={label(value)}
     value={typed ?? label(value)}
-    onfocus={() => {
-      if (parse) typed = "";
-      show();
-    }}
-    onclick={() => open || show()}
+    onclick={() => open || showFromClick()}
     oninput={(event) => {
       typed = event.currentTarget.value;
       active = -1;
     }}
-    onblur={() => take(typed && parse ? parse(typed) : null)}
+    onblur={take}
     {onkeydown}
   />
   <button
@@ -105,7 +127,7 @@
       if (open) open = false;
       else {
         input.focus();
-        show();
+        showFromClick();
       }
     }}>▾</button
   >

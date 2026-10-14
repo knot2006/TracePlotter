@@ -176,18 +176,20 @@ fn demo() -> bool {
 }
 
 /// The demo route: address, name, usual latency in ms and share of probes lost per hop.
-/// The addresses between the home router and the target are from the ranges reserved
-/// for documentation (RFC 5737), so they belong to nobody.
+/// It crosses three oceans so that its hops show every latency colour, and the swell in
+/// `demo_sample` moves the far ones across the limits. The addresses between the home
+/// router and the target are from the ranges reserved for documentation (RFC 5737), so
+/// they belong to nobody.
 const DEMO_ROUTE: [(&str, &str, f64, f64); 9] = [
     ("192.168.1.1", "router.home.arpa", 0.4, 0.0),
     ("10.20.0.1", "gw.access.example.net", 1.3, 0.0),
     ("198.51.100.17", "core1.waw.example.net", 4.1, 0.0),
-    ("198.51.100.42", "core2.waw.example.net", 4.6, 0.0),
-    ("203.0.113.9", "ix1.waw.example.org", 7.0, 0.0),
-    ("203.0.113.77", "", 7.4, 0.35),
-    ("192.0.2.33", "edge3.fra.example.com", 7.6, 0.0),
-    ("192.0.2.120", "", 7.9, 0.01),
-    ("8.8.8.8", "dns.google", 7.7, 0.004),
+    ("203.0.113.9", "ix1.fra.example.org", 18.0, 0.0),
+    ("203.0.113.77", "edge1.nyc.example.org", 92.0, 0.0),
+    ("192.0.2.33", "", 128.0, 0.35),
+    ("192.0.2.120", "core1.lax.example.com", 165.0, 0.0),
+    ("192.0.2.150", "", 172.0, 0.01),
+    ("192.0.2.200", "www.syd.example.com", 245.0, 0.004),
 ];
 
 /// Pseudo-random numbers in 0..1 for the demo (xorshift); no need for a crate.
@@ -239,7 +241,7 @@ fn start_demo(
     channel: Channel<TraceEvent>,
     traces: &Traces,
 ) -> Result<Started, String> {
-    let interval_ms = interval_ms.clamp(200, 60_000);
+    let interval_ms = interval_ms.clamp(100, 60_000);
     let now = || {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -491,7 +493,7 @@ fn start_trace(
             protocol.to_uppercase()
         ));
     }
-    let interval = Duration::from_millis(interval_ms.clamp(200, 60_000));
+    let interval = Duration::from_millis(interval_ms.clamp(100, 60_000));
     // A round lasts at least the interval, and a reply counts until its round ends.
     let timeout = Duration::from_millis(timeout_ms.clamp(100, 10_000)).max(interval);
     // From the smallest IPv6 probe to the most trippy-core sends.

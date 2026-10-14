@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** Tints of the latency bands behind a graph, green to red; the toolbar's legend uses them too. */
+  export const BAND_FILLS = ["rgba(34, 197, 94, 0.32)", "rgba(234, 179, 8, 0.34)", "rgba(239, 68, 68, 0.36)"];
+</script>
+
 <script lang="ts">
   import { Menu } from "@tauri-apps/api/menu";
   import uPlot from "uplot";
@@ -109,7 +114,6 @@
     const y = (ms: number) => Math.min(top + height, Math.max(top, u.valToPos(ms, "y", true)));
     const x = (t: number) => Math.min(left + width, Math.max(left, u.valToPos(t, "x", true)));
     const edges = [top + height, y(settings.warnMs), y(settings.badMs), top];
-    const fills = ["rgba(34, 197, 94, 0.32)", "rgba(234, 179, 8, 0.34)", "rgba(239, 68, 68, 0.36)"];
     const step = intervalMs / 1000;
     const xs = u.data[0];
     let from: number | null = null;
@@ -123,7 +127,7 @@
       if (from !== null) {
         // The last probe's value holds for one interval, so the stretch covers that too.
         const [x0, x1] = [x(from), x(xs[i - 1] + step)];
-        fills.forEach((fill, band) => {
+        BAND_FILLS.forEach((fill, band) => {
           u.ctx.fillStyle = fill;
           u.ctx.fillRect(x0, edges[band + 1], x1 - x0, edges[band] - edges[band + 1]);
         });

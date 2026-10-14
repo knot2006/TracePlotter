@@ -5,6 +5,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
+  import { BAND_FILLS } from "../lib/HopGraph.svelte";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import Picker from "../lib/Picker.svelte";
   import Settings from "../lib/Settings.svelte";
@@ -71,7 +72,8 @@
   // How much of the newest history the table and graphs cover; remembered between launches.
   // In seconds, 0 for everything.
   const storedSpan = Number(localStorage.getItem(SPAN_KEY) ?? 600);
-  const initialSpan = Number.isFinite(storedSpan) && storedSpan >= 0 ? storedSpan : 600;
+  // Whole seconds only: spanLabel and spanShort need a unit that divides the span.
+  const initialSpan = Number.isInteger(storedSpan) && storedSpan >= 0 ? storedSpan : 600;
   let focusSeconds = $state(initialSpan);
 
   function changeSpan(seconds: number) {
@@ -794,9 +796,9 @@
       />
     </label>
     <div class="legend" role="img" aria-label="Latency colours: green under {limits.warn} ms, yellow under {limits.bad} ms, red above">
-      <span class="good"></span>
-      <span class="warn">{limits.warn}ms</span>
-      <span class="bad">{limits.bad}ms</span>
+      <span style:background={BAND_FILLS[0]}></span>
+      <span class="warn" style:background={BAND_FILLS[1]}>{limits.warn}ms</span>
+      <span class="bad" style:background={BAND_FILLS[2]}>{limits.bad}ms</span>
     </div>
     {#if error}<span class="error" role="alert">{error}</span>{/if}
     {#if notice}<span role="status">{notice}</span>{/if}
@@ -1112,17 +1114,12 @@
     flex: 1;
     padding-left: 5px;
   }
-  /* The tints of the graphs' latency bands and the colours of slow values in the table.
+  /* On the tints of the graphs' latency bands, the colours of slow values in the table.
      The fainter tints of the hops' bars look dimmer here, on the toolbar's lighter panel. */
-  .legend .good {
-    background: rgba(34, 197, 94, 0.32);
-  }
   .legend .warn {
-    background: rgba(234, 179, 8, 0.34);
     color: #fbbf24;
   }
   .legend .bad {
-    background: rgba(239, 68, 68, 0.36);
     color: #f87171;
   }
   .error {
