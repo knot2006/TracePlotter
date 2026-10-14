@@ -2,6 +2,8 @@ import type { Protocol } from "./trace.ts";
 
 /** Whether this is Windows, where the Windows ICMP API exists. */
 export const WINDOWS = typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
+/** Whether this is macOS, where copy and paste in the page need an Edit menu. */
+export const MACOS = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac OS");
 
 /** The times between rounds the app offers, in ms. */
 export const INTERVALS = [500, 1000, 2500, 5000, 10000];

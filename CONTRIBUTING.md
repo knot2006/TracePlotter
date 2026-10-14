@@ -15,7 +15,7 @@ code is kept portable.
 ## Run from source
 
 A normal terminal will do. Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need
-Administrator rights; for those, start the terminal elevated or use **File > Restart as
+Administrator rights; for those, start the terminal elevated or use **Tools > Restart as
 Administrator…** in the app.
 
 ```bash

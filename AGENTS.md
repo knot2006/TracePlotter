@@ -76,7 +76,7 @@ npm run tauri dev -- -- -- --demo
 ## The MCP server
 
 The app has a built-in MCP server so that agents can read its traces. People turn it on under
-**Tools > Allow AI agents to connect (MCP server)**; `--mcp` turns it on for one run. It listens on
+**Tools > AI agents (MCP server) > Allow agents to connect**; `--mcp` turns it on for one run. It listens on
 `http://127.0.0.1:3917/mcp` (Streamable HTTP, plain JSON answers, no event stream) and refuses
 requests that carry an `Origin` header or another `Host`, so web pages cannot reach it.
 

@@ -72,7 +72,7 @@
 <div class="cards">
   <section>
     <h2>New targets</h2>
-    <p>What a new tab starts with. Open tabs keep their own: change those in the toolbar and under Edit.</p>
+    <p>What a new tab starts with. Open tabs keep their own: change those in the toolbar and under Trace.</p>
     <label class="row">
       <span>Packet type</span>
       <select value={shown.protocol} onchange={(event) => set("protocol", event.currentTarget)}>

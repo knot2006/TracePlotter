@@ -1141,6 +1141,39 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Opens the project's GitHub page in the default browser.
+#[tauri::command]
+fn open_project_page() -> Result<(), String> {
+    let url = format!("https://github.com/{UPDATE_REPO}");
+    #[cfg(windows)]
+    {
+        let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let opened = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                wide("open").as_ptr(),
+                wide(&url).as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+        if opened as usize <= 32 {
+            return Err(format!("The browser did not open {url}"));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        std::process::Command::new(opener)
+            .arg(&url)
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("The browser did not open {url}: {e}"))
+    }
+}
+
 /// After `restart_elevated`: waits for the instance this one replaces to close. Two
 /// instances with different rights cannot share the webview's data folder.
 // ponytail: waits for the app's process only. If its webview processes linger and the
@@ -1216,6 +1249,7 @@ pub fn run() {
             allow_icmp_replies,
             is_elevated,
             restart_elevated,
+            open_project_page,
             mcp::mcp_flag,
             mcp::mcp_serve,
             mcp::mcp_respond

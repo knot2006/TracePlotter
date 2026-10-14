@@ -33,7 +33,7 @@ a switch for desktop notifications.
 - **Administrator rights only for raw sockets.** The app starts without them, and traces with the
   packet type ICMP (Windows API), which new targets start with, need none. ICMP (raw socket), UDP and
   TCP probes and adding the firewall rules below do: when one of them is asked for, the app offers
-  **Restart as Administrator** (also in the File menu and the Settings tab). Open tabs and their
+  **Restart as Administrator** (also in the Tools menu and the Settings tab). Open tabs and their
   history are kept.
 
 ### Windows firewall
@@ -71,7 +71,7 @@ machine.
 The app looks for a newer release on GitHub when it starts and under **Help > Check for
 updates…**. A found update is offered in a bar at the top; **Update and restart** downloads it,
 checks its signature, replaces the exe and restarts. Tabs and history stay. Nothing is downloaded
-without that click, and **Help > Check for updates at startup** switches the check off.
+without that click, and **Check for updates at startup** in the Settings tab switches the check off.
 
 An update is installed only if it is signed with the release key whose public half is built into
 the app, so a download that was tampered with is refused.
@@ -91,9 +91,9 @@ folder, so real tabs and history are left alone.
 
 TracePlotter can let AI agents such as Claude read its traces, so you can ask them things like "why
 is my connection to the game server lagging tonight?" or "which hop loses packets?". Turn it on
-under **Tools > Allow AI agents to connect (MCP server)**. The app then runs an MCP server at
-`http://127.0.0.1:3917/mcp` for as long as it is open; **Tools > Copy agent address** copies that
-address. If another program holds port 3917, pick another in the Settings tab.
+under **Tools > AI agents (MCP server) > Allow agents to connect**. The app then runs an MCP server
+at `http://127.0.0.1:3917/mcp` for as long as it is open; **Copy address** in the same menu copies
+that address. If another program holds port 3917, pick another in the Settings tab.
 
 Add it to your agent as an HTTP MCP server. For Claude Code:
 

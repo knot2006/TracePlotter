@@ -7,7 +7,7 @@
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import Settings from "../lib/Settings.svelte";
-  import { INTERVALS, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
+  import { INTERVALS, MACOS, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
   import { parseSpan, spanLabel } from "../lib/stats";
@@ -153,7 +153,6 @@
   function setAutoCheck(on: boolean) {
     autoCheck = on;
     localStorage.setItem(AUTO_CHECK_KEY, on ? "yes" : "no");
-    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
   }
 
   /** Opens the settings. The host box is emptied, as it is for All targets. */
@@ -341,29 +340,41 @@
           items: [
             { id: "new", text: "New target", accelerator: "CmdOrCtrl+T", action: newTarget },
             { id: "close", text: "Close tab", accelerator: "CmdOrCtrl+W", action: () => active && close(active) },
+            { item: "Separator" },
             { id: "import", text: "Import samples (.csv)…", action: importSamples },
+            {
+              text: "Export",
+              items: [
+                { id: "txt", text: "MTR report (.txt)…", action: onTab((t) => t.exportTxt()) },
+                { id: "csv", text: "Samples (.csv)…", action: onTab((t) => t.exportCsv()) },
+                { id: "png", text: "Graph (.png)…", action: onTab((t) => t.exportPng()) },
+                // Opens the print dialog; "Save as PDF" there writes the file.
+                { id: "pdf", text: "Page as PDF…", accelerator: "CmdOrCtrl+P", action: onTab(() => window.print()) },
+              ],
+            },
             { item: "Separator" },
             { id: "settings", text: "Settings…", accelerator: "CmdOrCtrl+,", action: openSettings },
-            ...(WINDOWS
-              ? [{ id: "elevate", text: "Restart as Administrator…", enabled: !elevated, action: restartElevated }]
-              : []),
             { item: "Separator" },
             { item: "CloseWindow", text: "Exit" },
           ],
         },
-        {
-          text: "Edit",
-          items: [
-            { id: "txt", text: "Export MTR report (.txt)…", action: onTab((t) => t.exportTxt()) },
-            // Opens the print dialog; "Save as PDF" there writes the file.
-            { id: "pdf", text: "Export page as PDF…", accelerator: "CmdOrCtrl+P", action: onTab(() => window.print()) },
-            { id: "csv", text: "Export samples (.csv)…", action: onTab((t) => t.exportCsv()) },
-            { id: "png", text: "Export graph (.png)…", action: onTab((t) => t.exportPng()) },
-            { item: "Separator" },
-            { id: "probe", text: "Probe settings…", action: onTab((t) => t.openProbe()) },
-            { id: "alerts", text: "Alerts…", action: onTab((t) => t.openAlerts()) },
-          ],
-        },
+        // Only macOS needs these: there, copy and paste in the page go through the menu.
+        ...(MACOS
+          ? [
+              {
+                text: "Edit",
+                items: [
+                  { item: "Undo" as const },
+                  { item: "Redo" as const },
+                  { item: "Separator" as const },
+                  { item: "Cut" as const },
+                  { item: "Copy" as const },
+                  { item: "Paste" as const },
+                  { item: "SelectAll" as const },
+                ],
+              },
+            ]
+          : []),
         {
           text: "View",
           items: [
@@ -381,26 +392,44 @@
         {
           text: "Trace",
           items: [
-            { id: "pause", text: "Pause / resume", action: () => active && togglePause(active) },
+            {
+              id: "pause",
+              text: "Pause / resume",
+              accelerator: "CmdOrCtrl+Shift+P",
+              action: () => active && togglePause(active),
+            },
             { id: "restart", text: "Restart and erase history…", action: () => active && restart(active) },
+            { item: "Separator" },
+            { id: "probe", text: "Probe settings…", action: onTab((t) => t.openProbe()) },
+            { id: "alerts", text: "Alerts…", action: onTab((t) => t.openAlerts()) },
           ],
         },
         {
           text: "Tools",
           items: [
-            { id: "firewall", text: "Allow ICMP replies in Windows Firewall…", action: allowIcmp },
-            { item: "Separator" },
+            ...(WINDOWS
+              ? [
+                  { id: "firewall", text: "Allow ICMP replies in Windows Firewall…", action: allowIcmp },
+                  { id: "elevate", text: "Restart as Administrator…", enabled: !elevated, action: restartElevated },
+                  { item: "Separator" as const },
+                ]
+              : []),
             {
-              id: "agents",
-              text: "Allow AI agents to connect (MCP server)",
-              checked: mcpOn,
-              action: () => setAgentAccess(!mcpOn, true),
-            },
-            {
-              id: "agents-address",
-              text: mcpUrl ? `Copy agent address (${mcpUrl})` : "Copy agent address",
-              enabled: !!mcpUrl,
-              action: copyAgentAddress,
+              text: "AI agents (MCP server)",
+              items: [
+                {
+                  id: "agents",
+                  text: "Allow agents to connect",
+                  checked: mcpOn,
+                  action: () => setAgentAccess(!mcpOn, true),
+                },
+                {
+                  id: "agents-address",
+                  text: mcpUrl ? `Copy address (${mcpUrl})` : "Copy address",
+                  enabled: !!mcpUrl,
+                  action: copyAgentAddress,
+                },
+              ],
             },
           ],
         },
@@ -408,13 +437,12 @@
           text: "Help",
           items: [
             { id: "check-update", text: "Check for updates…", action: () => checkUpdates(true) },
-            {
-              id: "auto-check",
-              text: "Check for updates at startup",
-              checked: autoCheck,
-              action: () => setAutoCheck(!autoCheck),
-            },
             { item: "Separator" },
+            {
+              id: "github",
+              text: "TracePlotter on GitHub",
+              action: () => invoke("open_project_page").catch((e) => (error = String(e))),
+            },
             { id: "version", text: `TracePlotter ${version}`, enabled: false },
           ],
         },
