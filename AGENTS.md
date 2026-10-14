@@ -17,7 +17,8 @@ a trace's data and its link to the backend; `src/lib/stats.ts` and `events.ts` t
 `src/lib/settings.ts` the app-wide settings and `Settings.svelte` their tab;
 `src/lib/agent.ts` the answers of the MCP server; `src-tauri/src/lib.rs` probing, history, updates
 and the other commands; `src-tauri/src/mcp.rs` the MCP server; `src-tauri/src/winicmp.rs` the
-Windows ICMP API.
+Windows ICMP API and `src-tauri/src/pingsock.rs` Linux ping sockets, with what they share in
+`src-tauri/src/echo.rs`.
 
 ## Checks
 

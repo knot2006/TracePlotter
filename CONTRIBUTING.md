@@ -78,6 +78,8 @@ npm run tauri build -- --no-bundle -- --profile fast
 - `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
 - `src-tauri/src/lib.rs`: probing, history files, updates and the other backend commands.
 - `src-tauri/src/mcp.rs` and `src/lib/agent.ts`: the MCP server that lets AI agents read the traces.
+- `src-tauri/src/winicmp.rs` and `pingsock.rs`: ICMP traces without raw sockets, through the Windows
+  ICMP API and Linux ping sockets; `echo.rs` holds what they share.
 
 Dates and numbers of a trace are kept in plain objects that are changed in place; the interface
 redraws when a counter (`rev`) changes. That keeps a day of samples out of Svelte's reactivity.

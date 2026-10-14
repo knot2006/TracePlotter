@@ -4214,6 +4214,7 @@ version = "0.1.5"
 dependencies = [
  "base64 0.23.1",
  "dns-lookup",
+ "libc",
  "minisign-verify",
  "serde",
  "serde_json",

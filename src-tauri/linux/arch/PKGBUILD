@@ -1,0 +1,44 @@
+# Builds TracePlotter for Arch Linux from a release's source. The Release workflow writes
+# the tag's version and the source's checksum in, builds the package and publishes both with
+# the release. By hand: set pkgver to a released version, then `makepkg -si` in this folder.
+pkgname=traceplotter
+pkgver=0
+pkgrel=1
+pkgdesc="Open-source visual traceroute and ping monitor"
+arch=(x86_64)
+url="https://github.com/knot2006/TracePlotter"
+license=(Apache-2.0)
+# libcap for the setcap in traceplotter.install.
+depends=(gtk3 libcap webkit2gtk-4.1)
+makedepends=(cargo nodejs npm)
+install=traceplotter.install
+# makepkg's LTO compiles C code (ring's) to GCC bitcode, which Rust's linker cannot read;
+# the release profile does its own LTO.
+options=(!lto)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# The Release workflow fills this in with updpkgsums.
+sha256sums=('SKIP')
+
+build() {
+  cd "TracePlotter-$pkgver"
+  npm ci
+  npm run tauri build -- --no-bundle
+}
+
+package() {
+  cd "TracePlotter-$pkgver"
+  install -Dm755 src-tauri/target/release/traceplotter "$pkgdir/usr/bin/traceplotter"
+  install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/traceplotter.png"
+  install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/traceplotter.png"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/traceplotter.desktop" <<END
+[Desktop Entry]
+Type=Application
+Name=TracePlotter
+Comment=$pkgdesc
+Exec=traceplotter
+Icon=traceplotter
+StartupWMClass=traceplotter
+Categories=Network;Monitor;
+Terminal=false
+END
+}
