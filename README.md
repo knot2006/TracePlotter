@@ -6,7 +6,7 @@
 Open-source visual traceroute and ping monitor.
 
 - Continuous traceroute over **ICMP, UDP or TCP** (IPv4 and IPv6)
-- ICMP through the Windows ICMP API or through raw sockets; reply timeout and packet size per target
+- ICMP through the Windows ICMP API, Linux ping sockets or raw sockets; reply timeout and packet size per target
 - One tab per target, several targets at once
 - Per-hop loss, last/avg/min/max latency and jitter
 - Latency, jitter and packet-loss graphs for any hop, with a slider to scroll back in time
@@ -29,7 +29,7 @@ a switch for desktop notifications.
 
 ## Requirements
 
-- Windows 10 or 11 with the WebView2 runtime (part of Windows 11).
+- Windows 10 or 11 with the WebView2 runtime (part of Windows 11), or Linux (see below).
 - **Administrator rights only for raw sockets.** The app starts without them, and traces with the
   packet type ICMP (Windows API), which new targets start with, need none. ICMP (raw socket), UDP and
   TCP probes and adding the firewall rules below do: when one of them is asked for, the app offers
@@ -54,6 +54,28 @@ The rules allow echo reply, destination unreachable and time exceeded only; they
 machine answer pings.
 
 Remove them again with `Remove-NetFirewallRule TRACEPLOTTER_ICMPV4, TRACEPLOTTER_ICMPV6`.
+
+### Linux
+
+Each release also has Linux builds: a `.deb` and an `.rpm` package, which need WebKitGTK 4.1
+(Ubuntu 22.04, Debian 12, Fedora 36 or later), an Arch Linux package (`.pkg.tar.zst`, with its
+`PKGBUILD`) and an AppImage that brings its own WebKitGTK and runs anywhere. New targets start with the packet type **ICMP (ping socket)**,
+which traces through the ping sockets `ping` and `tracepath` use and needs no rights at all, only a
+group within `net.ipv4.ping_group_range`; most distributions open that to every user.
+
+ICMP (raw socket), UDP and TCP probe through raw sockets, which need the capability `cap_net_raw`.
+The packages give the app that capability when they install it, the way trippy's packages do for
+`trip`. The AppImage cannot have it, as it runs from a mount that ignores capabilities; it traces
+with ICMP (ping socket) only. A copy built from source can be given it under **Tools > Allow raw
+sockets…**, which asks for an administrator's password and restarts the app, or by hand:
+
+```bash
+sudo setcap cap_net_raw+ep /path/to/traceplotter
+```
+
+Nobody has to run TracePlotter as root. The app keeps its data in
+`~/.local/share/TracePlotter-data` instead of next to the exe, and it does not install updates
+itself: when a newer release is found, it offers a link to the project page.
 
 ## Portable
 

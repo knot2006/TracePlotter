@@ -114,7 +114,7 @@ fn tools() -> Value {
                     "protocol": {
                         "type": "string",
                         "enum": ["winicmp", "icmp", "udp", "tcp"],
-                        "description": "Probe type: winicmp is ICMP through the Windows ICMP API (Windows only, the default there), icmp is ICMP through a raw socket (the default elsewhere), udp and tcp send to a port."
+                        "description": "Probe type: winicmp is ICMP through the system without a raw socket, the Windows ICMP API or Linux ping sockets (the default on both), icmp is ICMP through a raw socket (the default elsewhere), udp and tcp send to a port."
                     },
                     "port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Destination port for udp (default 33434) and tcp (default 443)." },
                     "interval_ms": { "type": "integer", "enum": [1000, 2500, 5000, 10000], "description": "Time between rounds in ms, one of the intervals the app offers. Default 1000, which is also the fastest an agent may use." }

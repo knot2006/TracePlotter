@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.1.5"
+version = "0.1.6"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
@@ -32,6 +32,10 @@ tiny_http = "0.12"
 
 [target.'cfg(not(windows))'.dependencies]
 dns-lookup = "4"
+
+# Ping sockets, for ICMP traces that need no raw socket (see pingsock.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
 # reverse DNS without NetBIOS. Also the check for Administrator rights and the restart with them.

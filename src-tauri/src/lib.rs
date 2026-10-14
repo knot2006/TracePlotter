@@ -14,9 +14,20 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowE
 use tauri_plugin_dialog::DialogExt;
 use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tracer};
 
+#[cfg(any(windows, target_os = "linux"))]
+mod echo;
 mod mcp;
+#[cfg(target_os = "linux")]
+mod pingsock;
 #[cfg(windows)]
 mod winicmp;
+
+/// ICMP echo through the system, which needs no raw socket: the Windows ICMP API, or Linux
+/// ping sockets.
+#[cfg(target_os = "linux")]
+use pingsock::Pinger;
+#[cfg(windows)]
+use winicmp::Pinger;
 
 /// Hours of history a tab keeps. The Settings tab changes it through `set_history_hours`.
 static HISTORY_HOURS: AtomicU64 = AtomicU64::new(24);
@@ -397,10 +408,10 @@ fn trace_raw(
     }
 }
 
-/// Runs a trace over the Windows ICMP API until `stop` is set. It holds no socket or
+/// Runs a trace by ICMP echo through the system (`Pinger`) until `stop` is set. It holds no
 /// source address, so a change of network needs no rebuilding.
-#[cfg(windows)]
-fn trace_windows(
+#[cfg(any(windows, target_os = "linux"))]
+fn trace_echo(
     addr: IpAddr,
     packet_size: u16,
     timeout: Duration,
@@ -408,7 +419,7 @@ fn trace_windows(
     stop: &AtomicBool,
     recorder: &Recorder,
 ) {
-    let mut pinger = match winicmp::Pinger::new(addr, packet_size, timeout) {
+    let mut pinger = match Pinger::new(addr, packet_size, timeout) {
         Ok(pinger) => pinger,
         Err(e) => return recorder.error(format!("Trace stopped: {e}")),
     };
@@ -428,7 +439,8 @@ fn start_trace(
     // Id of the tab; names its history file, so tabs never share history.
     session: String,
     host: String,
-    // "icmp", "udp" and "tcp" probe through raw sockets, "winicmp" through the Windows ICMP API.
+    // "icmp", "udp" and "tcp" probe through raw sockets, "winicmp" through the system's ICMP
+    // echo: the Windows ICMP API, or Linux ping sockets. The name stays for saved tabs.
     protocol: String,
     port: u16,
     interval_ms: u64,
@@ -451,17 +463,31 @@ fn start_trace(
         .next()
         .ok_or_else(|| format!("no address for {host}"))?
         .ip();
-    // `None` is the Windows ICMP API.
+    // Ping sockets need the user's group within net.ipv4.ping_group_range. Where that is
+    // shut, ICMP goes through a raw socket instead if TracePlotter may open one.
+    #[cfg(target_os = "linux")]
+    let protocol = if protocol == "winicmp" && !pingsock::available(addr) && raw_sockets_allowed() {
+        "icmp".to_string()
+    } else {
+        protocol
+    };
+    // `None` is the system's ICMP echo.
     let raw = match protocol.as_str() {
         "icmp" => Some((Protocol::Icmp, PortDirection::None)),
         "udp" => Some((Protocol::Udp, PortDirection::FixedDest(Port(port)))),
         "tcp" => Some((Protocol::Tcp, PortDirection::FixedDest(Port(port)))),
-        "winicmp" if cfg!(windows) => None,
+        "winicmp" if cfg!(any(windows, target_os = "linux")) => None,
         other => return Err(format!("unknown protocol {other}")),
     };
     if raw.is_some() && !is_elevated() {
+        #[cfg(windows)]
         return Err(format!(
             "{} probes use raw sockets, which need Administrator rights. Restart TracePlotter as Administrator (File menu) or use ICMP (Windows API).",
+            protocol.to_uppercase()
+        ));
+        #[cfg(not(windows))]
+        return Err(format!(
+            "{} probes use raw sockets, which TracePlotter may not open yet. Allow them under Tools > Allow raw sockets… or use ICMP (ping socket).",
             protocol.to_uppercase()
         ));
     }
@@ -523,9 +549,9 @@ fn start_trace(
 
     std::thread::spawn(move || match build {
         Some(build) => trace_raw(build, tracer, dead_rounds, addr, &stop, &recorder),
-        #[cfg(windows)]
-        None => trace_windows(addr, packet_size, timeout, interval, &stop, &recorder),
-        #[cfg(not(windows))]
+        #[cfg(any(windows, target_os = "linux"))]
+        None => trace_echo(addr, packet_size, timeout, interval, &stop, &recorder),
+        #[cfg(not(any(windows, target_os = "linux")))]
         None => {}
     });
 
@@ -533,13 +559,26 @@ fn start_trace(
 }
 
 /// The folder for everything the app stores: trace history, the webview's storage (open
-/// tabs and settings) and the window's size. It sits next to the exe, not in the user
-/// profile, so the app is portable: copy the exe with this folder and nothing is left behind.
+/// tabs and settings) and the window's size. On Windows it sits next to the exe, not in the
+/// user profile, so the app is portable: copy the exe with this folder and nothing is left
+/// behind. Elsewhere the exe is installed where the user cannot write, so it is in the
+/// user's data folder (`~/.local/share`).
 fn data_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let exe = std::env::current_exe().unwrap_or_default();
-        exe.parent().unwrap_or(Path::new(".")).join(if demo() {
+        #[cfg(windows)]
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| ".".into());
+        #[cfg(not(windows))]
+        // A relative XDG_DATA_HOME is to be ignored, as the XDG spec says.
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")))
+            .unwrap_or_else(|| ".".into());
+        base.join(if demo() {
             "TracePlotter-demo-data"
         } else {
             "TracePlotter-data"
@@ -652,8 +691,9 @@ fn stop_trace(id: u32, traces: State<'_, Traces>) {
 }
 
 /// The locale of the host's regional format (how it writes dates and times), such as
-/// "pl-PL". This is the Windows "Regional format" setting, which can differ from the
-/// display language the webview goes by. `None` where it cannot be read.
+/// "pl-PL". This is the Windows "Regional format" setting, or elsewhere the locale of
+/// LC_TIME, which can differ from the display language the webview goes by. `None` where it
+/// cannot be read.
 #[tauri::command]
 fn host_locale() -> Option<String> {
     #[cfg(windows)]
@@ -669,10 +709,19 @@ fn host_locale() -> Option<String> {
         (length > 1).then(|| String::from_utf16_lossy(&name[..length as usize - 1]))
     }
     #[cfg(not(windows))]
-    None
+    locale_name(["LC_ALL", "LC_TIME", "LANG"].into_iter().filter_map(|key| std::env::var(key).ok()))
+}
+
+/// The first set POSIX locale, such as "pl_PL.UTF-8", as a locale name such as "pl-PL".
+#[cfg(any(not(windows), test))]
+fn locale_name(mut values: impl Iterator<Item = String>) -> Option<String> {
+    let value = values.find(|value| !value.is_empty())?;
+    let name = value.split(['.', '@']).next()?.replace('_', "-");
+    (!name.is_empty() && name != "C" && name != "POSIX").then_some(name)
 }
 
 /// The DNS name under which an address has its PTR record.
+#[cfg(any(windows, test))]
 fn ptr_name(addr: IpAddr) -> String {
     match addr {
         IpAddr::V4(v4) => {
@@ -1002,6 +1051,10 @@ fn check_update() -> Result<Option<UpdateInfo>, String> {
 /// an exe at its usual path, and the first is undone if the second fails.
 #[tauri::command(async)]
 fn install_update(app: AppHandle) -> Result<(), String> {
+    // Releases carry one exe, for Windows. Elsewhere the package manager or the user updates.
+    if !cfg!(windows) {
+        return Err("updates are installed from the release page outside Windows".into());
+    }
     let release = latest_release()?.ok_or("no update is published")?;
     if !is_newer(&release.version, env!("CARGO_PKG_VERSION")) {
         return Err("this is already the latest version".into());
@@ -1083,9 +1136,9 @@ fn allow_icmp_replies() -> Result<(), String> {
     Err("Firewall rules are only needed on Windows".into())
 }
 
-/// Whether the process has Administrator rights, which raw sockets and firewall rules need
-/// on Windows. Elsewhere the system decides per socket, and in demo mode nothing is
-/// probed, so both say yes.
+/// Whether the process may open raw sockets: on Windows with Administrator rights, which
+/// firewall rules need as well, elsewhere with CAP_NET_RAW. In demo mode nothing is probed,
+/// so it says yes.
 #[tauri::command]
 fn is_elevated() -> bool {
     #[cfg(windows)]
@@ -1093,26 +1146,58 @@ fn is_elevated() -> bool {
         demo() || unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
     }
     #[cfg(not(windows))]
-    true
+    {
+        demo() || raw_sockets_allowed()
+    }
+}
+
+/// Whether raw sockets may be opened outside Windows: as root, or with CAP_NET_RAW (bit 13
+/// of the effective capabilities), which `setcap cap_net_raw+ep` gives the exe, as the
+/// packages do when they install it and `restart_elevated` does on request. Where /proc
+/// cannot be read, as on macOS, the answer is no.
+#[cfg(not(windows))]
+fn raw_sockets_allowed() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            let caps = status.lines().find_map(|line| line.strip_prefix("CapEff:"))?;
+            u64::from_str_radix(caps.trim(), 16).ok()
+        })
+        .is_some_and(|caps| caps & (1 << 13) != 0)
+}
+
+/// Whether `restart_elevated` can give the app raw sockets. An AppImage runs from a mount
+/// that ignores file capabilities, so it cannot.
+#[tauri::command]
+fn can_elevate() -> bool {
+    std::env::var_os("APPIMAGE").is_none()
 }
 
 /// Switch that names the process a restarted one takes over from.
 const AFTER: &str = "--after";
 
+/// The switches this run was started with, and this process for the new one to wait for.
+fn restart_args() -> Vec<String> {
+    let mut args: Vec<String> = std::env::args()
+        .filter(|arg| arg == "--demo" || arg == "--mcp")
+        .collect();
+    args.extend([AFTER.to_string(), std::process::id().to_string()]);
+    args
+}
+
 /// Starts the exe again with Administrator rights, which Windows asks the user to allow,
-/// and closes this one. Tabs and history are kept, as across any restart.
-#[tauri::command]
+/// and closes this one. Elsewhere it gives the exe CAP_NET_RAW through `pkexec setcap`,
+/// which asks for an administrator's password, and restarts into it: the capability stays
+/// with the file, so later starts have it too. Tabs and history are kept, as across any
+/// restart. Async, so that the window keeps drawing while the prompt waits for an answer.
+#[tauri::command(async)]
 fn restart_elevated(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         let wide = |text: &std::ffi::OsStr| text.encode_wide().chain([0]).collect::<Vec<u16>>();
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        // The switches this run was started with, and this process for the new one to wait for.
-        let mut args: Vec<String> = std::env::args()
-            .filter(|arg| arg == "--demo" || arg == "--mcp")
-            .collect();
-        args.extend([AFTER.to_string(), std::process::id().to_string()]);
+        let args = restart_args();
         let started = unsafe {
             windows_sys::Win32::UI::Shell::ShellExecuteW(
                 std::ptr::null_mut(),
@@ -1136,8 +1221,38 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
-        Err("Restarting as Administrator is for Windows".into())
+        if !can_elevate() {
+            return Err("An AppImage cannot be allowed raw sockets. Use ICMP (ping socket), or install TracePlotter from a package.".into());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // pkexec wants a full path, and distributions keep setcap in different folders.
+        let setcap = ["/usr/sbin/setcap", "/usr/bin/setcap", "/sbin/setcap"]
+            .into_iter()
+            .find(|path| Path::new(path).exists())
+            .ok_or("setcap is not installed (on Debian and Ubuntu it is in libcap2-bin)")?;
+        let status = std::process::Command::new("pkexec")
+            .args([setcap, "cap_net_raw+ep"])
+            .arg(&exe)
+            .status()
+            .map_err(|e| format!("cannot run pkexec: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "TracePlotter was not allowed raw sockets. Allow them with: sudo setcap cap_net_raw+ep {}",
+                exe.display()
+            ));
+        }
+        // Started anew rather than through `app.restart()`, so that it waits for this one
+        // to close, as on Windows.
+        std::process::Command::new(&exe)
+            .args(restart_args())
+            .spawn()
+            .map_err(|e| format!("TracePlotter was allowed raw sockets but did not restart: {e}"))?;
+        // An exit does not pass through the window's close request, where this is saved.
+        if let Some(window) = app.get_webview_window("main") {
+            save_window_state(&window.as_ref().window());
+        }
+        app.exit(0);
+        Ok(())
     }
 }
 
@@ -1178,16 +1293,25 @@ fn open_project_page() -> Result<(), String> {
 /// instances with different rights cannot share the webview's data folder.
 // ponytail: waits for the app's process only. If its webview processes linger and the
 // window fails to open, wait for the data folder's lock file as well.
-#[cfg(windows)]
 fn wait_for_predecessor() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     let pid = std::env::args()
         .skip_while(|arg| arg != AFTER)
         .nth(1)
         .and_then(|pid| pid.parse::<u32>().ok());
     let Some(pid) = pid else { return };
+    #[cfg(not(windows))]
+    {
+        // The process is gone when its /proc entry is.
+        let entry = Path::new("/proc").join(pid.to_string());
+        let start = std::time::Instant::now();
+        while entry.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(windows)]
     unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
         let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if !process.is_null() {
             WaitForSingleObject(process, 10_000);
@@ -1198,8 +1322,17 @@ fn wait_for_predecessor() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(windows)]
     wait_for_predecessor();
+    // WebKitGTK's DMA-BUF renderer breaks the Wayland connection with NVIDIA's driver
+    // ("Error 71 (Protocol error) dispatching to Wayland display") and the app quits at
+    // once. Without it the page is drawn through shared memory, which is fast enough here.
+    #[cfg(target_os = "linux")]
+    if Path::new("/sys/module/nvidia").exists()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        // SAFETY: no other thread is running yet to read the environment.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1248,6 +1381,7 @@ pub fn run() {
             install_update,
             allow_icmp_replies,
             is_elevated,
+            can_elevate,
             restart_elevated,
             open_project_page,
             mcp::mcp_flag,
@@ -1276,6 +1410,15 @@ mod tests {
             sent: SystemTime::now(),
             flags: Flags::empty(),
         })
+    }
+
+    #[test]
+    fn posix_locales_become_locale_names() {
+        let name = |values: &[&str]| locale_name(values.iter().map(|v| v.to_string()));
+        assert_eq!(name(&["", "pl_PL.UTF-8"]).as_deref(), Some("pl-PL"));
+        assert_eq!(name(&["de_DE@euro"]).as_deref(), Some("de-DE"));
+        assert_eq!(name(&["C.UTF-8"]), None);
+        assert_eq!(name(&[]), None);
     }
 
     #[test]

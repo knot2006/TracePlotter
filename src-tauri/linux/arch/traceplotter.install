@@ -1,0 +1,9 @@
+# Probes other than ICMP (ping socket) go out through raw sockets. This capability lets
+# every user open them without running TracePlotter as root, as trippy's package does.
+post_install() {
+  setcap cap_net_raw+ep usr/bin/traceplotter
+}
+
+post_upgrade() {
+  post_install
+}

@@ -7,7 +7,15 @@
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import Settings from "../lib/Settings.svelte";
-  import { INTERVALS, MACOS, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
+  import {
+    INTERVALS,
+    MACOS,
+    RAW_SOCKET_RIGHTS,
+    SYSTEM_ICMP,
+    WINDOWS,
+    settings,
+    type Settings as AppSettings,
+  } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
   import { parseSpan, spanLabel } from "../lib/stats";
@@ -110,11 +118,17 @@
   }
 
   // Administrator rights. The app starts without them; raw sockets and firewall rules need
-  // them on Windows, so it offers to restart with them where those are asked for. Taken as
+  // them on Windows, so it offers to restart with them where those are asked for. Elsewhere
+  // raw sockets need CAP_NET_RAW, which the app can give its exe and then restart. Taken as
   // given until the backend has answered.
   let elevated = $state(true);
+  // Whether that right can be given at all; an AppImage cannot have it.
+  let canElevate = $state(true);
 
-  /** Starts the app again as Administrator, after the Windows prompt, and closes this one. */
+  /**
+   * Starts the app again as Administrator, after the Windows prompt, and closes this one.
+   * Elsewhere gives the exe CAP_NET_RAW, after the password prompt, and restarts into it.
+   */
   function restartElevated() {
     error = notice = "";
     invoke("restart_elevated").catch((e) => (error = String(e)));
@@ -201,8 +215,8 @@
   async function agentStart(args: Arguments) {
     const host = String(args.host ?? "").trim().toLowerCase();
     if (!host) throw new Error("start_trace needs a host");
-    const protocol = (args.protocol ?? (WINDOWS ? "winicmp" : "icmp")) as Protocol;
-    if (!(protocol in PROTOCOLS) || (protocol === "winicmp" && !WINDOWS)) {
+    const protocol = (args.protocol ?? (SYSTEM_ICMP ? "winicmp" : "icmp")) as Protocol;
+    if (!(protocol in PROTOCOLS) || (protocol === "winicmp" && !SYSTEM_ICMP)) {
       throw new Error(`protocol ${protocol} is not available here`);
     }
     const port = usesPort(protocol) ? Number(args.port ?? DEFAULT_PORT[protocol]) : 0;
@@ -413,7 +427,12 @@
                   { id: "elevate", text: "Restart as Administrator…", enabled: !elevated, action: restartElevated },
                   { item: "Separator" as const },
                 ]
-              : []),
+              : canElevate
+                ? [
+                    { id: "elevate", text: "Allow raw sockets…", enabled: !elevated, action: restartElevated },
+                    { item: "Separator" as const },
+                  ]
+                : []),
             {
               text: "AI agents (MCP server)",
               items: [
@@ -575,6 +594,7 @@
   onMount(async () => {
     version = await getVersion().catch(() => "");
     elevated = await invoke<boolean>("is_elevated").catch(() => true);
+    canElevate = await invoke<boolean>("can_elevate").catch(() => true);
     // The webview's own right-click menu offers "Save as" and "Print"; exports live in File.
     document.addEventListener("contextmenu", (event) => {
       if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
@@ -631,9 +651,16 @@
   {#if update}
     <div class="update" role="status">
       <span>TracePlotter {update.version} is available (you have {version}).</span>
-      <button class="install" disabled={updating} onclick={installUpdate}>
-        {updating ? "Downloading…" : "Update and restart"}
-      </button>
+      <!-- Releases carry an exe for Windows only; elsewhere the update is downloaded by hand. -->
+      {#if WINDOWS}
+        <button class="install" disabled={updating} onclick={installUpdate}>
+          {updating ? "Downloading…" : "Update and restart"}
+        </button>
+      {:else}
+        <button class="install" onclick={() => invoke("open_project_page").catch((e) => (error = String(e)))}>
+          Open the project page
+        </button>
+      {/if}
       <button disabled={updating} onclick={() => (update = null)}>Later</button>
       {#if update.notes}
         <details>
@@ -645,10 +672,22 @@
   {/if}
   {#if wantsAdmin}
     <div class="update" role="status">
-      <span>
-        ICMP (raw socket), UDP and TCP probes need Administrator rights, which TracePlotter is running without.
-      </span>
-      <button class="install" onclick={restartElevated}>Restart as Administrator</button>
+      {#if WINDOWS}
+        <span>
+          ICMP (raw socket), UDP and TCP probes need Administrator rights, which TracePlotter is running without.
+        </span>
+        <button class="install" onclick={restartElevated}>Restart as Administrator</button>
+      {:else if canElevate}
+        <span>
+          ICMP (raw socket), UDP and TCP probes need raw sockets, which TracePlotter is not allowed to open yet.
+        </span>
+        <button class="install" onclick={restartElevated}>Allow raw sockets and restart</button>
+      {:else}
+        <span>
+          ICMP (raw socket), UDP and TCP probes need raw sockets, which an AppImage cannot open. Use ICMP (ping
+          socket), or install TracePlotter from a package.
+        </span>
+      {/if}
     </div>
   {/if}
   <div class="tabs" role="tablist">
@@ -700,8 +739,8 @@
     />
     <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
       {#each Object.entries(PROTOCOLS) as [value, name]}
-        {#if WINDOWS || value !== "winicmp"}
-          <option {value}>{name}{!elevated && value !== "winicmp" ? " (needs Administrator)" : ""}</option>
+        {#if SYSTEM_ICMP || value !== "winicmp"}
+          <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : ""}</option>
         {/if}
       {/each}
     </select>
@@ -787,6 +826,7 @@
       {mcpOn}
       {mcpUrl}
       {elevated}
+      {canElevate}
       onelevate={restartElevated}
       oncolumn={toggleColumn}
       onautocheck={setAutoCheck}
@@ -814,7 +854,9 @@
     --good: #22c55e;
     --warn: #eab308;
     --bad: #ef4444;
-    color-scheme: dark;
+    /* "only": WebKitGTK draws its form controls (the arrows of number boxes) dark for a
+       plain "dark" only when the desktop asks for dark too. */
+    color-scheme: only dark;
   }
   :global(body) {
     margin: 0;
@@ -830,6 +872,12 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+  }
+  /* Keeps a number box's digits off its arrows, and the arrows against its right edge
+     instead of inside its padding. */
+  :global(input[type="number"]::-webkit-inner-spin-button) {
+    margin-left: 4px;
+    margin-right: -4px;
   }
   :global(:focus-visible) {
     outline: 2px solid var(--accent);

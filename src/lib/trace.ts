@@ -1,15 +1,18 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { describe, type TraceEvent } from "./events";
-import { DEFAULTS, historyRounds, settings } from "./settings";
+import { DEFAULTS, WINDOWS, historyRounds, settings } from "./settings";
 import { ALERT_WINDOW, breaches, stats } from "./stats";
 
-/** `icmp`, `udp` and `tcp` probe through raw sockets; `winicmp` is ICMP through the Windows ICMP API. */
+/**
+ * `icmp`, `udp` and `tcp` probe through raw sockets; `winicmp` is ICMP through the system
+ * without one: the Windows ICMP API, or Linux ping sockets.
+ */
 export type Protocol = "winicmp" | "icmp" | "udp" | "tcp";
 
 /** Packet types by name, in the order they are offered. */
 export const PROTOCOLS: Record<Protocol, string> = {
-  winicmp: "ICMP (Windows API)",
+  winicmp: WINDOWS ? "ICMP (Windows API)" : "ICMP (ping socket)",
   icmp: "ICMP (raw socket)",
   udp: "UDP",
   tcp: "TCP",
@@ -17,12 +20,18 @@ export const PROTOCOLS: Record<Protocol, string> = {
 
 export const usesPort = (protocol: Protocol) => protocol === "udp" || protocol === "tcp";
 
-/** Whether the packet type goes through a raw socket, which on Windows needs Administrator rights. */
+/** Whether the packet type goes through a raw socket, which needs Administrator rights on Windows and CAP_NET_RAW on Linux. */
 export const usesRawSocket = (protocol: Protocol) => protocol !== "winicmp";
 
-/** A target's packet type in a few letters: "ICMP", "ICMP·WIN", "TCP:443". */
+/** A target's packet type in a few letters: "ICMP", "ICMP·WIN", "ICMP·PING", "TCP:443". */
 export const protocolLabel = ({ protocol, port }: Pick<TraceConfig, "protocol" | "port">) =>
-  usesPort(protocol) ? `${protocol.toUpperCase()}:${port}` : protocol === "icmp" ? "ICMP" : "ICMP·WIN";
+  usesPort(protocol)
+    ? `${protocol.toUpperCase()}:${port}`
+    : protocol === "icmp"
+      ? "ICMP"
+      : WINDOWS
+        ? "ICMP·WIN"
+        : "ICMP·PING";
 
 // For tabs saved before these were settings of a tab.
 export const DEFAULT_TIMEOUT_MS = DEFAULTS.timeoutMs;

@@ -7,9 +7,10 @@ This file is for coding agents working on TracePlotter. People should start with
 
 TracePlotter is a Tauri 2 desktop app: a continuous visual traceroute and ping monitor. The
 interface is Svelte 5 with TypeScript and uPlot graphs, in `src/`. The backend is Rust, in
-`src-tauri/`, and probes with the trippy-core engine. It is developed on Windows first, and CI runs
-on `windows-latest`, but the code is kept portable: anything Windows-only sits behind
-`#[cfg(windows)]` with a fallback for other systems.
+`src-tauri/`, and probes with the trippy-core engine. It is developed on Windows first and also
+runs on Linux; CI runs on `windows-latest` and `ubuntu-latest`. Anything Windows-only sits behind
+`#[cfg(windows)]`, anything Linux-only behind `#[cfg(target_os = "linux")]`, each with a fallback
+for other systems, so check that a change builds without warnings on both.
 
 The map of the code is under "Where things are" in CONTRIBUTING.md. In short, `src/routes/+page.svelte`
 holds the window, tabs, menus and saved session; `src/lib/TraceTab.svelte` one tab; `src/lib/trace.ts`
@@ -17,7 +18,8 @@ a trace's data and its link to the backend; `src/lib/stats.ts` and `events.ts` t
 `src/lib/settings.ts` the app-wide settings and `Settings.svelte` their tab;
 `src/lib/agent.ts` the answers of the MCP server; `src-tauri/src/lib.rs` probing, history, updates
 and the other commands; `src-tauri/src/mcp.rs` the MCP server; `src-tauri/src/winicmp.rs` the
-Windows ICMP API.
+Windows ICMP API and `src-tauri/src/pingsock.rs` Linux ping sockets, with what they share in
+`src-tauri/src/echo.rs`.
 
 ## Checks
 

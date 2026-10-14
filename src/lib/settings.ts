@@ -2,6 +2,10 @@ import type { Protocol } from "./trace.ts";
 
 /** Whether this is Windows, where the Windows ICMP API exists. */
 export const WINDOWS = typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
+/** Whether the system can trace by ICMP without a raw socket: the Windows ICMP API, or Linux ping sockets. */
+export const SYSTEM_ICMP = WINDOWS || (typeof navigator !== "undefined" && navigator.userAgent.includes("Linux"));
+/** What raw sockets need, as the packet type menus say it. */
+export const RAW_SOCKET_RIGHTS = WINDOWS ? "Administrator" : "raw sockets";
 /** Whether this is macOS, where copy and paste in the page need an Edit menu. */
 export const MACOS = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac OS");
 
@@ -61,12 +65,12 @@ export const LIMITS = {
 /**
  * Settings from whatever was stored or typed: every value that is missing, of the wrong
  * kind or not offered gets its default, and numbers are brought within their limits.
- * A new target probes through the Windows ICMP API on Windows, as that needs no firewall
- * rule, and through a raw socket elsewhere.
+ * A new target probes through the system's ICMP (`systemIcmp`) where there is one, as that
+ * needs neither raw sockets nor a firewall rule, and through a raw socket elsewhere.
  */
-export function cleanSettings(raw: unknown, windows: boolean): Settings {
+export function cleanSettings(raw: unknown, systemIcmp: boolean): Settings {
   const given = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const clean: Settings = { ...DEFAULTS, protocol: windows ? "winicmp" : "icmp" };
+  const clean: Settings = { ...DEFAULTS, protocol: systemIcmp ? "winicmp" : "icmp" };
   for (const [key, [min, max]] of Object.entries(LIMITS) as [keyof typeof LIMITS, readonly [number, number]][]) {
     const value = Math.round(Number(given[key]));
     if (given[key] != null && given[key] !== "" && Number.isFinite(value)) {
@@ -75,7 +79,7 @@ export function cleanSettings(raw: unknown, windows: boolean): Settings {
   }
   if (INTERVALS.includes(Number(given.intervalMs))) clean.intervalMs = Number(given.intervalMs);
   const protocol = given.protocol as Protocol;
-  if (PROTOCOLS.includes(protocol) && (windows || protocol !== "winicmp")) clean.protocol = protocol;
+  if (PROTOCOLS.includes(protocol) && (systemIcmp || protocol !== "winicmp")) clean.protocol = protocol;
   if (typeof given.notifications === "boolean") clean.notifications = given.notifications;
   // Red starts above yellow.
   clean.badMs = Math.max(clean.badMs, clean.warnMs + 1);
@@ -101,10 +105,10 @@ function stored(): unknown {
 }
 
 /** The settings in use: a plain object changed in place by `changeSetting`. */
-export const settings = cleanSettings(stored(), WINDOWS);
+export const settings = cleanSettings(stored(), SYSTEM_ICMP);
 
 /** Takes over one setting, kept within its limits, and remembers it. */
 export function changeSetting(key: keyof Settings, value: unknown) {
-  Object.assign(settings, cleanSettings({ ...settings, [key]: value }, WINDOWS));
+  Object.assign(settings, cleanSettings({ ...settings, [key]: value }, SYSTEM_ICMP));
   localStorage.setItem(KEY, JSON.stringify(settings));
 }

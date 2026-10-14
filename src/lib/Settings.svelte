@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { INTERVALS, LIMITS, WINDOWS, changeSetting, settings, type Settings } from "./settings";
+  import {
+    INTERVALS,
+    LIMITS,
+    RAW_SOCKET_RIGHTS,
+    SYSTEM_ICMP,
+    WINDOWS,
+    changeSetting,
+    settings,
+    type Settings,
+  } from "./settings";
   import { ALERT_WINDOW } from "./stats";
   import { COLUMNS } from "./TraceTab.svelte";
   import { PROTOCOLS } from "./trace";
@@ -13,8 +22,10 @@
     /** Whether the MCP server runs, and the address agents connect to while it does. */
     mcpOn: boolean;
     mcpUrl: string | null;
-    /** Whether the app has Administrator rights, and the call to restart with them. */
+    /** Whether the app may open raw sockets, and the call to restart with that right. */
     elevated: boolean;
+    /** Whether the app can be given that right; an AppImage cannot. */
+    canElevate: boolean;
     onelevate: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
@@ -35,6 +46,7 @@
     mcpOn,
     mcpUrl,
     elevated,
+    canElevate,
     onelevate,
     oncolumn,
     onautocheck,
@@ -77,8 +89,8 @@
       <span>Packet type</span>
       <select value={shown.protocol} onchange={(event) => set("protocol", event.currentTarget)}>
         {#each Object.entries(PROTOCOLS) as [value, name]}
-          {#if WINDOWS || value !== "winicmp"}
-            <option {value}>{name}{!elevated && value !== "winicmp" ? " (needs Administrator)" : ""}</option>
+          {#if SYSTEM_ICMP || value !== "winicmp"}
+            <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : ""}</option>
           {/if}
         {/each}
       </select>
@@ -212,6 +224,20 @@
           <small>ICMP (raw socket) traces lose hops, the final one included, until ICMP replies are let in</small>
         </span>
         <button onclick={onfirewall}>Allow ICMP replies…</button>
+      </div>
+    </section>
+  {:else}
+    <section>
+      <h2>Raw sockets</h2>
+      <p>
+        ICMP (raw socket), UDP and TCP probes use raw sockets, which Linux allows with the capability CAP_NET_RAW.
+        ICMP (ping socket) does not. The packages give TracePlotter the capability when they install it; otherwise
+        allow raw sockets here once, which asks for an administrator's password and restarts the app. An AppImage
+        cannot be allowed them; install TracePlotter from a package for those probes.
+      </p>
+      <div class="row">
+        <span>TracePlotter is {elevated ? "allowed" : "not allowed"} to open them</span>
+        {#if !elevated && canElevate}<button onclick={onelevate}>Allow raw sockets…</button>{/if}
       </div>
     </section>
   {/if}

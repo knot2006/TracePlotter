@@ -58,11 +58,11 @@
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
   import { exportName } from "./import";
-  import { settings } from "./settings";
+  import { WINDOWS, settings } from "./settings";
   import { ALERT_WINDOW, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
   import { whoisFacts, whoisRecord } from "./whois";
-  import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, type Trace } from "./trace";
+  import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, usesPort, type Trace } from "./trace";
 
   type Props = {
     trace: Trace;
@@ -562,10 +562,10 @@
   {#if silentTarget}
     <p class="hint" role="status">
       The target has not answered yet, so the round trip shows 100 % loss.
-      {#if trace.config.protocol === "icmp"}
+      {#if trace.config.protocol === "icmp" && WINDOWS}
         If it should answer, allow ICMP replies under Tools > Allow ICMP replies in Windows Firewall…, or trace it
         with ICMP (Windows API), TCP or UDP.
-      {:else if trace.config.protocol === "winicmp"}
+      {:else if !usesPort(trace.config.protocol)}
         It may not answer pings; try TCP or UDP.
       {:else}
         It may not answer on this port; try another port or protocol.
