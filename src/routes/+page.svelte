@@ -1,8 +1,10 @@
 <script lang="ts">
   import { getVersion } from "@tauri-apps/api/app";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
+  import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
   import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "../lib/stats";
@@ -101,6 +103,84 @@
     } catch (e) {
       error = `Update failed: ${e}`;
       updating = false;
+    }
+  }
+
+  // Agent access: the MCP server that lets AI agents read the traces and start new ones.
+  // Off until the user turns it on; it listens on this machine's loopback address only.
+  const MCP_KEY = "traceplotter.mcpServer";
+  const MCP_PORT = 3917;
+  let mcpOn = localStorage.getItem(MCP_KEY) === "on";
+  let mcpUrl = $state<string | null>(null);
+
+  /** Starts or stops the MCP server. `chosen` is the user's choice, which is remembered and confirmed. */
+  async function setAgentAccess(on: boolean, chosen: boolean) {
+    error = notice = "";
+    try {
+      mcpUrl = await invoke<string | null>("mcp_serve", { port: on ? MCP_PORT : null });
+      mcpOn = on;
+      if (chosen) localStorage.setItem(MCP_KEY, on ? "on" : "off");
+      if (chosen) notice = mcpUrl ? `Agents can connect to ${mcpUrl}` : "Agent access is off.";
+    } catch (e) {
+      error = `Agent access not started: ${e}`;
+    }
+    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+  }
+
+  /** The intervals the toolbar offers that agents may use. */
+  const AGENT_INTERVALS = [1000, 2500, 5000, 10000];
+
+  /**
+   * Starts tracing a host for an agent, in a new tab next to the others, or resumes the
+   * paused tab that already traces it. The open tab stays as it is.
+   */
+  async function agentStart(args: Arguments) {
+    const host = String(args.host ?? "").trim().toLowerCase();
+    if (!host) throw new Error("start_trace needs a host");
+    const protocol = (args.protocol ?? (WINDOWS ? "winicmp" : "icmp")) as Protocol;
+    if (!(protocol in PROTOCOLS) || (protocol === "winicmp" && !WINDOWS)) {
+      throw new Error(`protocol ${protocol} is not available here`);
+    }
+    const port = usesPort(protocol) ? Number(args.port ?? DEFAULT_PORT[protocol]) : 0;
+    // Never faster than a round a second: many routers throttle replies to more, which reads as loss.
+    const asked = Math.max(AGENT_MIN_INTERVAL_MS, Number(args.interval_ms) || AGENT_MIN_INTERVAL_MS);
+    const interval = AGENT_INTERVALS.find((ms) => ms >= asked) ?? AGENT_INTERVALS[AGENT_INTERVALS.length - 1];
+    // Told to the agent, so that it does not take the slower interval for a fault.
+    const slowed =
+      Number(args.interval_ms) < AGENT_MIN_INTERVAL_MS
+        ? { note: `Probing once a second, not every ${args.interval_ms} ms: many routers throttle faster probes.` }
+        : {};
+    const existing = traces.find((t) => same(t.config, { host, protocol, port }));
+    if (existing) {
+      if (existing.paused) await togglePause(existing);
+      return { started: existing.paused ? "could not resume" : "resumed", ...describeTrace(existing, 600) };
+    }
+    const trace = await startTrace(
+      { sessionId: crypto.randomUUID(), host, protocol, port, intervalMs: interval, alertLatencyMs: 0, alertLossPct: 0 },
+      bump,
+    );
+    traces = [...traces, trace];
+    session = [...session, trace.config];
+    saveSession();
+    return { started: "new tab", ...slowed, ...describeTrace(trace, 600) };
+  }
+
+  /** Pauses a tab for an agent; its history stays. */
+  async function agentStop(args: Arguments) {
+    const trace = findTrace(traces, args.target);
+    if (!trace.paused) await togglePause(trace);
+    return describeTrace(trace, 600);
+  }
+
+  /** Runs a tool call the MCP server passed on, and sends its answer back. */
+  async function answerAgent({ id, tool, arguments: args }: { id: number; tool: string; arguments: Arguments }) {
+    try {
+      const run = tool === "start_trace" ? agentStart : tool === "stop_trace" ? agentStop : null;
+      const result = run ? await run(args) : READ_TOOLS[tool]?.(traces, args);
+      if (result === undefined) throw new Error(`unknown tool ${tool}`);
+      await invoke("mcp_respond", { id, result });
+    } catch (e) {
+      await invoke("mcp_respond", { id, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -223,7 +303,28 @@
         },
         {
           text: "Tools",
-          items: [{ id: "firewall", text: "Allow ICMP replies in Windows Firewall…", action: allowIcmp }],
+          items: [
+            { id: "firewall", text: "Allow ICMP replies in Windows Firewall…", action: allowIcmp },
+            { item: "Separator" },
+            {
+              id: "agents",
+              text: "Allow AI agents to connect (MCP server)",
+              checked: mcpOn,
+              action: () => setAgentAccess(!mcpOn, true),
+            },
+            {
+              id: "agents-address",
+              text: mcpUrl ? `Copy agent address (${mcpUrl})` : "Copy agent address",
+              enabled: !!mcpUrl,
+              action: () => {
+                if (!mcpUrl) return;
+                navigator.clipboard
+                  .writeText(mcpUrl)
+                  .then(() => (notice = "Agent address copied."))
+                  .catch((e) => (error = `Not copied: ${e}`));
+              },
+            },
+          ],
         },
         {
           text: "Help",
@@ -386,6 +487,10 @@
         : (traces.find((trace) => trace.config.sessionId === last) ?? traces[0])?.id ?? null;
     tabsRestored = true;
     if (autoCheck) checkUpdates(false);
+    // Agents are let in once the tabs they ask about are back.
+    await listen<Parameters<typeof answerAgent>[0]>("mcp-request", (event) => answerAgent(event.payload));
+    // `--mcp` turns it on for this run only.
+    if (mcpOn || (await invoke<boolean>("mcp_flag").catch(() => false))) setAgentAccess(true, false);
   });
 </script>
 
