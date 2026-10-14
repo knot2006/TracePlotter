@@ -4,7 +4,15 @@
   import { listen } from "@tauri-apps/api/event";
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
-  import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
+  import {
+    AGENT_MIN_INTERVAL_MS,
+    agentProbe,
+    DEFAULT_SPAN,
+    describeTrace,
+    findTrace,
+    READ_TOOLS,
+    type Arguments,
+  } from "../lib/agent";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
   import { BAD_MS, WARN_MS, parseSpan, spanLabel } from "../lib/stats";
@@ -115,61 +123,66 @@
 
   /** Starts or stops the MCP server. `chosen` is the user's choice, which is remembered and confirmed. */
   async function setAgentAccess(on: boolean, chosen: boolean) {
-    error = notice = "";
+    // At startup it says nothing, so as not to wipe what restoring the tabs reported.
+    if (chosen) error = notice = "";
     try {
       mcpUrl = await invoke<string | null>("mcp_serve", { port: on ? MCP_PORT : null });
       mcpOn = on;
       if (chosen) localStorage.setItem(MCP_KEY, on ? "on" : "off");
       if (chosen) notice = mcpUrl ? `Agents can connect to ${mcpUrl}` : "Agent access is off.";
     } catch (e) {
+      // The menu shows it off, as it is; the remembered choice stays for the next launch.
+      mcpOn = false;
+      mcpUrl = null;
       error = `Agent access not started: ${e}`;
     }
     buildMenu().catch((e) => (error = `Menu failed: ${e}`));
   }
 
-  /** The intervals the toolbar offers that agents may use. */
-  const AGENT_INTERVALS = [1000, 2500, 5000, 10000];
+  // Agents' start_trace calls, one after another: two at once for the same host would both
+  // miss the tab the other is opening.
+  let agentStarts: Promise<unknown> = Promise.resolve();
 
   /**
    * Starts tracing a host for an agent, in a new tab next to the others, or resumes the
    * paused tab that already traces it. The open tab stays as it is.
    */
-  async function agentStart(args: Arguments) {
-    const host = String(args.host ?? "").trim().toLowerCase();
-    if (!host) throw new Error("start_trace needs a host");
-    const protocol = (args.protocol ?? (WINDOWS ? "winicmp" : "icmp")) as Protocol;
-    if (!(protocol in PROTOCOLS) || (protocol === "winicmp" && !WINDOWS)) {
-      throw new Error(`protocol ${protocol} is not available here`);
-    }
-    const port = usesPort(protocol) ? Number(args.port ?? DEFAULT_PORT[protocol]) : 0;
-    // Never faster than a round a second: many routers throttle replies to more, which reads as loss.
-    const asked = Math.max(AGENT_MIN_INTERVAL_MS, Number(args.interval_ms) || AGENT_MIN_INTERVAL_MS);
-    const interval = AGENT_INTERVALS.find((ms) => ms >= asked) ?? AGENT_INTERVALS[AGENT_INTERVALS.length - 1];
-    // Told to the agent, so that it does not take the slower interval for a fault.
-    const slowed =
-      Number(args.interval_ms) < AGENT_MIN_INTERVAL_MS
-        ? { note: `Probing once a second, not every ${args.interval_ms} ms: many routers throttle faster probes.` }
-        : {};
+  function agentStart(args: Arguments) {
+    const started = agentStarts.then(() => startForAgent(args));
+    agentStarts = started.catch(() => {});
+    return started;
+  }
+
+  async function startForAgent(args: Arguments) {
+    const { host, protocol, port, intervalMs, note } = agentProbe(args, WINDOWS);
+    const slowed = note ? { note } : {};
     const existing = traces.find((t) => same(t.config, { host, protocol, port }));
     if (existing) {
-      if (existing.paused) await togglePause(existing);
-      return { started: existing.paused ? "could not resume" : "resumed", ...describeTrace(existing, 600) };
+      if (!existing.paused) return { started: "already running", ...describeTrace(existing, DEFAULT_SPAN) };
+      // The user may have set this tab faster than agents may probe; that stays theirs to resume.
+      if (existing.config.intervalMs < AGENT_MIN_INTERVAL_MS) {
+        throw new Error(
+          `The paused tab for ${host} probes every ${existing.config.intervalMs} ms, faster than agents may start; ask the user to resume it.`,
+        );
+      }
+      await togglePause(existing);
+      return { started: existing.paused ? "could not resume" : "resumed", ...describeTrace(existing, DEFAULT_SPAN) };
     }
     const trace = await startTrace(
-      { sessionId: crypto.randomUUID(), host, protocol, port, intervalMs: interval, alertLatencyMs: 0, alertLossPct: 0 },
+      { sessionId: crypto.randomUUID(), host, protocol, port, intervalMs, alertLatencyMs: 0, alertLossPct: 0 },
       bump,
     );
     traces = [...traces, trace];
     session = [...session, trace.config];
     saveSession();
-    return { started: "new tab", ...slowed, ...describeTrace(trace, 600) };
+    return { started: "new tab", ...slowed, ...describeTrace(trace, DEFAULT_SPAN) };
   }
 
   /** Pauses a tab for an agent; its history stays. */
   async function agentStop(args: Arguments) {
     const trace = findTrace(traces, args.target);
     if (!trace.paused) await togglePause(trace);
-    return describeTrace(trace, 600);
+    return describeTrace(trace, DEFAULT_SPAN);
   }
 
   /** Runs a tool call the MCP server passed on, and sends its answer back. */

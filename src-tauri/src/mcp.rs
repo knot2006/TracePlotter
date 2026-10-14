@@ -146,13 +146,15 @@ fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// Answers one JSON-RPC message. `None` for a notification, which gets no answer.
-/// `call` runs a tool with its arguments.
+/// Answers one JSON-RPC message. `None` for a notification or a response from the client,
+/// which get no answer. `call` runs a tool with its arguments.
 fn handle(message: &Value, call: impl FnOnce(&str, Value) -> Result<Value, String>) -> Option<Value> {
+    // Batches were dropped from the protocol after 2025-03-26; clients send one message a POST.
+    if message.is_array() {
+        return Some(error(&Value::Null, -32600, "batches are not supported, send one message per request"));
+    }
+    let method = message.get("method").and_then(Value::as_str)?;
     let id = message.get("id")?;
-    let Some(method) = message.get("method").and_then(Value::as_str) else {
-        return Some(error(id, -32600, "not a JSON-RPC request"));
-    };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     Some(match method {
         "initialize" => {
@@ -210,7 +212,8 @@ fn allowed(host: Option<&str>, origin: Option<&str>, port: u16) -> bool {
 /// The running server and the tool calls that wait for the webview.
 #[derive(Default)]
 pub struct Mcp {
-    server: Mutex<Option<Arc<tiny_http::Server>>>,
+    /// The port it listens on, and the server.
+    server: Mutex<Option<(u16, Arc<tiny_http::Server>)>>,
     next_call: AtomicU64,
     calls: Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>,
 }
@@ -288,7 +291,14 @@ fn serve(app: AppHandle, mut request: tiny_http::Request, port: u16) {
 #[tauri::command]
 pub fn mcp_serve(app: AppHandle, port: Option<u16>, mcp: State<'_, Mcp>) -> Result<Option<String>, String> {
     let mut running = mcp.server.lock().unwrap();
-    if let Some(server) = running.take() {
+    // Asked again for the port it already serves (the page was reloaded): keep it. A stopped
+    // server lets go of its port only once its thread wakes, so binding again would fail.
+    if let (Some(port), Some((serving, _))) = (port, running.as_ref())
+        && *serving == port
+    {
+        return Ok(Some(format!("http://127.0.0.1:{port}/mcp")));
+    }
+    if let Some((_, server)) = running.take() {
         server.unblock();
     }
     let Some(port) = port else {
@@ -297,7 +307,7 @@ pub fn mcp_serve(app: AppHandle, port: Option<u16>, mcp: State<'_, Mcp>) -> Resu
     let server = tiny_http::Server::http(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
         .map(Arc::new)
         .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
-    *running = Some(server.clone());
+    *running = Some((port, server.clone()));
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
             let app = app.clone();
@@ -352,6 +362,10 @@ mod tests {
     fn notifications_get_no_answer_and_unknown_methods_an_error() {
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert!(handle(&notification, no_call).is_none());
+        let response = json!({ "jsonrpc": "2.0", "id": 1, "result": {} });
+        assert!(handle(&response, no_call).is_none());
+        let batch = json!([request("tools/list", json!({}))]);
+        assert_eq!(handle(&batch, no_call).unwrap()["error"]["code"], -32600);
         assert_eq!(handle(&request("resources/list", json!({})), no_call).unwrap()["error"]["code"], -32601);
     }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findTrace, getHops, getLatencyHistory, getRouteChanges, listTargets } from "./agent.ts";
+import { agentProbe, findTrace, getHops, getLatencyHistory, getRouteChanges, listTargets } from "./agent.ts";
 import type { Hop, Trace } from "./trace.ts";
 
 /** A hop with one probe a second from t = 1000, `null` = lost. */
@@ -87,4 +87,36 @@ test("history is cut into slices that cover every probe once", () => {
   );
   assert.equal(getLatencyHistory(both, { target: "bbb", hop: 1 }).slices[0].max_ms, 1);
   assert.throws(() => getLatencyHistory(both, { target: "bbb", hop: 5 }), /no hop 5/);
+});
+
+test("start_trace arguments are checked and never probe faster than once a second", () => {
+  assert.deepEqual(agentProbe({ host: " Example.COM " }, true), {
+    host: "example.com",
+    protocol: "winicmp",
+    port: 0,
+    intervalMs: 1000,
+    note: undefined,
+  });
+  const fast = agentProbe({ host: "h", protocol: "TCP", interval_ms: 200 }, false);
+  assert.equal(fast.protocol, "tcp");
+  assert.equal(fast.port, 443);
+  assert.equal(fast.intervalMs, 1000);
+  assert.match(fast.note!, /once a second/);
+  // Rounded up to an interval the toolbar offers.
+  assert.equal(agentProbe({ host: "h", interval_ms: 3000 }, false).intervalMs, 5000);
+  assert.equal(agentProbe({ host: "h", interval_ms: 600_000 }, false).intervalMs, 10000);
+  assert.throws(() => agentProbe({}, false), /needs a host/);
+  assert.throws(() => agentProbe({ host: "h", protocol: "winicmp" }, false), /not available/);
+  assert.throws(() => agentProbe({ host: "h", protocol: "constructor" }, true), /not available/);
+  assert.throws(() => agentProbe({ host: "h", protocol: "udp", port: "abc" }, true), /between 1 and 65535/);
+  assert.throws(() => agentProbe({ host: "h", protocol: "tcp", port: 70000 }, true), /between 1 and 65535/);
+});
+
+test("windows end at the trace's latest round, so a hop that left the route has no recent probes", () => {
+  const left = hop(3, "10.0.0.3", [5, 5]);
+  left.times = [100, 101];
+  const longer = { ...dns, hops: [...dns.hops, left] };
+  assert.equal(getHops([longer], { minutes: 1 }).route.length, 2);
+  assert.throws(() => getLatencyHistory([longer], { hop: 3 }), /no hop 3; its route has 2/);
+  assert.equal(getLatencyHistory([longer], { hop: "2", minutes: 0 }).hop, 2);
 });
