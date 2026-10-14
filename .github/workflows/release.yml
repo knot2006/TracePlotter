@@ -38,17 +38,14 @@ jobs:
           workspaces: src-tauri
 
       # The app compares the tag with the version compiled into it, so they must agree.
-      - name: Check that the tag matches the version in all three files
+      # The version is in Cargo.toml only; Tauri takes it from there.
+      - name: Check that the tag matches the version in Cargo.toml
         id: version
         shell: pwsh
         run: |
-          $tauri = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          $npm = (Get-Content package.json | ConvertFrom-Json).version
-          if ("v$tauri" -ne $env:TAG -or $cargo -ne $tauri -or $npm -ne $tauri) {
-            throw "Tag $env:TAG, tauri.conf.json $tauri, Cargo.toml $cargo and package.json $npm must be the same version."
-          }
-          "version=$tauri" >> $env:GITHUB_OUTPUT
+          if ("v$cargo" -ne $env:TAG) { throw "Tag $env:TAG and the version $cargo in Cargo.toml must agree." }
+          "version=$cargo" >> $env:GITHUB_OUTPUT
 
       - run: npm ci
       - run: npm run check

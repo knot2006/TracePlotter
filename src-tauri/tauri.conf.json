@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TracePlotter",
-  "version": "0.1.4",
   "identifier": "io.github.knot2006.traceplotter",
   "build": {
     "beforeDevCommand": "npm run dev",

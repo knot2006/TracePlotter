@@ -59,8 +59,8 @@ published builds, which the Release workflow makes; do not hand out a `fast` bui
   those files carry the `.ts` extension so that Node can run them.
 - trippy-core is a moving target: take its new releases and fix our code when its API changes,
   rather than holding it back.
-- A release bump changes the version in `package.json`, `src-tauri/Cargo.toml` and
-  `src-tauri/tauri.conf.json` together; they must always match.
+- The version is in `src-tauri/Cargo.toml` only. `tauri.conf.json` and `package.json` have none on
+  purpose: Tauri takes it from Cargo.toml. Do not add it back to them.
 - Documentation and pull request descriptions are plain prose, in the voice of the existing docs.
 
 ## Demo mode

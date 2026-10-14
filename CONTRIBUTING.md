@@ -91,8 +91,8 @@ the version back. An update of it needs a build and the live probe check before 
 
 ## Publishing a release
 
-1. Set the same new version in `package.json`, `src-tauri/Cargo.toml` and
-   `src-tauri/tauri.conf.json`, and commit.
+1. Set the new version in `src-tauri/Cargo.toml`, the only place that holds it (Tauri takes it
+   from there), build once so that `Cargo.lock` follows, and commit.
 2. Tag that commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
 
 The Release workflow then builds the exe, signs it for that version and publishes it with its

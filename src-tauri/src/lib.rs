@@ -1273,6 +1273,14 @@ mod tests {
         assert_eq!(lookup_ptr("192.0.2.1".parse().unwrap()), None);
     }
 
+    /// The version is kept in Cargo.toml only; tauri.conf.json has none, so the version the
+    /// window shows (the frontend's `getVersion`) must be Cargo's, as the updater's is.
+    #[test]
+    fn the_app_reports_the_version_from_cargo_toml() {
+        let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        assert_eq!(context.package_info().version.to_string(), env!("CARGO_PKG_VERSION"));
+    }
+
     #[test]
     fn history_is_counted_in_rounds_of_the_interval_up_to_a_cap() {
         // At the 24 hours it starts with; no test changes them.
