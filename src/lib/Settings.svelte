@@ -1,11 +1,17 @@
 <script lang="ts">
-  import { INTERVALS, LIMITS, SYSTEM_ICMP, WINDOWS, changeSetting, settings, type Settings } from "./settings";
+  import {
+    INTERVALS,
+    LIMITS,
+    RAW_SOCKET_RIGHTS,
+    SYSTEM_ICMP,
+    WINDOWS,
+    changeSetting,
+    settings,
+    type Settings,
+  } from "./settings";
   import { ALERT_WINDOW } from "./stats";
   import { COLUMNS } from "./TraceTab.svelte";
   import { PROTOCOLS } from "./trace";
-
-  /** What raw sockets need. */
-  const NEEDS = WINDOWS ? "Administrator" : "raw sockets";
 
   type Props = {
     version: string;
@@ -18,6 +24,8 @@
     mcpUrl: string | null;
     /** Whether the app may open raw sockets, and the call to restart with that right. */
     elevated: boolean;
+    /** Whether the app can be given that right; an AppImage cannot. */
+    canElevate: boolean;
     onelevate: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
@@ -38,6 +46,7 @@
     mcpOn,
     mcpUrl,
     elevated,
+    canElevate,
     onelevate,
     oncolumn,
     onautocheck,
@@ -81,7 +90,7 @@
       <select value={shown.protocol} onchange={(event) => set("protocol", event.currentTarget)}>
         {#each Object.entries(PROTOCOLS) as [value, name]}
           {#if SYSTEM_ICMP || value !== "winicmp"}
-            <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${NEEDS})` : ""}</option>
+            <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : ""}</option>
           {/if}
         {/each}
       </select>
@@ -223,11 +232,12 @@
       <p>
         ICMP (raw socket), UDP and TCP probes use raw sockets, which Linux allows with the capability CAP_NET_RAW.
         ICMP (ping socket) does not. The packages give TracePlotter the capability when they install it; otherwise
-        allow raw sockets here once, which asks for an administrator's password and restarts the app.
+        allow raw sockets here once, which asks for an administrator's password and restarts the app. An AppImage
+        cannot be allowed them; install TracePlotter from a package for those probes.
       </p>
       <div class="row">
         <span>TracePlotter is {elevated ? "allowed" : "not allowed"} to open them</span>
-        {#if !elevated}<button onclick={onelevate}>Allow raw sockets…</button>{/if}
+        {#if !elevated && canElevate}<button onclick={onelevate}>Allow raw sockets…</button>{/if}
       </div>
     </section>
   {/if}

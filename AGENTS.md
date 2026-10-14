@@ -7,9 +7,10 @@ This file is for coding agents working on TracePlotter. People should start with
 
 TracePlotter is a Tauri 2 desktop app: a continuous visual traceroute and ping monitor. The
 interface is Svelte 5 with TypeScript and uPlot graphs, in `src/`. The backend is Rust, in
-`src-tauri/`, and probes with the trippy-core engine. It is developed on Windows first, and CI runs
-on `windows-latest`, but the code is kept portable: anything Windows-only sits behind
-`#[cfg(windows)]` with a fallback for other systems.
+`src-tauri/`, and probes with the trippy-core engine. It is developed on Windows first and also
+runs on Linux; CI runs on `windows-latest` and `ubuntu-latest`. Anything Windows-only sits behind
+`#[cfg(windows)]`, anything Linux-only behind `#[cfg(target_os = "linux")]`, each with a fallback
+for other systems, so check that a change builds without warnings on both.
 
 The map of the code is under "Where things are" in CONTRIBUTING.md. In short, `src/routes/+page.svelte`
 holds the window, tabs, menus and saved session; `src/lib/TraceTab.svelte` one tab; `src/lib/trace.ts`

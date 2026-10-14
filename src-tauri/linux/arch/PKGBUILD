@@ -19,10 +19,16 @@ source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # The Release workflow fills this in with updpkgsums.
 sha256sums=('SKIP')
 
-build() {
+prepare() {
   cd "TracePlotter-$pkgver"
   npm ci
-  npm run tauri build -- --no-bundle
+  cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+}
+
+build() {
+  cd "TracePlotter-$pkgver"
+  # --locked: the crates of Cargo.lock, as every other build of the release has.
+  npm run tauri build -- --no-bundle -- --locked
 }
 
 package() {

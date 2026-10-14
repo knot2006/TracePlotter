@@ -4,6 +4,8 @@ import type { Protocol } from "./trace.ts";
 export const WINDOWS = typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 /** Whether the system can trace by ICMP without a raw socket: the Windows ICMP API, or Linux ping sockets. */
 export const SYSTEM_ICMP = WINDOWS || (typeof navigator !== "undefined" && navigator.userAgent.includes("Linux"));
+/** What raw sockets need, as the packet type menus say it. */
+export const RAW_SOCKET_RIGHTS = WINDOWS ? "Administrator" : "raw sockets";
 /** Whether this is macOS, where copy and paste in the page need an Edit menu. */
 export const MACOS = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac OS");
 

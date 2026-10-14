@@ -44,21 +44,13 @@ impl Pinger {
     /// `packet_size` is the size of a probe's whole IP packet, `timeout` how long a probe
     /// may go unanswered before it counts as lost.
     pub fn new(target: IpAddr, packet_size: u16, timeout: Duration) -> Result<Self, String> {
-        let (domain, protocol, level, recverr, echo, ip_header) = match target {
-            IpAddr::V4(_) => (libc::AF_INET, libc::IPPROTO_ICMP, libc::IPPROTO_IP, libc::IP_RECVERR, 8, 20),
-            IpAddr::V6(_) => (libc::AF_INET6, libc::IPPROTO_ICMPV6, libc::IPPROTO_IPV6, libc::IPV6_RECVERR, 128, 40),
+        let (level, recverr, echo, ip_header) = match target {
+            IpAddr::V4(_) => (libc::IPPROTO_IP, libc::IP_RECVERR, 8, 20),
+            IpAddr::V6(_) => (libc::IPPROTO_IPV6, libc::IPV6_RECVERR, 128, 40),
         };
-        let kind = libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
-        // SAFETY: a plain call; a descriptor it returns is owned from here on.
-        let fd = unsafe { libc::socket(domain, kind, protocol) };
-        if fd < 0 {
-            return Err(format!(
-                "cannot open a ping socket: {} (the user's group must be within net.ipv4.ping_group_range)",
-                io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: `fd` is a new descriptor that nothing else owns.
-        let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        let socket = open(target).map_err(|e| {
+            format!("cannot open a ping socket: {e} (the user's group must be within net.ipv4.ping_group_range)")
+        })?;
         set_option(&socket, level, recverr, 1).map_err(|e| format!("cannot ask for ICMP errors: {e}"))?;
         // The ICMP part of the packet: an 8-byte echo header and the payload.
         let mut request = vec![0u8; usize::from(packet_size).saturating_sub(ip_header).max(8)];
@@ -116,10 +108,10 @@ impl Pinger {
                 &mut length,
             )
         };
+        // Nothing waiting, or an error the socket reports once, such as that of an ICMP error
+        // now on the error queue. Either way reading stops until the next wait says there is more.
         if read < 0 {
-            // Another error than "nothing waiting" is one the socket reports once, such as
-            // that of an ICMP error now on the error queue; reading goes on.
-            return (io::Error::last_os_error().kind() != io::ErrorKind::WouldBlock).then_some(None);
+            return None;
         }
         let reply = if self.target.is_ipv4() { 0 } else { 129 };
         // SAFETY: the kernel wrote a socket address of the socket's family into `from`.
@@ -255,6 +247,27 @@ impl Pinger {
         self.unknown_rounds = if target_ttl.is_some() { 0 } else { self.unknown_rounds + 1 };
         hops
     }
+}
+
+/// Opens a ping socket for the target's family.
+fn open(target: IpAddr) -> io::Result<OwnedFd> {
+    let (domain, protocol) = match target {
+        IpAddr::V4(_) => (libc::AF_INET, libc::IPPROTO_ICMP),
+        IpAddr::V6(_) => (libc::AF_INET6, libc::IPPROTO_ICMPV6),
+    };
+    let kind = libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+    // SAFETY: a plain call; a descriptor it returns is owned from here on.
+    let fd = unsafe { libc::socket(domain, kind, protocol) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a new descriptor that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Whether this user may open ping sockets for the target's family.
+pub fn available(target: IpAddr) -> bool {
+    open(target).is_ok()
 }
 
 /// Sets an integer socket option.

@@ -7,7 +7,15 @@
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import Settings from "../lib/Settings.svelte";
-  import { INTERVALS, MACOS, SYSTEM_ICMP, WINDOWS, settings, type Settings as AppSettings } from "../lib/settings";
+  import {
+    INTERVALS,
+    MACOS,
+    RAW_SOCKET_RIGHTS,
+    SYSTEM_ICMP,
+    WINDOWS,
+    settings,
+    type Settings as AppSettings,
+  } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
   import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
   import { parseSpan, spanLabel } from "../lib/stats";
@@ -114,7 +122,8 @@
   // raw sockets need CAP_NET_RAW, which the app can give its exe and then restart. Taken as
   // given until the backend has answered.
   let elevated = $state(true);
-  const NEEDS = WINDOWS ? "Administrator" : "raw sockets";
+  // Whether that right can be given at all; an AppImage cannot have it.
+  let canElevate = $state(true);
 
   /**
    * Starts the app again as Administrator, after the Windows prompt, and closes this one.
@@ -418,10 +427,12 @@
                   { id: "elevate", text: "Restart as Administrator…", enabled: !elevated, action: restartElevated },
                   { item: "Separator" as const },
                 ]
-              : [
-                  { id: "elevate", text: "Allow raw sockets…", enabled: !elevated, action: restartElevated },
-                  { item: "Separator" as const },
-                ]),
+              : canElevate
+                ? [
+                    { id: "elevate", text: "Allow raw sockets…", enabled: !elevated, action: restartElevated },
+                    { item: "Separator" as const },
+                  ]
+                : []),
             {
               text: "AI agents (MCP server)",
               items: [
@@ -583,6 +594,7 @@
   onMount(async () => {
     version = await getVersion().catch(() => "");
     elevated = await invoke<boolean>("is_elevated").catch(() => true);
+    canElevate = await invoke<boolean>("can_elevate").catch(() => true);
     // The webview's own right-click menu offers "Save as" and "Print"; exports live in File.
     document.addEventListener("contextmenu", (event) => {
       if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
@@ -665,11 +677,16 @@
           ICMP (raw socket), UDP and TCP probes need Administrator rights, which TracePlotter is running without.
         </span>
         <button class="install" onclick={restartElevated}>Restart as Administrator</button>
-      {:else}
+      {:else if canElevate}
         <span>
           ICMP (raw socket), UDP and TCP probes need raw sockets, which TracePlotter is not allowed to open yet.
         </span>
         <button class="install" onclick={restartElevated}>Allow raw sockets and restart</button>
+      {:else}
+        <span>
+          ICMP (raw socket), UDP and TCP probes need raw sockets, which an AppImage cannot open. Use ICMP (ping
+          socket), or install TracePlotter from a package.
+        </span>
       {/if}
     </div>
   {/if}
@@ -723,7 +740,7 @@
     <select bind:value={protocol} aria-label="Protocol" onchange={() => (port = DEFAULT_PORT[protocol])}>
       {#each Object.entries(PROTOCOLS) as [value, name]}
         {#if SYSTEM_ICMP || value !== "winicmp"}
-          <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${NEEDS})` : ""}</option>
+          <option {value}>{name}{!elevated && value !== "winicmp" ? ` (needs ${RAW_SOCKET_RIGHTS})` : ""}</option>
         {/if}
       {/each}
     </select>
@@ -809,6 +826,7 @@
       {mcpOn}
       {mcpUrl}
       {elevated}
+      {canElevate}
       onelevate={restartElevated}
       oncolumn={toggleColumn}
       onautocheck={setAutoCheck}

@@ -463,6 +463,14 @@ fn start_trace(
         .next()
         .ok_or_else(|| format!("no address for {host}"))?
         .ip();
+    // Ping sockets need the user's group within net.ipv4.ping_group_range. Where that is
+    // shut, ICMP goes through a raw socket instead if TracePlotter may open one.
+    #[cfg(target_os = "linux")]
+    let protocol = if protocol == "winicmp" && !pingsock::available(addr) && raw_sockets_allowed() {
+        "icmp".to_string()
+    } else {
+        protocol
+    };
     // `None` is the system's ICMP echo.
     let raw = match protocol.as_str() {
         "icmp" => Some((Protocol::Icmp, PortDirection::None)),
@@ -564,8 +572,10 @@ fn data_dir() -> &'static Path {
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| ".".into());
         #[cfg(not(windows))]
+        // A relative XDG_DATA_HOME is to be ignored, as the XDG spec says.
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")))
             .unwrap_or_else(|| ".".into());
         base.join(if demo() {
@@ -1156,27 +1166,38 @@ fn raw_sockets_allowed() -> bool {
         .is_some_and(|caps| caps & (1 << 13) != 0)
 }
 
+/// Whether `restart_elevated` can give the app raw sockets. An AppImage runs from a mount
+/// that ignores file capabilities, so it cannot.
+#[tauri::command]
+fn can_elevate() -> bool {
+    std::env::var_os("APPIMAGE").is_none()
+}
+
 /// Switch that names the process a restarted one takes over from.
-#[cfg(windows)]
 const AFTER: &str = "--after";
+
+/// The switches this run was started with, and this process for the new one to wait for.
+fn restart_args() -> Vec<String> {
+    let mut args: Vec<String> = std::env::args()
+        .filter(|arg| arg == "--demo" || arg == "--mcp")
+        .collect();
+    args.extend([AFTER.to_string(), std::process::id().to_string()]);
+    args
+}
 
 /// Starts the exe again with Administrator rights, which Windows asks the user to allow,
 /// and closes this one. Elsewhere it gives the exe CAP_NET_RAW through `pkexec setcap`,
 /// which asks for an administrator's password, and restarts into it: the capability stays
 /// with the file, so later starts have it too. Tabs and history are kept, as across any
-/// restart.
-#[tauri::command]
+/// restart. Async, so that the window keeps drawing while the prompt waits for an answer.
+#[tauri::command(async)]
 fn restart_elevated(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         let wide = |text: &std::ffi::OsStr| text.encode_wide().chain([0]).collect::<Vec<u16>>();
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        // The switches this run was started with, and this process for the new one to wait for.
-        let mut args: Vec<String> = std::env::args()
-            .filter(|arg| arg == "--demo" || arg == "--mcp")
-            .collect();
-        args.extend([AFTER.to_string(), std::process::id().to_string()]);
+        let args = restart_args();
         let started = unsafe {
             windows_sys::Win32::UI::Shell::ShellExecuteW(
                 std::ptr::null_mut(),
@@ -1200,8 +1221,7 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        // An AppImage runs from a mount that ignores file capabilities.
-        if std::env::var_os("APPIMAGE").is_some() {
+        if !can_elevate() {
             return Err("An AppImage cannot be allowed raw sockets. Use ICMP (ping socket), or install TracePlotter from a package.".into());
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1221,11 +1241,18 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
                 exe.display()
             ));
         }
-        // A restart does not pass through the window's close request, where this is saved.
+        // Started anew rather than through `app.restart()`, so that it waits for this one
+        // to close, as on Windows.
+        std::process::Command::new(&exe)
+            .args(restart_args())
+            .spawn()
+            .map_err(|e| format!("TracePlotter was allowed raw sockets but did not restart: {e}"))?;
+        // An exit does not pass through the window's close request, where this is saved.
         if let Some(window) = app.get_webview_window("main") {
             save_window_state(&window.as_ref().window());
         }
-        app.restart()
+        app.exit(0);
+        Ok(())
     }
 }
 
@@ -1266,16 +1293,25 @@ fn open_project_page() -> Result<(), String> {
 /// instances with different rights cannot share the webview's data folder.
 // ponytail: waits for the app's process only. If its webview processes linger and the
 // window fails to open, wait for the data folder's lock file as well.
-#[cfg(windows)]
 fn wait_for_predecessor() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     let pid = std::env::args()
         .skip_while(|arg| arg != AFTER)
         .nth(1)
         .and_then(|pid| pid.parse::<u32>().ok());
     let Some(pid) = pid else { return };
+    #[cfg(not(windows))]
+    {
+        // The process is gone when its /proc entry is.
+        let entry = Path::new("/proc").join(pid.to_string());
+        let start = std::time::Instant::now();
+        while entry.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(windows)]
     unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
         let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if !process.is_null() {
             WaitForSingleObject(process, 10_000);
@@ -1286,7 +1322,6 @@ fn wait_for_predecessor() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(windows)]
     wait_for_predecessor();
     // WebKitGTK's DMA-BUF renderer breaks the Wayland connection with NVIDIA's driver
     // ("Error 71 (Protocol error) dispatching to Wayland display") and the app quits at
@@ -1346,6 +1381,7 @@ pub fn run() {
             install_update,
             allow_icmp_replies,
             is_elevated,
+            can_elevate,
             restart_elevated,
             open_project_page,
             mcp::mcp_flag,
