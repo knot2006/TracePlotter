@@ -32,8 +32,10 @@
     onclose?: () => void;
     /** Saves just this graph as a PNG. */
     onsave: () => void;
+    /** Copies just this graph to the clipboard as a PNG. */
+    oncopy: () => void;
   };
-  let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose, onsave }: Props = $props();
+  let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose, onsave, oncopy }: Props = $props();
 
   /** Right-click menu of the graph. */
   async function graphMenu(event: MouseEvent) {
@@ -41,6 +43,7 @@
     const menu = await Menu.new({
       items: [
         { id: "save", text: "Save this graph as PNG…", action: onsave },
+        { id: "copy", text: "Copy this graph as PNG", action: oncopy },
         { id: "live", text: "Back to live", action: onreset },
         { item: "Separator" },
         { id: "close", text: "Close this graph", enabled: !!onclose, action: () => onclose?.() },

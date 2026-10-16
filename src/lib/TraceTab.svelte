@@ -343,12 +343,18 @@
   async function hopMenu(event: MouseEvent, hop: Hop) {
     event.preventDefault();
     const { addr, name } = hop;
-    if (!addr) return;
     const menu = await Menu.new({
       items: [
-        { id: "copy-ip", text: `Copy IP ${addr}`, action: () => navigator.clipboard.writeText(addr) },
-        { id: "copy-name", text: "Copy name", enabled: !!name, action: () => navigator.clipboard.writeText(name ?? "") },
-        { id: "whois", text: "Whois lookup…", action: () => lookUp(addr) },
+        // A hop that never answered has no address, but the report can still be copied.
+        ...(addr
+          ? [
+              { id: "copy-ip", text: `Copy IP ${addr}`, action: () => navigator.clipboard.writeText(addr) },
+              { id: "copy-name", text: "Copy name", enabled: !!name, action: () => navigator.clipboard.writeText(name ?? "") },
+              { id: "whois", text: "Whois lookup…", action: () => lookUp(addr) },
+              { item: "Separator" as const },
+            ]
+          : []),
+        { id: "copy-report", text: "Copy MTR report", action: copyReport },
       ],
     });
     await menu.popup();
@@ -493,10 +499,10 @@
    * The hop table as plain text, like `mtr --report`: the rows, the columns and their
    * order as on screen for the period shown. The latency bar is a drawing and is left out.
    */
-  export function exportTxt() {
+  function reportText() {
     const period = view.to > view.from ? `${clock(view.from)} to ${clock(view.to)}` : "no samples";
     const shown = columns.filter((column) => column.key !== "bar");
-    const report = textTable(
+    return textTable(
       `TracePlotter report: ${label}\n${period}`,
       [{ label: "Hop" }, ...shown.map((column) => ({ label: column.label, left: column.text }))],
       // The dash the table shows for "no value" is written as a plain hyphen.
@@ -505,7 +511,20 @@
         ...shown.map((column) => column.value(row).replaceAll("–", "-")),
       ]),
     );
-    save(exportName(trace.config.host, "report", "txt"), new TextEncoder().encode(report));
+  }
+
+  export function exportTxt() {
+    save(exportName(trace.config.host, "report", "txt"), new TextEncoder().encode(reportText()));
+  }
+
+  /** The same report as `exportTxt`, put on the clipboard. */
+  async function copyReport() {
+    try {
+      await navigator.clipboard.writeText(reportText());
+      showStatus("Report copied to the clipboard");
+    } catch (e) {
+      showStatus(`Copy failed: ${e}`);
+    }
   }
 
   // One row per probe, whole history. The IP is the hop's current address, not the one at probe time.
@@ -523,13 +542,13 @@
   // The graphs, one under the other, or with `only` just the graph at that position.
   // Their canvases are transparent, so they are redrawn on the app background, each
   // under a caption.
-  export function exportPng(only?: number) {
+  function graphImage(only?: number) {
     const canvases = graphs.flatMap((graph, i) => {
       const canvas = graph?.canvas();
       const wanted = only === undefined || only === i;
       return wanted && canvas && graphHops[i] ? [{ canvas, caption: headingOf(graphHops[i]) }] : [];
     });
-    if (!canvases.length) return;
+    if (!canvases.length) return null;
     const captionHeight = 28 * devicePixelRatio;
     const image = document.createElement("canvas");
     image.width = Math.max(...canvases.map((c) => c.canvas.width));
@@ -546,9 +565,29 @@
       ctx.drawImage(canvas, 0, y + captionHeight);
       y += captionHeight + canvas.height;
     }
-    image.toBlob(async (blob) => {
+    return image;
+  }
+
+  export function exportPng(only?: number) {
+    graphImage(only)?.toBlob(async (blob) => {
       if (blob) save(exportName(trace.config.host, "graph", "png"), new Uint8Array(await blob.arrayBuffer()));
     });
+  }
+
+  /** The same image as `exportPng`, put on the clipboard. */
+  async function copyPng(only?: number) {
+    const image = graphImage(only);
+    if (!image) return;
+    try {
+      // The item takes the blob as a promise so that the copy still counts as part of the click.
+      const blob = new Promise<Blob>((resolve, reject) =>
+        image.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("no image"))), "image/png"),
+      );
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      showStatus("Graph copied to the clipboard");
+    } catch (e) {
+      showStatus(`Copy failed: ${e}`);
+    }
   }
 </script>
 
@@ -716,6 +755,7 @@
       <HopGraph
         onclose={graphHops.length > 1 ? () => (graphed = graphed.filter((k) => k !== key)) : undefined}
         onsave={() => exportPng(i)}
+        oncopy={() => copyPng(i)}
         bind:this={graphs[i]}
         {hop}
         heading={headingOf(hop)}
