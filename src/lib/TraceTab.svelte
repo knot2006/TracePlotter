@@ -354,6 +354,7 @@
               { item: "Separator" as const },
             ]
           : []),
+        { id: "save-report", text: "Save MTR report…", action: exportTxt },
         { id: "copy-report", text: "Copy MTR report", action: copyReport },
       ],
     });

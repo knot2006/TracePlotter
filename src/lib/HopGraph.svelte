@@ -42,9 +42,10 @@
     event.preventDefault();
     const menu = await Menu.new({
       items: [
+        { id: "live", text: "Back to live", action: onreset },
+        { item: "Separator" },
         { id: "save", text: "Save this graph as PNG…", action: onsave },
         { id: "copy", text: "Copy this graph as PNG", action: oncopy },
-        { id: "live", text: "Back to live", action: onreset },
         { item: "Separator" },
         { id: "close", text: "Close this graph", enabled: !!onclose, action: () => onclose?.() },
       ],
