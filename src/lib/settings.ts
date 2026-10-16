@@ -44,13 +44,16 @@ export type Settings = {
   /** Alert thresholds; 0 is off. */
   alertLatencyMs: number;
   alertLossPct: number;
+  /** How many seconds of the latest probes an alert looks at. */
+  alertSeconds: number;
   /** Port of the MCP server on the loopback address. */
   mcpPort: number;
   /** Latency in ms where the colour coding turns yellow, then red. */
   warnMs: number;
   badMs: number;
   /** How much history a tab keeps. */
-  historyHours: number;
+  /** How many days of history a tab keeps on disk. */
+  historyDays: number;
   /** Whether alerts and route changes raise a desktop notification. */
   notifications: boolean;
 };
@@ -62,10 +65,11 @@ export const DEFAULTS: Settings = {
   packetSize: 84,
   alertLatencyMs: 0,
   alertLossPct: 0,
+  alertSeconds: 30,
   mcpPort: 3917,
   warnMs: 100,
   badMs: 200,
-  historyHours: 24,
+  historyDays: 7,
   notifications: true,
 };
 
@@ -75,10 +79,11 @@ export const LIMITS = {
   packetSize: [48, 1024],
   alertLatencyMs: [0, 60_000],
   alertLossPct: [0, 100],
+  alertSeconds: [1, 3600],
   mcpPort: [1024, 65_535],
   warnMs: [1, 10_000],
   badMs: [2, 60_000],
-  historyHours: [1, 168],
+  historyDays: [1, 365],
 } as const;
 
 /**
@@ -105,11 +110,16 @@ export function cleanSettings(raw: unknown, systemIcmp: boolean): Settings {
   return clean;
 }
 
-// Most rounds a history holds whatever the hours, so that a long history at a short
-// interval stays quick to load. Matches the backend's MAX_HISTORY.
+/**
+ * Hours of the newest rounds a tab holds in the window. Older periods are read from the
+ * history files when they are looked at. Matches the backend's WINDOW_HOURS.
+ */
+export const WINDOW_HOURS = 24;
+
+// Most rounds the window holds whatever the interval. Matches the backend's MAX_HISTORY.
 const MAX_ROUNDS = 345_600;
 
-/** How many rounds a tab keeps: `hours` of them at its interval. Matches the backend's `history_rounds`. */
+/** How many rounds `hours` are at an interval, up to MAX_ROUNDS. Matches the backend's `history_rounds`. */
 export const historyRounds = (hours: number, intervalMs: number) =>
   Math.min(MAX_ROUNDS, Math.max(1, Math.floor((hours * 3_600_000) / intervalMs)));
 

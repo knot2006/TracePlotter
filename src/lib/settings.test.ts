@@ -10,12 +10,12 @@ test("missing and unusable settings get their defaults", () => {
 });
 
 test("settings are kept within their limits", () => {
-  const clean = cleanSettings({ timeoutMs: 5, packetSize: 9000, alertLossPct: 150, mcpPort: 80, historyHours: 0.2 }, false);
+  const clean = cleanSettings({ timeoutMs: 5, packetSize: 9000, alertLossPct: 150, mcpPort: 80, historyDays: 0.2 }, false);
   assert.equal(clean.timeoutMs, 100);
   assert.equal(clean.packetSize, 1024);
   assert.equal(clean.alertLossPct, 100);
   assert.equal(clean.mcpPort, 1024);
-  assert.equal(clean.historyHours, 1);
+  assert.equal(clean.historyDays, 1);
   assert.equal(cleanSettings({ mcpPort: "4000", intervalMs: 2500, protocol: "tcp" }, false).mcpPort, 4000);
   assert.equal(cleanSettings({ intervalMs: 2500 }, false).intervalMs, 2500);
   assert.equal(cleanSettings({ protocol: "tcp" }, false).protocol, "tcp");

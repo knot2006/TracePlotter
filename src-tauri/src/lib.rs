@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
@@ -29,23 +29,26 @@ use pingsock::Pinger;
 #[cfg(windows)]
 use winicmp::Pinger;
 
-/// Hours of history a tab keeps. The Settings tab changes it through `set_history_hours`.
-static HISTORY_HOURS: AtomicU64 = AtomicU64::new(24);
-// ponytail: a history file holds up to twice this many rounds (4 days at a 1 s interval)
-// and is read back in one piece when its tab starts. Rotate files if that gets slow.
+/// Days of history a tab keeps on disk, every round of them. The Settings tab changes it
+/// through `set_history_days`.
+static HISTORY_DAYS: AtomicU64 = AtomicU64::new(7);
+/// Hours of the newest rounds a tab loads into the window. Older periods are read from
+/// the history files when they are looked at (`history_range`).
+const WINDOW_HOURS: u64 = 24;
+/// Most rounds a tab loads into the window, whatever its interval.
 const MAX_HISTORY: usize = 345_600;
 
-/// How many rounds a tab keeps: the hours of history at its interval, up to MAX_HISTORY.
+/// How many rounds a tab loads: WINDOW_HOURS of them at its interval, up to MAX_HISTORY.
 fn history_rounds(interval_ms: u64) -> usize {
-    let rounds = HISTORY_HOURS.load(Ordering::Relaxed) * 3_600_000 / interval_ms.max(1);
+    let rounds = WINDOW_HOURS * 3_600_000 / interval_ms.max(1);
     (rounds as usize).clamp(1, MAX_HISTORY)
 }
 
-/// Sets how many hours of history tabs keep. Running traces follow at their next trim,
-/// saved histories when they are next read.
+/// Sets how many days of history tabs keep. Older days go when a trace starts a new day
+/// and when a history is next read.
 #[tauri::command]
-fn set_history_hours(hours: u64) {
-    HISTORY_HOURS.store(hours.clamp(1, 168), Ordering::Relaxed);
+fn set_history_days(days: u64) {
+    HISTORY_DAYS.store(days.clamp(1, 365), Ordering::Relaxed);
 }
 
 /// One probe result for one hop in one round. `rtt` is `None` when the probe was lost.
@@ -144,27 +147,478 @@ fn file_safe(name: &str) -> String {
         .collect()
 }
 
-/// Trims a history file to its newest `max` rounds and returns those lines.
-/// A missing file is an empty history.
-fn trim_history(path: &Path, max: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let lines: Vec<&str> = text.lines().collect();
-    let recent = &lines[lines.len().saturating_sub(max)..];
-    if recent.len() < lines.len() {
-        let _ = fs::write(path, recent.join("\n") + "\n");
-    }
-    recent.iter().map(|line| line.to_string()).collect()
+const DAY_MS: u64 = 86_400_000;
+
+/// The history files of a tab, oldest first, with their days. A tab's history is a folder
+/// with one file of rounds per UTC day, named by the day's number since 1970, so that old
+/// rounds go by deleting whole files and a long history never has to be rewritten.
+fn day_files(dir: &Path) -> Vec<(u64, PathBuf)> {
+    let mut days: Vec<(u64, PathBuf)> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let day = path.file_stem()?.to_str()?.parse().ok()?;
+            (path.extension()? == "jsonl").then_some((day, path))
+        })
+        .collect();
+    days.sort();
+    days
 }
 
-/// Reads the newest `max` rounds of a history file and trims the file to them.
-/// Unreadable lines are skipped.
-fn load_history(path: &Path, max: usize) -> Vec<Sample> {
-    trim_history(path, max)
+/// Unix time in ms.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The oldest day a tab keeps, of its day files (oldest first): the kept days counted
+/// back from its newest day, so that an imported capture or a tab paused for a long time
+/// keeps its last days. From today instead when the newest day lies after it: one round
+/// saved while the clock was set ahead must not make every real day look old.
+fn first_kept_day(days: &[(u64, PathBuf)]) -> Option<u64> {
+    let newest = days.last()?.0.min(now_ms() / DAY_MS);
+    Some(newest.saturating_sub(HISTORY_DAYS.load(Ordering::Relaxed)))
+}
+
+/// Deletes the days of a tab's history before the oldest one it keeps.
+fn trim_days(dir: &Path) {
+    let days = day_files(dir);
+    let Some(first) = first_kept_day(&days) else {
+        return;
+    };
+    for (day, path) in days {
+        if day < first {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// The time of a history line, read off its start where `Recorder` puts it, without
+/// parsing the rest. Lines written another way are parsed; lines without one are `None`.
+fn line_time(line: &str) -> Option<u64> {
+    line.strip_prefix(r#"{"t":"#)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
+        .or_else(|| serde_json::from_str::<Sample>(line).ok().map(|sample| sample.t))
+}
+
+/// Appends rounds to a tab's history, each to the file of its day. Starting a new day
+/// drops the days that have fallen out of the kept days.
+struct HistoryWriter {
+    dir: PathBuf,
+    day: Option<(u64, fs::File)>,
+}
+
+impl HistoryWriter {
+    fn new(dir: PathBuf) -> Self {
+        Self { dir, day: None }
+    }
+
+    fn append(&mut self, t: u64, line: &str) -> std::io::Result<()> {
+        let day = t / DAY_MS;
+        if self.day.as_ref().is_none_or(|(open, _)| *open != day) {
+            let path = self.dir.join(format!("{day}.jsonl"));
+            let file = OpenOptions::new().create(true).append(true).open(path)?;
+            let started = self.day.is_some();
+            self.day = Some((day, file));
+            if started {
+                trim_days(&self.dir);
+            }
+        }
+        let (_, file) = self.day.as_ref().unwrap();
+        writeln!(&*file, "{line}")
+    }
+}
+
+/// Appends history lines, oldest first, each to the file of its day. Lines without a
+/// time are dropped.
+fn write_lines<'a>(dir: &Path, lines: impl IntoIterator<Item = &'a str>) -> std::io::Result<()> {
+    let mut writer = HistoryWriter::new(dir.to_path_buf());
+    for line in lines {
+        if let Some(t) = line_time(line) {
+            writer.append(t, line)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reads the newest `max` rounds of a tab's history, after dropping the days that have
+/// fallen out of it. Only the newest days that hold them are read. Unreadable lines are skipped.
+fn load_history(dir: &Path, max: usize) -> Vec<Sample> {
+    trim_days(dir);
+    let mut texts = Vec::new();
+    let mut count = 0;
+    for (_, path) in day_files(dir).iter().rev() {
+        if count >= max {
+            break;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        count += text.lines().count();
+        texts.push(text);
+    }
+    let lines: Vec<&str> = texts.iter().rev().flat_map(|text| text.lines()).collect();
+    lines[lines.len().saturating_sub(max)..]
         .iter()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+/// The probes of one hop over a stretch of time. Stretches add up, so a long period is
+/// counted from the tallies of its minutes instead of from every round.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+struct Tally {
+    sent: u32,
+    received: u32,
+    /// Sum of the replies' times, for their average.
+    sum: f64,
+    min: Option<f64>,
+    max: Option<f64>,
+    /// Sum and number of the differences between consecutive replies, for jitter.
+    jitter_sum: f64,
+    jitter_count: u32,
+    /// The latest probe: its time, or `None` when it was lost.
+    last: Option<f64>,
+}
+
+impl Tally {
+    /// Counts a probe; `previous` is the hop's reply before it, for jitter.
+    fn add(&mut self, rtt: Option<f64>, previous: Option<f64>) {
+        self.sent += 1;
+        self.last = rtt;
+        let Some(rtt) = rtt else {
+            return;
+        };
+        self.received += 1;
+        self.sum += rtt;
+        self.min = Some(self.min.map_or(rtt, |min| min.min(rtt)));
+        self.max = Some(self.max.map_or(rtt, |max| max.max(rtt)));
+        if let Some(previous) = previous {
+            self.jitter_sum += (rtt - previous).abs();
+            self.jitter_count += 1;
+        }
+    }
+
+    /// Adds the tally of a later stretch.
+    fn merge(&mut self, later: &Tally) {
+        let pick = |a: Option<f64>, b: Option<f64>, f: fn(f64, f64) -> f64| match (a, b) {
+            (Some(a), Some(b)) => Some(f(a, b)),
+            (a, b) => a.or(b),
+        };
+        self.sent += later.sent;
+        self.received += later.received;
+        self.sum += later.sum;
+        self.min = pick(self.min, later.min, f64::min);
+        self.max = pick(self.max, later.max, f64::max);
+        self.jitter_sum += later.jitter_sum;
+        self.jitter_count += later.jitter_count;
+        if later.sent > 0 {
+            self.last = later.last;
+        }
+    }
+}
+
+/// Tallies per hop number, 0 being the round trip, and per stretch by its start in Unix ms.
+type Tallies = HashMap<u8, BTreeMap<u64, Tally>>;
+
+/// Tallies the rounds of a history file from `from` to before `to` in stretches of `width`
+/// ms. The round trip is the final hop of each round, lost when it did not answer, as
+/// the window counts it.
+fn tally_rounds(text: &str, width: u64, from: u64, to: u64) -> Tallies {
+    let mut tallies = Tallies::new();
+    tally_into(&mut tallies, &mut HashMap::new(), text, width, from, to);
+    tallies
+}
+
+/// `tally_rounds` into existing tallies. `previous` holds each hop's latest reply, for
+/// jitter, and carries it over to the next piece of the same file.
+fn tally_into(tallies: &mut Tallies, previous: &mut HashMap<u8, f64>, text: &str, width: u64, from: u64, to: u64) {
+    // A round's time is read before the rest of its line, so rounds outside the period
+    // cost next to nothing: a short period is often read from a whole day's file.
+    let inside = |line: &&str| line_time(line).is_some_and(|t| (from..to).contains(&t));
+    for sample in text.lines().filter(inside).filter_map(|line| serde_json::from_str::<Sample>(line).ok()) {
+        let start = sample.t / width * width;
+        let reply = sample.hops.last().and_then(|hop| hop.rtt);
+        for (ttl, rtt) in sample.hops.iter().map(|hop| (hop.ttl, hop.rtt)).chain([(0, reply)]) {
+            let before = previous.get(&ttl).copied();
+            tallies.entry(ttl).or_default().entry(start).or_default().add(rtt, before);
+            if let Some(rtt) = rtt {
+                previous.insert(ttl, rtt);
+            }
+        }
+    }
+}
+
+const MINUTE_MS: u64 = 60_000;
+
+/// The minute tallies of one day file, and how far into the file they reach. A finished
+/// day is read once, and today's file only from where the last look stopped, so that
+/// a long period can be looked at again and again for little.
+#[derive(Default)]
+struct DayTally {
+    read: u64,
+    tallies: Tallies,
+    previous: HashMap<u8, f64>,
+}
+
+impl DayTally {
+    /// Tallies the whole lines added to the file since the last call.
+    fn catch_up(&mut self, path: &Path) {
+        let Ok(mut file) = fs::File::open(path) else {
+            return;
+        };
+        let len = file.metadata().map_or(0, |meta| meta.len());
+        // A shorter file was written anew.
+        if len < self.read {
+            *self = Self::default();
+        }
+        if len == self.read {
+            return;
+        }
+        let mut bytes = Vec::new();
+        let read = file
+            .seek(SeekFrom::Start(self.read))
+            .and_then(|_| (&mut file).take(len - self.read).read_to_end(&mut bytes));
+        if read.is_err() {
+            return;
+        }
+        // The last line may still be being written; it waits for the next call.
+        let whole = bytes.iter().rposition(|&byte| byte == b'\n').map_or(0, |i| i + 1);
+        let text = String::from_utf8_lossy(&bytes[..whole]);
+        tally_into(&mut self.tallies, &mut self.previous, &text, MINUTE_MS, 0, u64::MAX);
+        self.read += whole as u64;
+    }
+}
+
+/// The minute tallies of the day files looked at so far, by file.
+// ponytail: about 1 MB per day of a 1 s trace, kept until its file is gone. Drop the
+// least recently used days if long histories of many tabs take too much memory.
+static DAY_TALLIES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<DayTally>>>>> = OnceLock::new();
+
+/// Adds tallies of `step`-ms stretches into stretches of `width` ms, a multiple of
+/// `step`, keeping those that overlap the period from `from` to before `to`.
+fn rebucket(into: &mut Tallies, tallies: &Tallies, step: u64, width: u64, from: u64, to: u64) {
+    for (ttl, stretches) in tallies {
+        let hop = into.entry(*ttl).or_default();
+        for (start, tally) in stretches.range(from.saturating_sub(step - 1)..to) {
+            hop.entry(start / width * width).or_default().merge(tally);
+        }
+    }
+}
+
+/// One stretch of a hop's graph: its start in Unix ms and its tally.
+#[derive(Serialize)]
+struct Stretch {
+    t: u64,
+    #[serde(flatten)]
+    tally: Tally,
+}
+
+/// A hop over a period of its history: its tally over the whole period, and for a hop
+/// with a graph, its stretches.
+#[derive(Serialize)]
+struct RangeHop {
+    ttl: u8,
+    total: Tally,
+    stretches: Vec<Stretch>,
+}
+
+/// A period of a tab's history, and where the history begins (Unix ms, `None` when empty).
+#[derive(Serialize)]
+struct Range {
+    start: Option<u64>,
+    hops: Vec<RangeHop>,
+}
+
+/// What a tab's history holds from `from` to before `to` (Unix ms), per hop number (0 for
+/// the round trip): a tally over the whole period, and for the hops in `graphed` one per
+/// `width` ms. The day files the period touches are read by as many threads as there are
+/// cores. With a width of whole minutes they are tallied by the minute and kept (see
+/// `DayTally`); such stretches can reach up to a minute past the period's ends.
+#[tauri::command(async)]
+fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u8>) -> Result<Range, String> {
+    let dir = history_dir(&session)?;
+    let width = width.max(1);
+    let by_minute = width.is_multiple_of(MINUTE_MS);
+    let all = day_files(&dir);
+    let start = all.first().and_then(|(_, path)| first_time(path));
+    let days: Vec<PathBuf> = all
+        .into_iter()
+        .filter(|(day, _)| (from / DAY_MS..=to / DAY_MS).contains(day))
+        .map(|(_, path)| path)
+        .collect();
+    let cache = DAY_TALLIES.get_or_init(Default::default);
+    cache.lock().unwrap().retain(|path, _| path.exists());
+
+    let tally_day = |path: &Path| -> Tallies {
+        if !by_minute {
+            return tally_rounds(&fs::read_to_string(path).unwrap_or_default(), width, from, to);
+        }
+        let day = cache.lock().unwrap().entry(path.to_path_buf()).or_default().clone();
+        let mut day = day.lock().unwrap();
+        day.catch_up(path);
+        let mut tallies = Tallies::new();
+        rebucket(&mut tallies, &day.tallies, MINUTE_MS, width, from, to);
+        tallies
+    };
+    // A pool rather than a thread per day: each thread holds a whole day file in memory.
+    let next = AtomicUsize::new(0);
+    let parts: Mutex<Vec<Option<Tallies>>> = Mutex::new(vec![None; days.len()]);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(days.len());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = days.get(i) else {
+                        return;
+                    };
+                    let tallies = tally_day(path);
+                    parts.lock().unwrap()[i] = Some(tallies);
+                }
+            });
+        }
+    });
+
+    // Days in order, so that each hop's last probe is the latest one.
+    let mut hops: BTreeMap<u8, RangeHop> = BTreeMap::new();
+    for part in parts.into_inner().unwrap().into_iter().flatten() {
+        let mut ttls: Vec<&u8> = part.keys().collect();
+        ttls.sort();
+        for ttl in ttls {
+            let hop = hops.entry(*ttl).or_insert(RangeHop {
+                ttl: *ttl,
+                total: Tally::default(),
+                stretches: Vec::new(),
+            });
+            for (t, tally) in &part[ttl] {
+                hop.total.merge(tally);
+                if !graphed.contains(ttl) {
+                    continue;
+                }
+                match hop.stretches.last_mut() {
+                    Some(stretch) if stretch.t == *t => stretch.tally.merge(tally),
+                    _ => hop.stretches.push(Stretch { t: *t, tally: *tally }),
+                }
+            }
+        }
+    }
+    Ok(Range {
+        start,
+        hops: hops.into_values().collect(),
+    })
+}
+
+/// The time of the first round in a history file.
+fn first_time(path: &Path) -> Option<u64> {
+    let file = fs::File::open(path).ok()?;
+    BufReader::new(file).lines().map_while(Result::ok).find_map(|line| line_time(&line))
+}
+
+/// When a tab's history begins, in Unix ms: the first round of its oldest day file.
+/// `None` for a tab without history.
+#[tauri::command(async)]
+fn history_start(session: String) -> Result<Option<u64>, String> {
+    let dir = history_dir(&session)?;
+    Ok(day_files(&dir).first().and_then(|(_, path)| first_time(path)))
+}
+
+/// The events file of a tab: its route changes, alerts and recoveries, one JSON object
+/// per line as the window describes them, `t` in Unix seconds. It keeps the events of
+/// the rounds the window no longer holds.
+fn events_path(session: &str) -> Result<PathBuf, String> {
+    Ok(history_dir(session)?.join("events.jsonl"))
+}
+
+/// Adds an event, one line of JSON, to a tab's events file.
+#[tauri::command(async)]
+fn append_event(session: String, event: String) -> Result<(), String> {
+    if event.contains('\n') {
+        return Err("an event is one line".into());
+    }
+    let path = events_path(&session)?;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{event}"))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// A tab's saved events, oldest first. Those from before the oldest day its history keeps
+/// are dropped from the file on the way.
+#[tauri::command(async)]
+fn read_events(session: String) -> Result<Vec<String>, String> {
+    let path = events_path(&session)?;
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(Vec::new());
+    };
+    let days = day_files(path.parent().unwrap_or(Path::new(".")));
+    let first_ms = first_kept_day(&days).map_or(0, |day| day * DAY_MS);
+    let kept: Vec<String> = text
+        .lines()
+        .filter(|line| line_time(line).is_some_and(|t| t * 1000 >= first_ms))
+        .map(str::to_owned)
+        .collect();
+    if kept.len() < text.lines().count() {
+        let _ = fs::write(&path, kept.iter().map(|line| format!("{line}\n")).collect::<String>());
+    }
+    Ok(kept)
+}
+
+/// A Unix time in ms as an ISO 8601 UTC time, the way the window writes them:
+/// 2026-10-16T12:00:00.000Z.
+fn iso_time(ms: u64) -> String {
+    // Days to a civil date, after Howard Hinnant's `civil_from_days`.
+    let z = (ms / DAY_MS) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let rest = ms % DAY_MS;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rest / 3_600_000,
+        rest / 60_000 % 60,
+        rest / 1000 % 60,
+        rest % 1000
+    )
+}
+
+/// Saves a tab's whole history as a samples export, one line per probe with the address
+/// it answered from, where the user picks; `None` when the dialog was cancelled. It is
+/// written while the day files are read, so a long history is never held whole.
+#[tauri::command(async)]
+fn export_samples(app: AppHandle, session: String, name: String) -> Result<Option<String>, String> {
+    let dir = history_dir(&session)?;
+    let Some(path) = save_dialog(&app, &name)? else {
+        return Ok(None);
+    };
+    let cannot = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
+    let mut out = std::io::BufWriter::new(fs::File::create(&path).map_err(cannot)?);
+    writeln!(out, "time,hop,ip,rtt_ms").map_err(cannot)?;
+    for (_, day) in day_files(&dir) {
+        let Ok(text) = fs::read_to_string(&day) else {
+            continue;
+        };
+        for sample in text.lines().filter_map(|line| serde_json::from_str::<Sample>(line).ok()) {
+            let time = iso_time(sample.t);
+            for hop in &sample.hops {
+                let addr = hop.addr.map(|addr| addr.to_string()).unwrap_or_default();
+                let rtt = hop.rtt.map(|rtt| rtt.to_string()).unwrap_or_default();
+                writeln!(out, "{time},{},{addr},{rtt}", hop.ttl).map_err(cannot)?;
+            }
+        }
+    }
+    out.flush().map_err(cannot)?;
+    Ok(Some(path.display().to_string()))
 }
 
 /// Whether the app was started with `--demo`. Every tab then shows a made-up route with
@@ -204,10 +658,45 @@ impl DemoRng {
     }
 }
 
+/// How one demo target's route differs from the others': the long-haul latency, the size,
+/// length and timing of its swell, its rise in the busy hours of the day, and extra loss
+/// at the target. Picked from the host name, so that tabs can be told apart and a host
+/// always looks the same.
+struct DemoLook {
+    scale: f64,
+    swell: f64,
+    period_ms: f64,
+    phase: f64,
+    busy: f64,
+    busy_phase: f64,
+    loss: f64,
+}
+
+fn demo_look(host: &str) -> DemoLook {
+    // FNV-1a, so that names that differ in one letter still look different.
+    let seed = host.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    let mut rng = DemoRng(seed | 1);
+    rng.next();
+    DemoLook {
+        scale: 0.6 + 0.8 * rng.next(),
+        swell: 0.05 + 0.25 * rng.next(),
+        period_ms: 60_000.0 + 180_000.0 * rng.next(),
+        phase: std::f64::consts::TAU * rng.next(),
+        busy: 0.1 + 0.4 * rng.next(),
+        busy_phase: std::f64::consts::TAU * rng.next(),
+        loss: 0.02 * rng.next(),
+    }
+}
+
 /// One made-up round at Unix time `t` in ms: steady near hops, a slow swell and the odd
 /// spike shared by the hops beyond the provider's edge, and one hop that often stays silent.
-fn demo_sample(rng: &mut DemoRng, t: u64) -> Sample {
-    let swell = 1.0 + 0.5 * (t as f64 / 120_000.0).sin().max(0.0);
+fn demo_sample(rng: &mut DemoRng, look: &DemoLook, t: u64) -> Sample {
+    let day = std::f64::consts::TAU * (t % DAY_MS) as f64 / DAY_MS as f64;
+    let swell = 1.0
+        + look.swell * (t as f64 / look.period_ms + look.phase).sin().max(0.0)
+        + look.busy * (day + look.busy_phase).sin().max(0.0);
     let spike = if rng.next() < 0.02 {
         15.0 + 45.0 * rng.next()
     } else {
@@ -218,10 +707,13 @@ fn demo_sample(rng: &mut DemoRng, t: u64) -> Sample {
         .enumerate()
         .map(|(i, (addr, _, usual, loss))| {
             let far = i >= 2;
+            // Beyond the first ocean the route is the target's own.
+            let usual = if i >= 4 { usual * look.scale } else { *usual };
             let rtt = usual * if far { swell } else { 1.0 }
                 + usual * 0.2 * rng.next()
                 + if far { spike } else { 0.0 };
-            let lost = rng.next() < *loss;
+            let target = i == DEMO_ROUTE.len() - 1;
+            let lost = rng.next() < loss + if target { look.loss } else { 0.0 };
             HopSample {
                 ttl: i as u8 + 1,
                 addr: (!lost).then(|| addr.parse().unwrap()),
@@ -232,9 +724,20 @@ fn demo_sample(rng: &mut DemoRng, t: u64) -> Sample {
     Sample { t, hops }
 }
 
-/// `start_trace` in demo mode: a tab with a quarter of an hour of made-up history that
+/// How much made-up history a new demo tab starts with, in ms: `--demo-days N` days, to
+/// try long periods, or else a quarter of an hour.
+fn demo_history_ms() -> u64 {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|arg| arg == "--demo-days")
+        .and_then(|i| args.get(i + 1)?.parse::<u64>().ok())
+        .map_or(900_000, |days| days.clamp(1, 365) * DAY_MS)
+}
+
+/// `start_trace` in demo mode: a tab with made-up history (see `demo_history_ms`) that
 /// keeps getting made-up rounds. Nothing is sent on the network.
 fn start_demo(
+    host: &str,
     session: &str,
     interval_ms: u64,
     with_history: bool,
@@ -248,26 +751,24 @@ fn start_demo(
             .map_or(0, |d| d.as_millis() as u64)
     };
     let mut rng = DemoRng(now() | 1);
-    let path = history_path(session)?;
-    if with_history && !path.exists() {
+    let look = demo_look(host);
+    let dir = history_dir(session)?;
+    if with_history && day_files(&dir).is_empty() {
         let start = now();
-        let past: Vec<String> = (1..=900u64)
-            .rev()
-            .filter_map(|ago| {
-                serde_json::to_string(&demo_sample(&mut rng, start - ago * interval_ms)).ok()
-            })
-            .collect();
-        fs::write(&path, past.join("\n") + "\n").map_err(|e| e.to_string())?;
+        let mut writer = HistoryWriter::new(dir.clone());
+        for ago in (1..=demo_history_ms() / interval_ms).rev() {
+            let sample = demo_sample(&mut rng, &look, start - ago * interval_ms);
+            if let Ok(line) = serde_json::to_string(&sample) {
+                writer.append(sample.t, &line).map_err(|e| e.to_string())?;
+            }
+        }
     }
     let history = if with_history {
-        load_history(&path, history_rounds(interval_ms))
+        load_history(&dir, history_rounds(interval_ms))
     } else {
         Vec::new()
     };
-    let file = OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let mut writer = HistoryWriter::new(dir);
     let id = traces.next_id.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
     traces.stops.lock().unwrap().insert(id, stop.clone());
@@ -277,9 +778,9 @@ fn start_demo(
             if stop.load(Ordering::Relaxed) {
                 return;
             }
-            let sample = demo_sample(&mut rng, now());
+            let sample = demo_sample(&mut rng, &look, now());
             if let Ok(line) = serde_json::to_string(&sample) {
-                let _ = writeln!(&file, "{line}");
+                let _ = writer.append(sample.t, &line);
             }
             if channel.send(TraceEvent::Sample(sample)).is_err() {
                 return;
@@ -294,18 +795,12 @@ fn start_demo(
     })
 }
 
-/// Where the rounds of a running trace go: its history file and the frontend.
+/// Where the rounds of a running trace go: its history files and the frontend.
 struct Recorder {
     channel: Channel<TraceEvent>,
-    file: fs::File,
-    path: PathBuf,
+    history: Mutex<HistoryWriter>,
     /// The tab shows an error; the next recorded round clears it.
     failing: AtomicBool,
-    /// The trace's interval, which sets how many rounds the file keeps.
-    interval_ms: u64,
-    /// Rounds appended since the file was last trimmed. Trimming every `history_rounds`
-    /// rounds keeps the file under twice that, however long the trace runs.
-    appended: AtomicUsize,
 }
 
 impl Recorder {
@@ -330,12 +825,9 @@ impl Recorder {
         }
         let saved = serde_json::to_string(&sample)
             .map_err(std::io::Error::other)
-            .and_then(|line| writeln!(&self.file, "{line}"));
+            .and_then(|line| self.history.lock().unwrap().append(t, &line));
         if let Err(e) = saved {
             self.error(format!("History is not being saved: {e}"));
-        } else if self.appended.fetch_add(1, Ordering::Relaxed) + 1 >= history_rounds(self.interval_ms) {
-            self.appended.store(0, Ordering::Relaxed);
-            trim_history(&self.path, history_rounds(self.interval_ms));
         }
         self.channel.send(TraceEvent::Sample(sample)).is_ok()
     }
@@ -456,7 +948,7 @@ fn start_trace(
     traces: State<'_, Traces>,
 ) -> Result<Started, String> {
     if demo() {
-        return start_demo(&session, interval_ms, with_history, channel, &traces);
+        return start_demo(&host, &session, interval_ms, with_history, channel, &traces);
     }
     let host = host.trim().to_lowercase();
     let addr = (host.as_str(), 0)
@@ -521,17 +1013,12 @@ fn start_trace(
         None => None,
     };
 
-    let path = history_path(&session)?;
+    let dir = history_dir(&session)?;
     let history = if with_history {
-        load_history(&path, history_rounds(interval.as_millis() as u64))
+        load_history(&dir, history_rounds(interval.as_millis() as u64))
     } else {
         Vec::new()
     };
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
 
     let stop = Arc::new(AtomicBool::new(false));
     traces.stops.lock().unwrap().insert(id, stop.clone());
@@ -542,11 +1029,8 @@ fn start_trace(
         .max(1) as usize;
     let recorder = Recorder {
         channel,
-        file,
-        path,
+        history: Mutex::new(HistoryWriter::new(dir)),
         failing: AtomicBool::new(false),
-        interval_ms: interval.as_millis() as u64,
-        appended: AtomicUsize::new(0),
     };
 
     std::thread::spawn(move || match build {
@@ -588,15 +1072,27 @@ fn data_dir() -> &'static Path {
     })
 }
 
-/// The history file of one tab, in a folder that is created on demand.
-fn history_path(session: &str) -> Result<PathBuf, String> {
+/// The history folder of one tab, and the single file earlier versions kept its
+/// history in. Neither is created.
+fn history_paths(session: &str) -> Result<(PathBuf, PathBuf), String> {
     let name = file_safe(session);
     if name.is_empty() {
         return Err("missing session id".into());
     }
-    let dir = data_dir().join("history");
+    let root = data_dir().join("history");
+    Ok((root.join(&name), root.join(format!("{name}.jsonl"))))
+}
+
+/// The history folder of one tab, created on demand. A history still in one file, as
+/// earlier versions kept it, is split into days first.
+fn history_dir(session: &str) -> Result<PathBuf, String> {
+    let (dir, single) = history_paths(session)?;
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    Ok(dir.join(format!("{name}.jsonl")))
+    if let Ok(text) = fs::read_to_string(&single) {
+        write_lines(&dir, text.lines()).map_err(|e| format!("cannot split {}: {e}", single.display()))?;
+        let _ = fs::remove_file(&single);
+    }
+    Ok(dir)
 }
 
 /// Size, position and maximized state of the window, kept between launches.
@@ -670,19 +1166,21 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
 /// A tab's saved history without starting its trace, for a tab that is restored paused.
 #[tauri::command(async)]
 fn read_history(session: String, interval_ms: u64) -> Result<Vec<Sample>, String> {
-    Ok(load_history(&history_path(&session)?, history_rounds(interval_ms)))
+    Ok(load_history(&history_dir(&session)?, history_rounds(interval_ms)))
 }
 
 /// Erases a tab's saved history. A trace still writing to it loses those rounds too.
 #[tauri::command]
 fn delete_history(session: String) -> Result<(), String> {
-    let path = history_path(&session)?;
-    match fs::remove_file(&path) {
+    let (dir, single) = history_paths(&session)?;
+    let gone = |result: std::io::Result<()>, path: &Path| match result {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             Err(format!("cannot delete {}: {e}", path.display()))
         }
         _ => Ok(()),
-    }
+    };
+    gone(fs::remove_dir_all(&dir), &dir)?;
+    gone(fs::remove_file(&single), &single)
 }
 
 #[tauri::command]
@@ -843,9 +1341,21 @@ fn export_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, S
         .headers()
         .get("x-file-name")
         .and_then(|value| value.to_str().ok())
-        .map(file_safe)
-        .filter(|name| !name.is_empty())
         .ok_or("export needs a file name")?;
+    let Some(path) = save_dialog(&app, name)? else {
+        return Ok(None);
+    };
+    fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Asks where to save an export, suggesting `name` in the Downloads folder. `None` when
+/// the dialog was cancelled.
+fn save_dialog(app: &AppHandle, name: &str) -> Result<Option<PathBuf>, String> {
+    let name = file_safe(name);
+    if name.is_empty() {
+        return Err("export needs a file name".into());
+    }
     let mut dialog = app.dialog().file().set_file_name(&name);
     if let Ok(downloads) = app.path().download_dir() {
         dialog = dialog.set_directory(downloads);
@@ -856,9 +1366,7 @@ fn export_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, S
     let Some(path) = dialog.blocking_save_file() else {
         return Ok(None);
     };
-    let path = path.into_path().map_err(|e| e.to_string())?;
-    fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    Ok(Some(path.display().to_string()))
+    path.into_path().map(Some).map_err(|e| e.to_string())
 }
 
 /// Where releases are published: the app looks here for a newer version.
@@ -972,7 +1480,7 @@ fn import_file(app: AppHandle) -> Result<Option<(String, String)>, String> {
 
 /// Saves the raw request body as the history of the new tab named in the `x-session`
 /// header: one round per line, as `Recorder` writes them. Lines that are not rounds are
-/// skipped when the history is read. A session that has a history keeps it.
+/// skipped. A session that has a history keeps it.
 #[tauri::command(async)]
 fn import_history(request: Request<'_>) -> Result<(), String> {
     let InvokeBody::Raw(bytes) = request.body() else {
@@ -983,13 +1491,12 @@ fn import_history(request: Request<'_>) -> Result<(), String> {
         .get("x-session")
         .and_then(|value| value.to_str().ok())
         .ok_or("import needs a session id")?;
-    let path = history_path(session)?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(bytes))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    let dir = history_dir(session)?;
+    if !day_files(&dir).is_empty() {
+        return Err(format!("{} already holds a history", dir.display()));
+    }
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("import is not text: {e}"))?;
+    write_lines(&dir, text.lines()).map_err(|e| format!("cannot write {}: {e}", dir.display()))
 }
 
 /// The latest published release, `None` when there is none (or the repo is not public).
@@ -1371,7 +1878,12 @@ pub fn run() {
             start_trace,
             stop_trace,
             read_history,
-            set_history_hours,
+            history_range,
+            history_start,
+            append_event,
+            read_events,
+            export_samples,
+            set_history_days,
             delete_history,
             host_locale,
             reverse_dns,
@@ -1462,32 +1974,122 @@ mod tests {
 
     #[test]
     fn history_is_counted_in_rounds_of_the_interval_up_to_a_cap() {
-        // At the 24 hours it starts with; no test changes them.
+        // 24 hours of rounds, up to the cap.
         assert_eq!(history_rounds(1000), 86_400);
         assert_eq!(history_rounds(10_000), 8640);
         assert_eq!(history_rounds(200), MAX_HISTORY);
     }
 
     #[test]
-    fn history_keeps_newest_rounds_and_skips_bad_lines() {
-        let path = std::env::temp_dir().join(format!("traceplotter-test-{}.jsonl", std::process::id()));
-        let line = |t| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":"10.0.0.1","rtt":1.5}}]}}"#);
-        fs::write(&path, [line(1), line(2), "garbage".into(), line(4)].join("\n") + "\n").unwrap();
+    fn history_is_kept_in_day_files_and_loads_its_newest_rounds() {
+        let dir = std::env::temp_dir().join(format!("traceplotter-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let line = |t: u64| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":"10.0.0.1","rtt":1.5}}]}}"#);
+        // Ten days, two rounds each, with a bad line among them. 7 days are kept.
+        let day = |d: u64| 20_000 * DAY_MS + d * DAY_MS;
+        let mut lines: Vec<String> = (0..10).flat_map(|d| [line(day(d)), line(day(d) + 1000)]).collect();
+        lines.insert(5, "garbage".into());
+        write_lines(&dir, lines.iter().map(String::as_str)).unwrap();
+        // A writer starting a new day drops the days that fell out of the kept hours.
+        assert_eq!(day_files(&dir).iter().map(|(d, _)| d - 20_000).collect::<Vec<_>>(), [2, 3, 4, 5, 6, 7, 8, 9]);
 
-        let loaded = load_history(&path, 3);
-        let kept = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).unwrap();
-
-        assert_eq!(loaded.iter().map(|s| s.t).collect::<Vec<_>>(), [2, 4]);
+        let loaded = load_history(&dir, 3);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(loaded.iter().map(|s| s.t).collect::<Vec<_>>(), [day(8) + 1000, day(9), day(9) + 1000]);
         assert_eq!(loaded[0].hops[0].rtt, Some(1.5));
-        assert_eq!(kept.lines().count(), 3);
         assert_eq!(file_safe("..\\a/b:c"), ".._a_b_c");
+    }
+
+    #[test]
+    fn tallies_count_hops_and_the_round_trip_by_stretch_and_add_up() {
+        let round = |t: u64, rtts: [Option<f64>; 2]| {
+            serde_json::to_string(&Sample {
+                t,
+                hops: rtts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rtt)| HopSample { ttl: i as u8 + 1, addr: None, rtt: *rtt })
+                    .collect(),
+            })
+            .unwrap()
+        };
+        let text = [
+            round(0, [Some(1.0), Some(10.0)]),
+            round(1000, [Some(3.0), None]),
+            round(2000, [Some(2.0), Some(14.0)]),
+            round(3000, [None, Some(12.0)]),
+        ]
+        .join("\n");
+        let tallies = tally_rounds(&text, 2000, 0, u64::MAX);
+        let hop1 = &tallies[&1];
+        assert_eq!(hop1[&0].sent, 2);
+        assert_eq!(hop1[&0].sum, 4.0);
+        assert_eq!(hop1[&0].jitter_sum, 2.0);
+        assert_eq!(hop1[&2000].last, None);
+        // The round trip is the final hop; its lost probe counts and jitter skips it.
+        let trip = &tallies[&0];
+        assert_eq!((trip[&0].sent, trip[&0].received), (2, 1));
+        assert_eq!(trip[&2000].jitter_sum, 6.0);
+
+        let mut whole = Tally::default();
+        for tally in trip.values() {
+            whole.merge(tally);
+        }
+        assert_eq!((whole.sent, whole.received, whole.min, whole.max), (4, 3, Some(10.0), Some(14.0)));
+        assert_eq!(whole.last, Some(12.0));
+        assert_eq!(tally_rounds(&text, 2000, 1000, 3000)[&0].values().map(|t| t.sent).sum::<u32>(), 2);
+    }
+
+    #[test]
+    fn a_day_is_tallied_by_the_minute_as_its_file_grows() {
+        let path = std::env::temp_dir().join(format!("traceplotter-day-{}.jsonl", std::process::id()));
+        let line = |t: u64, rtt: f64| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":null,"rtt":{rtt}}}]}}"#);
+        // The second line is not finished yet: no newline.
+        fs::write(&path, format!("{}\n{}", line(1_000, 10.0), &line(61_000, 30.0)[..10])).unwrap();
+        let mut day = DayTally::default();
+        day.catch_up(&path);
+        assert_eq!(day.tallies[&1].len(), 1);
+        fs::write(&path, format!("{}\n{}\n", line(1_000, 10.0), line(61_000, 30.0))).unwrap();
+        day.catch_up(&path);
+        let hop = &day.tallies[&1];
+        assert_eq!((hop[&0].sent, hop[&60_000].sent), (1, 1));
+        // Jitter carries over from the earlier piece of the file.
+        assert_eq!(hop[&60_000].jitter_sum, 20.0);
+        let mut five = Tallies::new();
+        rebucket(&mut five, &day.tallies, MINUTE_MS, 300_000, 0, u64::MAX);
+        assert_eq!(five[&1][&0].sent, 2);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_day_file_dated_after_today_does_not_expire_the_real_ones() {
+        let today = now_ms() / DAY_MS;
+        let days = |list: &[u64]| list.iter().map(|d| (*d, PathBuf::new())).collect::<Vec<_>>();
+        assert_eq!(first_kept_day(&days(&[today - 3, today])), Some(today - 7));
+        assert_eq!(first_kept_day(&days(&[today - 3, today + 1000])), Some(today - 7));
+        // An old capture keeps its own last days.
+        assert_eq!(first_kept_day(&days(&[20_000, 20_009])), Some(20_002));
+    }
+
+    #[test]
+    fn times_are_written_as_iso_utc() {
+        assert_eq!(iso_time(1_000_000), "1970-01-01T00:16:40.000Z");
+        assert_eq!(iso_time(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(iso_time(1_792_181_234_567), "2026-10-16T20:07:14.567Z");
+    }
+
+    #[test]
+    fn a_line_knows_its_time_however_it_was_written() {
+        assert_eq!(line_time(r#"{"t":1700000000123,"hops":[]}"#), Some(1_700_000_000_123));
+        assert_eq!(line_time(r#"{"hops":[],"t":5}"#), Some(5));
+        assert_eq!(line_time("garbage"), None);
     }
 
     #[test]
     fn demo_rounds_cover_the_route_with_documentation_addresses() {
         let mut rng = DemoRng(1);
-        let rounds: Vec<Sample> = (0..200).map(|i| demo_sample(&mut rng, i * 1000)).collect();
+        let look = demo_look("demo.example");
+        let rounds: Vec<Sample> = (0..200).map(|i| demo_sample(&mut rng, &look, i * 1000)).collect();
         assert!(rounds.iter().all(|round| round.hops.len() == DEMO_ROUTE.len()));
         assert!(rounds.iter().all(|round| round.hops.iter().all(|hop| hop.rtt.is_none_or(|rtt| rtt > 0.0))));
         // The silent hop loses a fair share, the target next to nothing.

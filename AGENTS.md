@@ -69,6 +69,8 @@ published builds, which the Release workflow makes; do not hand out a `fast` bui
 
 `--demo` replaces probing with a made-up nine-hop route built from documentation addresses, with a
 quarter of an hour of history, and keeps its data in a separate `TracePlotter-demo-data` folder.
+Each host name gets its own latency and loss. `--demo-days N` starts new tabs with N days of
+history instead, for work on long periods.
 Use it for screenshots and for interface work:
 
 ```bash

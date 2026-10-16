@@ -8,6 +8,7 @@
   import { BAND_FILLS } from "../lib/HopGraph.svelte";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import ContextMenu from "../lib/ContextMenu.svelte";
+  import Toast, { showToast } from "../lib/Toast.svelte";
   import Picker from "../lib/Picker.svelte";
   import Settings from "../lib/Settings.svelte";
   import {
@@ -27,6 +28,7 @@
   import { setLocale } from "../lib/time";
   import {
     closeTrace,
+    historyRange,
     PROTOCOLS,
     protocolLabel,
     restartTrace,
@@ -44,7 +46,7 @@
   const COLUMNS_KEY = "traceplotter.hiddenColumns";
   const SPAN_KEY = "traceplotter.timeSpan";
   /** Time spans offered in the list, in seconds; 0 is everything. Any other can be typed. */
-  const SPANS = [60, 300, 600, 1800, 3600, 21600, 0];
+  const SPANS = [60, 300, 600, 1800, 3600, 21600, 86400, 604800, 0];
 
   // The open tabs, restored on the next launch. Holds the same objects as `trace.config`.
   let session: TraceConfig[] = [];
@@ -82,8 +84,6 @@
     localStorage.setItem(SPAN_KEY, String(seconds));
   }
   let busy = $state(false);
-  let error = $state("");
-  let notice = $state("");
 
   // Updates. A newer release found on GitHub is offered in a bar at the top; nothing is
   // downloaded until the user asks for it.
@@ -95,23 +95,21 @@
 
   /** Looks for a newer release. Only a check the user asked for reports "none" or an error. */
   async function checkUpdates(asked: boolean) {
-    if (asked) error = notice = "";
     try {
       update = await invoke<{ version: string; notes: string } | null>("check_update");
-      if (asked && !update) notice = `TracePlotter ${version} is the latest version.`;
+      if (asked && !update) showToast(`TracePlotter ${version} is the latest version.`);
     } catch (e) {
-      if (asked) error = String(e);
+      if (asked) showToast(String(e), true);
     }
   }
 
   /** Downloads and verifies the update, replaces the exe and restarts the app. */
   async function installUpdate() {
     updating = true;
-    error = "";
     try {
       await invoke("install_update");
     } catch (e) {
-      error = `Update failed: ${e}`;
+      showToast(`Update failed: ${e}`, true);
       updating = false;
     }
   }
@@ -129,8 +127,7 @@
    * Elsewhere gives the exe CAP_NET_RAW, after the password prompt, and restarts into it.
    */
   function restartElevated() {
-    error = notice = "";
-    invoke("restart_elevated").catch((e) => (error = String(e)));
+    invoke("restart_elevated").catch((e) => showToast(String(e), true));
   }
 
   // Agent access: the MCP server that lets AI agents read the traces and start new ones.
@@ -141,26 +138,25 @@
 
   /** Starts or stops the MCP server. `chosen` is the user's choice, which is remembered and confirmed. */
   async function setAgentAccess(on: boolean, chosen: boolean) {
-    error = notice = "";
     try {
       mcpUrl = await invoke<string | null>("mcp_serve", { port: on ? settings.mcpPort : null });
       mcpOn = on;
       if (chosen) localStorage.setItem(MCP_KEY, on ? "on" : "off");
-      if (chosen) notice = mcpUrl ? `Agents can connect to ${mcpUrl}` : "Agent access is off.";
+      if (chosen) showToast(mcpUrl ? `Agents can connect to ${mcpUrl}` : "Agent access is off.");
     } catch (e) {
       // The server that ran before, if any, was stopped to make way for this one.
       mcpUrl = null;
-      error = `Agent access not started: ${e}`;
+      showToast(`Agent access not started: ${e}`, true);
     }
-    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+    buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
   }
 
   function copyAgentAddress() {
     if (!mcpUrl) return;
     navigator.clipboard
       .writeText(mcpUrl)
-      .then(() => (notice = "Agent address copied."))
-      .catch((e) => (error = `Not copied: ${e}`));
+      .then(() => showToast("Agent address copied."))
+      .catch((e) => showToast(`Not copied: ${e}`, true));
   }
 
   function setAutoCheck(on: boolean) {
@@ -186,8 +182,8 @@
     // With no target open the toolbar describes a new one.
     if (!active) toDefaults();
     if (key === "mcpPort" && mcpOn) setAgentAccess(true, false);
-    if (key === "historyHours") {
-      invoke("set_history_hours", { hours: settings.historyHours }).catch((e) => (error = String(e)));
+    if (key === "historyDays") {
+      invoke("set_history_days", { days: settings.historyDays }).catch((e) => showToast(String(e), true));
     }
     // The toolbar's legend shows the latency limits.
     rev++;
@@ -202,6 +198,7 @@
     packetSize: settings.packetSize,
     alertLatencyMs: settings.alertLatencyMs,
     alertLossPct: settings.alertLossPct,
+    alertSeconds: settings.alertSeconds,
   });
 
   /** The intervals the toolbar offers that agents may use. */
@@ -250,7 +247,7 @@
   async function answerAgent({ id, tool, arguments: args }: { id: number; tool: string; arguments: Arguments }) {
     try {
       const run = tool === "start_trace" ? agentStart : tool === "stop_trace" ? agentStop : null;
-      const result = run ? await run(args) : READ_TOOLS[tool]?.(traces, args);
+      const result = run ? await run(args) : await READ_TOOLS[tool]?.(traces, args, historyRange);
       if (result === undefined) throw new Error(`unknown tool ${tool}`);
       await invoke("mcp_respond", { id, result });
     } catch (e) {
@@ -277,6 +274,9 @@
   $effect(saveActive);
   // The open tab's component, for the menu's export actions.
   let tab = $state<TraceTab>();
+  // Whether the open tab's latency bars have room to show, for the legend that explains them.
+  let barShown = $state(false);
+  let summary = $state<Summary>();
 
   const target = $derived({ host: host.trim().toLowerCase(), protocol, port: usesPort(protocol) ? port : 0 });
   // The open tab, while the toolbar still describes it. Then the round button pauses or
@@ -299,7 +299,12 @@
   /** Menu action that needs an open tab. */
   const onTab = (action: (tab: TraceTab) => void) => () => {
     if (tab) action(tab);
-    else error = "Open a target first.";
+    else showToast("Open a target first.", true);
+  };
+  /** An export of the open tab, or with All targets open, of its compare graph. */
+  const onTabOrSummary = (action: (tab: TraceTab) => void, onSummary: (summary: Summary) => void) => () => {
+    if (activeId === "summary" && summary) onSummary(summary);
+    else onTab(action)();
   };
 
   function toggleColumn(key: string) {
@@ -307,7 +312,7 @@
     localStorage.setItem(COLUMNS_KEY, JSON.stringify(hidden));
     // The ticks in View > Columns are fixed when the menu is built, and the table header's
     // own menu can change a column too, so the menu is built again.
-    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+    buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
   }
 
   async function togglePause(trace: Trace) {
@@ -322,7 +327,6 @@
   }
 
   async function allowIcmp() {
-    error = notice = "";
     if (!elevated) {
       const restart = confirm(
         "Adding Windows Firewall rules needs Administrator rights.\n\n" +
@@ -339,9 +343,9 @@
     if (!ok) return;
     try {
       await invoke("allow_icmp_replies");
-      notice = "Firewall rules added.";
+      showToast("Firewall rules added.");
     } catch (e) {
-      error = `Firewall rules not added: ${e}`;
+      showToast(`Firewall rules not added: ${e}`, true);
     }
   }
 
@@ -359,8 +363,22 @@
               text: "Export",
               items: [
                 { id: "txt", text: "MTR report (.txt)…", action: onTab((t) => t.exportTxt()) },
-                { id: "csv", text: "Samples (.csv)…", action: onTab((t) => t.exportCsv()) },
-                { id: "png", text: "Graph (.png)…", action: onTab((t) => t.exportPng()) },
+                {
+                  id: "csv",
+                  text: "Samples (.csv)…",
+                  action: onTabOrSummary(
+                    (t) => t.exportCsv(),
+                    (s) => s.exportCsv(),
+                  ),
+                },
+                {
+                  id: "png",
+                  text: "Graph (.png)…",
+                  action: onTabOrSummary(
+                    (t) => t.exportPng(),
+                    (s) => s.exportPng(),
+                  ),
+                },
                 // Opens the print dialog; "Save as PDF" there writes the file.
                 { id: "pdf", text: "Page as PDF…", accelerator: "CmdOrCtrl+P", action: onTab(() => window.print()) },
               ],
@@ -459,7 +477,7 @@
             {
               id: "github",
               text: "TracePlotter on GitHub",
-              action: () => invoke("open_project_page").catch((e) => (error = String(e))),
+              action: () => invoke("open_project_page").catch((e) => showToast(String(e), true)),
             },
             { id: "version", text: `TracePlotter ${version}`, enabled: false },
           ],
@@ -484,7 +502,6 @@
    * resumed.
    */
   async function importSamples() {
-    error = notice = "";
     try {
       const picked = await invoke<[string, string] | null>("import_file");
       if (!picked) return;
@@ -503,9 +520,9 @@
       saveSession();
       // A history longer than the settings keep is cut to its newest part.
       const kept = trace.target.times.length;
-      notice = `Imported ${kept === samples.length ? kept : `the newest ${kept} of ${samples.length}`} rounds from ${name}.`;
+      showToast(`Imported ${kept === samples.length ? kept : `the newest ${kept} of ${samples.length}`} rounds from ${name}.`);
     } catch (e) {
-      error = `Not imported: ${e instanceof Error ? e.message : e}`;
+      showToast(`Not imported: ${e instanceof Error ? e.message : e}`, true);
     }
   }
 
@@ -525,7 +542,6 @@
   async function go(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
-    error = notice = "";
     try {
       if (current) {
         await togglePause(current);
@@ -535,7 +551,7 @@
         saveSession();
       }
     } catch (e) {
-      error = String(e);
+      showToast(String(e), true);
     } finally {
       busy = false;
     }
@@ -582,7 +598,7 @@
 
   /** Closes the tab and erases its history. */
   function close(trace: Trace) {
-    closeTrace(trace).catch((e) => (error = `History of ${trace.config.host} not erased: ${e}`));
+    closeTrace(trace).catch((e) => showToast(`History of ${trace.config.host} not erased: ${e}`, true));
     const index = traces.indexOf(trace);
     traces = traces.filter((t) => t !== trace);
     if (activeId === trace.id) activeId = (traces[index] ?? traces[index - 1])?.id ?? null;
@@ -604,11 +620,11 @@
     } catch {
       // Keep the defaults.
     }
-    buildMenu().catch((e) => (error = `Menu failed: ${e}`));
+    buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
     // Before any tab shows a date: the host's own date and time format.
     setLocale(await invoke<string | null>("host_locale").catch(() => null));
     // Before any history is read: how much of it the backend keeps.
-    await invoke("set_history_hours", { hours: settings.historyHours }).catch(() => {});
+    await invoke("set_history_days", { days: settings.historyDays }).catch(() => {});
     try {
       const stored = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "[]");
       session = Array.isArray(stored) ? stored : [];
@@ -624,7 +640,7 @@
     const restored = await Promise.all(
       session.map((config) =>
         startTrace(config, bump, true).catch((e) => {
-          error = `Could not restore ${config.host}: ${e}`;
+          showToast(`Could not restore ${config.host}: ${e}`, true);
           return null;
         }),
       ),
@@ -656,7 +672,7 @@
           {updating ? "Downloading…" : "Update and restart"}
         </button>
       {:else}
-        <button class="install" onclick={() => invoke("open_project_page").catch((e) => (error = String(e)))}>
+        <button class="install" onclick={() => invoke("open_project_page").catch((e) => showToast(String(e), true))}>
           Open the project page
         </button>
       {/if}
@@ -796,13 +812,14 @@
         width="104px"
       />
     </label>
-    <div class="legend" role="img" aria-label="Latency colours: green under {limits.warn} ms, yellow under {limits.bad} ms, red above">
-      <span style:background={BAND_FILLS[0]}></span>
-      <span class="warn" style:background={BAND_FILLS[1]}>{limits.warn}ms</span>
-      <span class="bad" style:background={BAND_FILLS[2]}>{limits.bad}ms</span>
-    </div>
-    {#if error}<span class="error" role="alert">{error}</span>{/if}
-    {#if notice}<span role="status">{notice}</span>{/if}
+    <!-- The colours of the hop table's latency bars; not shown where there are none. -->
+    {#if active && barShown}
+      <div class="legend" role="img" aria-label="Latency colours: green under {limits.warn} ms, yellow under {limits.bad} ms, red above">
+        <span style:background={BAND_FILLS[0]}></span>
+        <span class="warn" style:background={BAND_FILLS[1]}>{limits.warn}ms</span>
+        <span class="bad" style:background={BAND_FILLS[2]}>{limits.bad}ms</span>
+      </div>
+    {/if}
   </form>
 </header>
 
@@ -811,6 +828,7 @@
     {#key active.id}
       <TraceTab
         bind:this={tab}
+        bind:barShown
         trace={active}
         {rev}
         {hidden}
@@ -839,13 +857,21 @@
       onchange={settingChanged}
     />
   {:else if activeId === "summary" && traces.length}
-    <Summary {traces} {rev} {focusSeconds} onopen={(trace) => (activeId = trace.id)} ontoggle={togglePause} />
+    <Summary
+      bind:this={summary}
+      {traces}
+      {rev}
+      {focusSeconds}
+      onopen={(trace) => (activeId = trace.id)}
+      ontoggle={togglePause}
+    />
   {:else}
     <p class="empty">Type a host above and press the green button. Each target opens in its own tab.</p>
   {/if}
 </main>
 
 <ContextMenu />
+<Toast />
 
 <style>
   :global(:root) {
@@ -1103,8 +1129,10 @@
   .go:disabled {
     opacity: 0.6;
   }
+  /* At the right end of the toolbar, also when it wraps onto a line of its own. */
   .legend {
     display: flex;
+    margin-left: auto;
     width: 165px;
     height: 20px;
     border-radius: 4px;
@@ -1119,6 +1147,35 @@
   }
   /* On the tints of the graphs' latency bands, the colours of slow values in the table.
      The fainter tints of the hops' bars look dimmer here, on the toolbar's lighter panel. */
+  /* The readout next to the cursor on a graph (HopGraph, CompareGraph), placed in window
+     coordinates: to the lower right of the cursor, or flipped where the window ends. */
+  :global(.tip) {
+    position: fixed;
+    z-index: 10;
+    --dx: 12px;
+    --dy: 12px;
+    translate: var(--dx) var(--dy);
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: rgba(15, 19, 25, 0.92);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  :global(.tip.flip) {
+    --dx: calc(-100% - 12px);
+  }
+  :global(.tip.up) {
+    --dy: calc(-100% - 12px);
+  }
+  :global(.tip.pinned) {
+    --dy: 0px;
+  }
+  :global(.tip > div:first-child) {
+    color: var(--muted);
+  }
   .legend .warn {
     color: #fbbf24;
   }

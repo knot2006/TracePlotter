@@ -57,7 +57,12 @@ const fileSafe = (text: string) =>
  * time it was made at, in the host's own format. With Polish regional settings, for one,
  * "TracePlotter_example.com_samples_14.10.2026_04-19-18.csv".
  */
-export function exportName(host: string, kind: "report" | "samples" | "graph", extension: string, at = new Date()) {
+export function exportName(
+  host: string,
+  kind: "report" | "samples" | "graph" | "stretches",
+  extension: string,
+  at = new Date(),
+) {
   const t = at.getTime() / 1000;
   return `TracePlotter_${host}_${kind}_${fileSafe(dateOnly(t))}_${fileSafe(timeOfDay(t))}.${extension}`;
 }

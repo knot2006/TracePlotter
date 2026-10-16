@@ -29,6 +29,7 @@ function trace(sessionId: string, host: string, hops: Hop[]): Trace {
     lengths: [],
     pathEnd: hops.length,
     routeNotified: 0,
+    diskStart: 0,
   };
 }
 
@@ -45,13 +46,13 @@ test("a target is found by id, host or address, and a wrong one lists the choice
   assert.throws(() => findTrace(both, "nowhere"), /No open target nowhere/);
 });
 
-test("targets and hops carry the window's statistics", () => {
-  const [, second] = listTargets(both, {}).targets;
+test("targets and hops carry the window's statistics", async () => {
+  const [, second] = (await listTargets(both, {})).targets;
   assert.equal(second.round_trip.sent, 4);
   assert.equal(second.round_trip.loss_pct, 25);
   assert.equal(second.round_trip.avg_ms, 20);
   assert.equal(second.from, "1970-01-01T00:16:40.000Z");
-  const { route } = getHops(both, { target: "bbb" });
+  const { route } = await getHops(both, { target: "bbb" });
   assert.deepEqual(
     route.map((h) => [h.hop, h.address, h.loss_pct, h.max_ms]),
     [
@@ -60,7 +61,7 @@ test("targets and hops carry the window's statistics", () => {
     ],
   );
   // Only the newest minute: probes are one a second, so all four still count.
-  assert.equal(getHops(both, { target: "bbb", minutes: 1 }).route[1].sent, 4);
+  assert.equal((await getHops(both, { target: "bbb", minutes: 1 })).route[1].sent, 4);
 });
 
 test("route changes come newest first, grouped as the window shows them", () => {
@@ -75,8 +76,8 @@ test("route changes come newest first, grouped as the window shows them", () => 
   });
 });
 
-test("history is cut into slices that cover every probe once", () => {
-  const { slices } = getLatencyHistory(both, { target: "bbb", slices: 2, minutes: 0 });
+test("history is cut into slices that cover every probe once", async () => {
+  const { slices } = await getLatencyHistory(both, { target: "bbb", slices: 2, minutes: 0 });
   assert.equal(slices.length, 2);
   assert.deepEqual(
     slices.map((s) => [s.sent, s.loss_pct, s.avg_ms]),
@@ -85,6 +86,26 @@ test("history is cut into slices that cover every probe once", () => {
       [2, 0, 25],
     ],
   );
-  assert.equal(getLatencyHistory(both, { target: "bbb", hop: 1 }).slices[0].max_ms, 1);
-  assert.throws(() => getLatencyHistory(both, { target: "bbb", hop: 5 }), /no hop 5/);
+  assert.equal((await getLatencyHistory(both, { target: "bbb", hop: 1 })).slices[0].max_ms, 1);
+  await assert.rejects(getLatencyHistory(both, { target: "bbb", hop: 5 }), /no hop 5/);
+});
+
+test("a period the window no longer holds is read from the history files", async () => {
+  // The files begin an hour before the window's oldest round.
+  const older = { ...dns, diskStart: 1000 - 3600 };
+  const asked: number[][] = [];
+  const tally = { sent: 100, received: 90, sum: 900, min: 5, max: 20, jitter_sum: 10, jitter_count: 5, last: 9 };
+  const history = async (_trace: unknown, from: number, to: number, width: number, graphed: number[]) => {
+    asked.push([from, to, width, graphed.length]);
+    return [{ ttl: 0, total: tally, stretches: [{ ...tally, t: (1000 - 3600) * 1000 }] }];
+  };
+  const [target] = (await listTargets([older], { minutes: 0 }, history)).targets;
+  assert.equal(target.round_trip.sent, 100);
+  assert.equal(target.round_trip.loss_pct, 10);
+  assert.equal(target.from, new Date((1000 - 3600) * 1000).toISOString());
+  assert.equal(asked[0][3], 0);
+  const { slices } = await getLatencyHistory([older], { minutes: 0, slices: 10 }, history);
+  assert.deepEqual([slices.length, slices[0].avg_ms], [1, 10]);
+  // Within the window (it holds 4 s), the window answers.
+  assert.equal((await listTargets([older], { minutes: 0.05 }, history)).targets[0].round_trip.sent, 4);
 });

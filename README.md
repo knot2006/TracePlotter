@@ -60,8 +60,8 @@ To try the interface without probing anything, start it in [demo mode](#demo-mod
 
 - Per-hop loss, last/avg/min/max latency and jitter, and MOS (estimated call quality)
 - Latency, jitter and packet-loss graphs for any hop, with a slider to scroll back in time
-- Open targets are restored on the next launch, with 24 h of history per target (1 h to 7 days in
-  the settings)
+- Open targets are restored on the next launch, with 7 days of history per target at full
+  resolution (1 to 365 days in the settings)
 
 **Alerts**
 
@@ -170,8 +170,8 @@ itself: when a newer release is found, it offers a link to the project page.
 ## Portable
 
 On Windows there is no installer. `TracePlotter.exe` runs from any folder and keeps everything it
-stores in a `TracePlotter-data` folder next to itself: trace history (`history`, one JSON-lines file
-per tab), open tabs and settings (`webview`) and the window's size and position (`window.json`). Copy
+stores in a `TracePlotter-data` folder next to itself: trace history (`history`, a folder per tab
+with one JSON-lines file per day), open tabs and settings (`webview`) and the window's size and position (`window.json`). Copy
 the exe together with that folder to move the app; delete the folder to reset it. Nothing is written
 to the user profile.
 
@@ -198,9 +198,10 @@ the release instead.
 ## Demo mode
 
 Start the app with `--demo` to try the interface without probing anything. Every tab then shows
-the same made-up nine-hop route, built from addresses reserved for documentation, with a quarter
-of an hour of history already filled in. Demo data goes to a separate `TracePlotter-demo-data`
-folder, so real tabs and history are left alone.
+a made-up nine-hop route, built from addresses reserved for documentation, with a quarter of an
+hour of history already filled in; each host name gets its own latency and loss. Add
+`--demo-days 7` to start new tabs with a week of history instead. Demo data goes to a separate
+`TracePlotter-demo-data` folder, so real tabs and history are left alone.
 
 On Windows:
 

@@ -10,7 +10,6 @@
     settings,
     type Settings,
   } from "./settings";
-  import { ALERT_WINDOW } from "./stats";
   import { COLUMNS } from "./TraceTab.svelte";
   import { PROTOCOLS } from "./trace";
 
@@ -112,7 +111,7 @@
     </label>
 
     <h3>Alerts</h3>
-    <p>Raised when the round trip's last {ALERT_WINDOW} probes go over a limit. 0 switches a limit off.</p>
+    <p>Raised when the round trip's latest probes go over a limit. 0 switches a limit off.</p>
     <label class="row">
       <span>Average latency over</span>
       <span><input {...number("alertLatencyMs")} /> ms</span>
@@ -120,6 +119,10 @@
     <label class="row">
       <span>Packet loss of at least</span>
       <span><input {...number("alertLossPct")} /> %</span>
+    </label>
+    <label class="row">
+      <span>Over the last <small>An alert waits until it has this much</small></span>
+      <span><input {...number("alertSeconds")} /> s</span>
     </label>
   </section>
 
@@ -169,10 +172,13 @@
   <section>
     <h2>History</h2>
     <label class="row">
-      <span>Keep per target <small>Older rounds are dropped, on screen and on disk</small></span>
-      <span><input {...number("historyHours")} /> hours</span>
+      <span>Keep per target <small>Every round, on disk; older days are deleted</small></span>
+      <span><input {...number("historyDays")} /> days</span>
     </label>
-    <p>At most 345,600 rounds are kept per target, which at an interval of one second is four days.</p>
+    <p>
+      A day of history takes about 35 MB per target at an interval of one second. The newest day is held in
+      the window; older periods are read from disk when the time span reaches them.
+    </p>
   </section>
 
   <section>

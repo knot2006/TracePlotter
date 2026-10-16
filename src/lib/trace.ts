@@ -1,8 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { describe, type TraceEvent } from "./events";
-import { DEFAULTS, WINDOWS, historyRounds, settings } from "./settings";
-import { ALERT_WINDOW, breaches, stats } from "./stats";
+import { DEFAULTS, WINDOWS, WINDOW_HOURS, historyRounds, settings } from "./settings";
+import { alertProbes, breaches, stats, type Tally } from "./stats";
 
 /**
  * `icmp`, `udp` and `tcp` probe through raw sockets; `winicmp` is ICMP through the system
@@ -36,6 +36,7 @@ export const protocolLabel = ({ protocol, port }: Pick<TraceConfig, "protocol" |
 // For tabs saved before these were settings of a tab.
 export const DEFAULT_TIMEOUT_MS = DEFAULTS.timeoutMs;
 export const DEFAULT_PACKET_SIZE = DEFAULTS.packetSize;
+export const DEFAULT_ALERT_SECONDS = DEFAULTS.alertSeconds;
 
 /** What the session file remembers about a target. Alert thresholds of 0 are off. */
 export type TraceConfig = {
@@ -51,6 +52,8 @@ export type TraceConfig = {
   packetSize?: number;
   alertLatencyMs: number;
   alertLossPct: number;
+  /** How many seconds of the latest probes an alert looks at. */
+  alertSeconds?: number;
   /** The user paused the trace; it then stays paused across launches. */
   paused?: boolean;
 };
@@ -98,6 +101,11 @@ export type Trace = {
   pathEnd: number;
   /** Unix seconds of the last route-change notification, to rate-limit them. */
   routeNotified: number;
+  /**
+   * Unix seconds of the oldest round in the history files, 0 when unknown. The files keep
+   * more than the window holds; older periods are read from them (`history_range`).
+   */
+  diskStart: number;
 };
 
 export type Sample = { t: number; hops: { ttl: number; addr: string | null; rtt: number | null }[] };
@@ -136,9 +144,33 @@ function notify(title: string, body: string) {
   if (settings.notifications) sendNotification({ title, body });
 }
 
-function addEvent(trace: Trace, event: TraceEvent) {
+/**
+ * Adds an event to the trace. One that happened `live` is also saved to the trace's
+ * events file, which keeps events after the window has let go of their rounds; one
+ * found again while history is replayed was saved when it happened.
+ */
+function addEvent(trace: Trace, event: TraceEvent, live: boolean) {
   trace.events.push(event);
   if (trace.events.length > MAX_EVENTS) trace.events.shift();
+  if (live) invoke("append_event", { session: trace.config.sessionId, event: JSON.stringify(event) }).catch(() => {});
+}
+
+/**
+ * Puts the saved events from before the window's oldest round in front of those its
+ * replayed rounds brought back, so the list reaches as far back as the history files.
+ */
+async function loadEvents(trace: Trace) {
+  const lines = await invoke<string[]>("read_events", { session: trace.config.sessionId }).catch(() => []);
+  const held = trace.target.times[0] ?? Infinity;
+  const older = lines.flatMap((line) => {
+    try {
+      const event = JSON.parse(line) as TraceEvent;
+      return event.t < held ? [event] : [];
+    } catch {
+      return [];
+    }
+  });
+  trace.events = [...older, ...trace.events].slice(-MAX_EVENTS);
 }
 
 /** Adds a probe to the hop, which keeps its newest `max` and at most a batch more. */
@@ -161,8 +193,7 @@ const PATH_END_ROUNDS = 10;
 /** Adds one round to the trace. `live` rounds, unlike replayed history, can notify. */
 function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void) {
   const t = sample.t / 1000;
-  // Read every round, so that a new history length in the settings applies to open tabs.
-  const max = historyRounds(settings.historyHours, trace.config.intervalMs);
+  const max = historyRounds(WINDOW_HOURS, trace.config.intervalMs);
   const changes: TraceEvent[] = [];
   // A round that reached its final hop tells how long the path is now.
   const last = sample.hops.at(-1);
@@ -213,7 +244,7 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
     }
     record(hop, t, probe.rtt, max);
   }
-  for (const change of changes) addEvent(trace, change);
+  for (const change of changes) addEvent(trace, change, live);
   if (live && changes.length && t - trace.routeNotified >= ROUTE_NOTICE_SECONDS) {
     trace.routeNotified = t;
     const more = changes.length > 1 ? ` (+${changes.length - 1} more)` : "";
@@ -221,22 +252,49 @@ function apply(trace: Trace, sample: Sample, live: boolean, onChange: () => void
   }
 }
 
+/** Learns where the trace's history files begin; they lose old days as new ones come. */
+async function readDiskStart(trace: Trace) {
+  const start = await invoke<number | null>("history_start", { session: trace.config.sessionId }).catch(() => null);
+  trace.diskStart = start ? start / 1000 : 0;
+}
+
+/** A hop's probes over a stretch of time, as the backend tallies the history files. */
+export type RangeHop = { ttl: number; total: Tally; stretches: (Tally & { t: number })[] };
+
+/**
+ * What the trace's history files hold from `from` to `to` (Unix seconds): per hop number,
+ * 0 for the round trip, its tally, and for those in `graphed` stretches of `width`
+ * seconds. Also learns again where the files begin.
+ */
+export async function historyRange(trace: Trace, from: number, to: number, width: number, graphed: number[]) {
+  const range = await invoke<{ start: number | null; hops: RangeHop[] }>("history_range", {
+    session: trace.config.sessionId,
+    from: Math.floor(from * 1000),
+    to: Math.floor(to * 1000) + 1,
+    width: Math.round(width * 1000),
+    graphed,
+  });
+  trace.diskStart = range.start ? range.start / 1000 : 0;
+  return range.hops;
+}
+
 /** Raises or clears the alert from the target's latest probes. */
 function checkAlert(trace: Trace) {
   const target = trace.target;
   if (!target.times.length) return;
-  const { host, alertLatencyMs, alertLossPct } = trace.config;
-  const alerting = breaches(target.rtts, alertLatencyMs, alertLossPct);
+  const { host, intervalMs, alertLatencyMs, alertLossPct, alertSeconds } = trace.config;
+  const probes = alertProbes(alertSeconds ?? DEFAULT_ALERT_SECONDS, intervalMs);
+  const alerting = breaches(target.rtts, probes, alertLatencyMs, alertLossPct);
   if (alerting === trace.alerting) return;
   trace.alerting = alerting;
   const t = target.times[target.times.length - 1];
   if (!alerting) {
-    addEvent(trace, { t, kind: "recover", text: "Back within alert thresholds" });
+    addEvent(trace, { t, kind: "recover", text: "Back within alert thresholds" }, true);
     return;
   }
-  const s = stats(target.rtts.slice(-ALERT_WINDOW));
+  const s = stats(target.rtts.slice(-probes));
   const text = `Last ${s.sent} probes: ${s.avg === null ? "no replies" : `${s.avg.toFixed(1)} ms average`}, ${s.lossPct.toFixed(0)}% loss`;
-  addEvent(trace, { t, kind: "alert", text });
+  addEvent(trace, { t, kind: "alert", text }, true);
   notify(`TracePlotter: ${host}`, text);
 }
 
@@ -286,6 +344,8 @@ async function run(trace: Trace, onChange: () => void) {
   trace.loaded = true;
   for (const sample of [...started.history, ...early]) apply(trace, sample, false, onChange);
   early = null;
+  if (withHistory) await loadEvents(trace);
+  await readDiskStart(trace);
 }
 
 /**
@@ -310,6 +370,7 @@ export async function startTrace(config: TraceConfig, onChange: () => void, keep
     lengths: [],
     pathEnd: 0,
     routeNotified: 0,
+    diskStart: 0,
   };
   // A tab the user had paused comes back paused: its history is shown, probing is not started.
   if (config.paused) {
@@ -317,6 +378,8 @@ export async function startTrace(config: TraceConfig, onChange: () => void, keep
     const history = await invoke<Sample[]>("read_history", { session: config.sessionId, intervalMs: config.intervalMs }).catch(() => []);
     for (const sample of history) apply(trace, sample, false, onChange);
     trace.loaded = true;
+    await loadEvents(trace);
+    await readDiskStart(trace);
     return trace;
   }
   try {
@@ -360,6 +423,7 @@ export async function restartTrace(trace: Trace, onChange: () => void) {
     lengths: [],
     pathEnd: 0,
     routeNotified: 0,
+    diskStart: 0,
     paused: false,
   });
   try {

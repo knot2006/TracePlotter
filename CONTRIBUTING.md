@@ -73,10 +73,15 @@ npm run tauri build -- --no-bundle -- --profile fast
 - `src/routes/+page.svelte`: window layout, tabs, toolbar, menus, the saved session.
 - `src/lib/TraceTab.svelte`: one tab, with the hop table, dialogs and exports.
 - `src/lib/HopGraph.svelte`: one latency graph with its jitter strip.
+- `src/lib/Summary.svelte` and `CompareGraph.svelte`: the All targets tab and its graph that compares
+  the round trips of the ticked targets.
+- `src/lib/Toast.svelte` and `exports.ts`: messages at the bottom of the window, and saving and
+  copying exports.
 - `src/lib/Settings.svelte` and `settings.ts`: the Settings tab and the app-wide settings it changes.
 - `src/lib/trace.ts`: a trace's data and its link to the backend.
 - `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
-- `src-tauri/src/lib.rs`: probing, history files, updates and the other backend commands.
+- `src-tauri/src/lib.rs`: probing, history files (a folder per tab, a file per day, tallied by the
+  minute when a long period is read), updates and the other backend commands.
 - `src-tauri/src/mcp.rs` and `src/lib/agent.ts`: the MCP server that lets AI agents read the traces.
 - `src-tauri/src/winicmp.rs` and `pingsock.rs`: ICMP traces without raw sockets, through the Windows
   ICMP API and Linux ping sockets; `echo.rs` holds what they share.

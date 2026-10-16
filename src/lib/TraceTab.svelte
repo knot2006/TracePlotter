@@ -58,11 +58,32 @@
   import HopGraph from "./HopGraph.svelte";
   import { exportName } from "./import";
   import { popupMenu } from "./ContextMenu.svelte";
-  import { WINDOWS, settings } from "./settings";
-  import { ALERT_WINDOW, lowerBound, mos, stats, textTable } from "./stats";
+  import { showToast } from "./Toast.svelte";
+  import { LIMITS, WINDOWS, settings } from "./settings";
+  import {
+    alertProbes,
+    BLEND_RADIUS,
+    lowerBound,
+    mos,
+    rangeGraph,
+    stats,
+    stretchWidth,
+    tallyStats,
+    textTable,
+  } from "./stats";
   import { dateTime, timeOfDay } from "./time";
   import { whoisFacts, whoisRecord } from "./whois";
-  import { DEFAULT_PACKET_SIZE, DEFAULT_TIMEOUT_MS, exportFile, protocolLabel, usesPort, type Trace } from "./trace";
+  import {
+    DEFAULT_ALERT_SECONDS,
+    DEFAULT_PACKET_SIZE,
+    DEFAULT_TIMEOUT_MS,
+    protocolLabel,
+    historyRange,
+    usesPort,
+    type RangeHop,
+    type Trace,
+  } from "./trace";
+  import { captionedImage, copyImage, saveExport, saveImage } from "./exports";
 
   type Props = {
     trace: Trace;
@@ -78,8 +99,19 @@
     onprobe: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
+    /** Whether the latency bars are shown and have room to draw; the toolbar's legend follows them. */
+    barShown?: boolean;
   };
-  let { trace, rev, hidden, focusSeconds, onsave, onprobe, oncolumn }: Props = $props();
+  let {
+    trace,
+    rev,
+    hidden,
+    focusSeconds,
+    onsave,
+    onprobe,
+    oncolumn,
+    barShown = $bindable(false),
+  }: Props = $props();
 
   // The order of the columns after Hop, as keys. Changed by dragging a header or from its
   // right-click menu; shared by all tabs and remembered between launches. Columns the
@@ -135,26 +167,26 @@
     dragged = dropTarget = null;
   }
 
-  const BACKGROUND = "#0f1319";
   /** Key of the round trip in `graphed`; hops use their number. */
   const ROUND_TRIP = 0;
 
   // What has a graph: hop numbers, and ROUND_TRIP for the target itself.
   let graphed = $state<number[]>([ROUND_TRIP]);
-  let exportStatus = $state("");
   // End of the focus period in Unix seconds while scrolled back in time; null follows the newest data.
   let pinnedEnd = $state<number | null>(null);
   let graphs = $state<(HopGraph | undefined)[]>([]);
 
   // Cutting the hops down and working out their numbers and graphs costs time in step
   // with the samples in view. So a long time span is refreshed every few rounds, not
-  // every round: `viewRev` changes once per `every` changes of `rev`, at most every tenth.
+  // every round: `viewRev` changes once per `every` rounds of this trace, at most every
+  // tenth. It counts the trace's own rounds rather than `rev`, which the rounds of every
+  // open trace move; the session id changes it at once when the trace starts over.
   const viewRev = $derived.by(() => {
     rev;
     const samples = trace.target.times.length;
     const inView = focusSeconds ? Math.min(samples, (focusSeconds * 1000) / trace.config.intervalMs) : samples;
     const every = Math.max(1, Math.min(10, Math.ceil(inView / 3600)));
-    return Math.floor(rev / every);
+    return `${trace.config.sessionId} ${Math.floor(samples / every)}`;
   });
 
   // The period shown and the hops cut down to it; the table, graphs and text report use these.
@@ -163,11 +195,17 @@
     // Only the hops of the current route. After the route got shorter, the hops beyond its
     // end get no more probes; showing them would freeze the table.
     const route = trace.hops.slice(0, trace.pathEnd || trace.hops.length);
-    // The target series has an entry for every round, so it spans the whole history.
+    // The target series has an entry for every round the window holds. The history files
+    // can reach further back; a period that starts before the window's rounds is read
+    // from them (`range` below).
     const { times } = trace.target;
     const latest = times.at(-1) ?? 0;
-    const earliest = times[0] ?? 0;
-    if (!focusSeconds) return { hops: route, target: trace.target, from: earliest, to: latest, earliest, latest };
+    const held = times[0] ?? 0;
+    const earliest = trace.diskStart && times.length ? Math.min(held, trace.diskStart) : held;
+    const older = (from: number) => from < held - (2 * trace.config.intervalMs) / 1000;
+    if (!focusSeconds) {
+      return { hops: route, target: trace.target, from: earliest, to: latest, earliest, latest, older: older(earliest) };
+    }
     const to = Math.min(latest, Math.max(pinnedEnd ?? latest, earliest + focusSeconds));
     const from = to - focusSeconds;
     const cut = (hop: Hop) => {
@@ -177,14 +215,50 @@
         ? { ...hop, times: hop.times.slice(start, end), rtts: hop.rtts.slice(start, end) }
         : hop;
     };
-    return { hops: route.map(cut), target: cut(trace.target), from, to, earliest, latest };
+    return { hops: route.map(cut), target: cut(trace.target), from, to, earliest, latest, older: older(from) };
   });
   const focused = $derived(view.hops);
+
+  // A period older than the window's rounds, tallied by the backend from the history
+  // files: per hop number (0 for the round trip) its numbers, and stretches of `width`
+  // seconds for the graphs. Kept until the next one arrives, so the table does not flicker.
+  let range = $state.raw<{ hops: RangeHop[]; width: number; lossSeconds: number } | null>(null);
+  $effect(() => {
+    const { from, to, older } = view;
+    if (!older) {
+      range = null;
+      return;
+    }
+    const interval = trace.config.intervalMs / 1000;
+    const width = stretchWidth(to - from, innerWidth * devicePixelRatio, interval);
+    // Loss over stretches of at least 10 probes, about 120 across the graph, as for samples.
+    const lossSeconds = Math.max(10 * interval, (to - from) / 120, width);
+    let current = true;
+    historyRange(trace, from, to, width, graphed)
+      .then((hops) => {
+        if (current) range = { hops, width, lossSeconds };
+      })
+      .catch(() => {});
+    return () => (current = false);
+  });
+  const rangeHop = (ttl: number) => range?.hops.find((hop) => hop.ttl === ttl);
+  const rangeGraphs = $derived.by(() => {
+    if (!range) return null;
+    const { hops, width, lossSeconds } = range;
+    return new Map(
+      hops
+        .filter((hop) => hop.stretches.length)
+        .map((hop) => [hop.ttl, { ...rangeGraph(hop.stretches, width, lossSeconds, BLEND_RADIUS, trace.config.intervalMs / 1000), bucket: lossSeconds }]),
+    );
+  });
+
   // One row per hop, then the round trip to the target itself.
   const rows = $derived(
-    (view.target.times.length ? [...focused, view.target] : focused).map((hop) => {
-      const s = stats(hop.rtts);
-      return { hop, s, mos: mos(s), roundTrip: hop === view.target };
+    (view.target.times.length || rangeHop(ROUND_TRIP) ? [...focused, view.target] : focused).map((hop) => {
+      const roundTrip = hop === view.target;
+      const tally = rangeHop(roundTrip ? ROUND_TRIP : hop.ttl)?.total;
+      const s = range ? (tally ? tallyStats(tally) : stats([])) : stats(hop.rtts);
+      return { hop, s, mos: mos(s), roundTrip };
     }),
   );
   // The latency bars share one scale. Unzoomed it ends at the highest maximum, so every
@@ -271,8 +345,23 @@
   let thresholdsRev = $state(0);
   const alertsOn = $derived(thresholdsRev >= 0 && (trace.config.alertLatencyMs > 0 || trace.config.alertLossPct > 0));
 
-  function setThreshold(key: "alertLatencyMs" | "alertLossPct", value: string) {
-    trace.config[key] = Math.max(0, Number(value) || 0);
+  // Probes the alert window holds at the tab's interval, shown next to its seconds.
+  const alertWindow = $derived.by(() => {
+    rev;
+    thresholdsRev;
+    return alertProbes(trace.config.alertSeconds ?? DEFAULT_ALERT_SECONDS, trace.config.intervalMs);
+  });
+
+  /**
+   * Takes over an alert setting, kept within its limits. A cleared or unreadable box
+   * switches a threshold off (0) but leaves the window's seconds as they were.
+   */
+  function setThreshold(key: "alertLatencyMs" | "alertLossPct" | "alertSeconds", input: HTMLInputElement) {
+    const [min, max] = LIMITS[key];
+    const typed = input.value.trim() === "" ? NaN : Number(input.value);
+    const fallback = key === "alertSeconds" ? (trace.config.alertSeconds ?? DEFAULT_ALERT_SECONDS) : 0;
+    trace.config[key] = Math.min(max, Math.max(min, Number.isFinite(typed) ? typed : fallback));
+    input.value = String(trace.config[key]);
     thresholdsRev++;
     onsave();
   }
@@ -437,6 +526,13 @@
   // a width of its own; otherwise the browser would stretch every column to fill the table.
   const filler = $derived(!columns.some((column) => column.key === "bar") || widths.bar !== undefined);
 
+  // The headers' widths on screen. The latency bars take the room the other columns
+  // leave, which on a narrow window can be next to none.
+  let headWidths = $state<Record<string, number>>({});
+  $effect(() => {
+    barShown = columns.some((column) => column.key === "bar") && (headWidths.bar ?? 0) >= 40;
+  });
+
   function dragColumn(event: PointerEvent, key: string) {
     const grip = event.currentTarget as HTMLElement;
     const startX = event.clientX;
@@ -457,24 +553,6 @@
     event.preventDefault();
     const grip = event.currentTarget as HTMLElement;
     setWidth(key, grip.parentElement!.getBoundingClientRect().width + step);
-  }
-
-  let statusTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Shows an export result for a few seconds. */
-  function showStatus(text: string) {
-    exportStatus = text;
-    clearTimeout(statusTimer);
-    if (text) statusTimer = setTimeout(() => (exportStatus = ""), 6000);
-  }
-
-  // Asks where to save; a cancelled dialog comes back as null.
-  async function save(name: string, data: Uint8Array) {
-    try {
-      const path = await exportFile(name, data);
-      showStatus(path ? `Saved ${path}` : "");
-    } catch (e) {
-      showStatus(`Export failed: ${e}`);
-    }
   }
 
   const label = $derived.by(() => {
@@ -511,80 +589,58 @@
   }
 
   export function exportTxt() {
-    save(exportName(trace.config.host, "report", "txt"), new TextEncoder().encode(reportText()));
+    saveExport(exportName(trace.config.host, "report", "txt"), new TextEncoder().encode(reportText()));
   }
 
   /** The same report as `exportTxt`, put on the clipboard. */
   async function copyReport() {
     try {
       await navigator.clipboard.writeText(reportText());
-      showStatus("Report copied to the clipboard");
+      showToast("Report copied to the clipboard");
     } catch (e) {
-      showStatus(`Copy failed: ${e}`);
+      showToast(`Copy failed: ${e}`, true);
     }
   }
 
-  // One row per probe, whole history. The IP is the hop's current address, not the one at probe time.
-  export function exportCsv() {
-    const lines = ["time,hop,ip,rtt_ms"];
-    for (const hop of trace.hops) {
-      for (let i = 0; i < hop.times.length; i++) {
-        const time = new Date(hop.times[i] * 1000).toISOString();
-        lines.push(`${time},${hop.ttl},${hop.addr ?? ""},${hop.rtts[i] ?? ""}`);
-      }
+  /**
+   * One row per probe of the whole history, with the address that answered it. The
+   * backend writes it from the history files, which reach further back than the window.
+   */
+  export async function exportCsv() {
+    try {
+      const path = await invoke<string | null>("export_samples", {
+        session: trace.config.sessionId,
+        name: exportName(trace.config.host, "samples", "csv"),
+      });
+      if (path) showToast(`Saved ${path}`);
+    } catch (e) {
+      showToast(`Export failed: ${e}`, true);
     }
-    save(exportName(trace.config.host, "samples", "csv"), new TextEncoder().encode(lines.join("\n") + "\n"));
   }
 
-  // The graphs, one under the other, or with `only` just the graph at that position.
-  // Their canvases are transparent, so they are redrawn on the app background, each
-  // under a caption.
+  // The graphs, one under the other, or with `only` just the graph at that position,
+  // each under its heading and the period.
   function graphImage(only?: number) {
-    const canvases = graphs.flatMap((graph, i) => {
-      const canvas = graph?.canvas();
-      const wanted = only === undefined || only === i;
-      return wanted && canvas && graphHops[i] ? [{ canvas, caption: headingOf(graphHops[i]) }] : [];
-    });
-    if (!canvases.length) return null;
-    const captionHeight = 28 * devicePixelRatio;
-    const image = document.createElement("canvas");
-    image.width = Math.max(...canvases.map((c) => c.canvas.width));
-    image.height = canvases.reduce((sum, c) => sum + c.canvas.height + captionHeight, 0);
-    const ctx = image.getContext("2d")!;
-    ctx.fillStyle = BACKGROUND;
-    ctx.fillRect(0, 0, image.width, image.height);
-    ctx.font = `${13 * devicePixelRatio}px "Segoe UI", sans-serif`;
-    ctx.textBaseline = "middle";
-    let y = 0;
-    for (const { canvas, caption } of canvases) {
-      ctx.fillStyle = "#e6eaf0";
-      ctx.fillText(`${caption} · ${stamp(view.from)} – ${stamp(view.to)}`, 12 * devicePixelRatio, y + captionHeight / 2);
-      ctx.drawImage(canvas, 0, y + captionHeight);
-      y += captionHeight + canvas.height;
-    }
-    return image;
+    const period = `${stamp(view.from)} – ${stamp(view.to)}`;
+    return captionedImage(
+      graphs.flatMap((graph, i) => {
+        const canvas = graph?.canvas();
+        const wanted = only === undefined || only === i;
+        const caption = graphHops[i] && [{ text: `${headingOf(graphHops[i])} · ${period}`, color: "#e6eaf0" }];
+        return wanted && canvas && caption ? [{ canvas, caption }] : [];
+      }),
+    );
   }
 
   export function exportPng(only?: number) {
-    graphImage(only)?.toBlob(async (blob) => {
-      if (blob) save(exportName(trace.config.host, "graph", "png"), new Uint8Array(await blob.arrayBuffer()));
-    });
+    const image = graphImage(only);
+    if (image) saveImage(image, exportName(trace.config.host, "graph", "png"));
   }
 
   /** The same image as `exportPng`, put on the clipboard. */
-  async function copyPng(only?: number) {
+  function copyPng(only?: number) {
     const image = graphImage(only);
-    if (!image) return;
-    try {
-      // The item takes the blob as a promise so that the copy still counts as part of the click.
-      const blob = new Promise<Blob>((resolve, reject) =>
-        image.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("no image"))), "image/png"),
-      );
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-      showStatus("Graph copied to the clipboard");
-    } catch (e) {
-      showStatus(`Copy failed: ${e}`);
-    }
+    if (image) copyImage(image, "Graph");
   }
 </script>
 
@@ -658,6 +714,7 @@
               }}
               ondragend={() => (dragged = dropTarget = null)}
               oncontextmenu={(event) => columnMenu(event, column.key)}
+              bind:clientWidth={headWidths[column.key]}
             >
               {column.key === "bar"
                 ? `Latency (0 – ${scale.toFixed(scale < 10 ? 1 : 0)} ms)${barZoom > 1 ? " · zoomed" : ""}`
@@ -738,7 +795,6 @@
       {#if pinnedEnd !== null}(scrolled back){/if}
     </span>
     <span class="tools">
-      <span role="status">{exportStatus}</span>
       {#if pinnedEnd !== null}<button onclick={() => (pinnedEnd = null)}>Back to live</button>{/if}
       <button class:alerting onclick={openAlerts}>
         {alerting ? "Alerting" : alertsOn ? "Alerts on" : "Alerts off"}
@@ -755,6 +811,7 @@
         oncopy={() => copyPng(i)}
         bind:this={graphs[i]}
         {hop}
+        range={rangeGraphs?.get(key)}
         heading={headingOf(hop)}
         from={view.from}
         to={view.to}
@@ -801,14 +858,14 @@
 
   <dialog bind:this={alertsDialog} aria-labelledby="alerts-title">
     <h2 id="alerts-title">Alerts for {trace.config.host}</h2>
-    <p>Alert when the round trip's last {ALERT_WINDOW} probes go over a limit. 0 switches a limit off.</p>
+    <p>Alert when the round trip's latest probes go over a limit. 0 switches a limit off.</p>
     <label>
       Average latency over
       <input
         type="number"
         min="0"
         value={trace.config.alertLatencyMs}
-        onchange={(e) => setThreshold("alertLatencyMs", e.currentTarget.value)}
+        onchange={(e) => setThreshold("alertLatencyMs", e.currentTarget)}
       />
       ms
     </label>
@@ -819,9 +876,20 @@
         min="0"
         max="100"
         value={trace.config.alertLossPct}
-        onchange={(e) => setThreshold("alertLossPct", e.currentTarget.value)}
+        onchange={(e) => setThreshold("alertLossPct", e.currentTarget)}
       />
       %
+    </label>
+    <label>
+      Over the last
+      <input
+        type="number"
+        min="1"
+        max="3600"
+        value={trace.config.alertSeconds ?? DEFAULT_ALERT_SECONDS}
+        onchange={(e) => setThreshold("alertSeconds", e.currentTarget)}
+      />
+      s ({alertWindow} probes)
     </label>
     <form method="dialog"><button>Close</button></form>
   </dialog>

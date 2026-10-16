@@ -2,11 +2,29 @@
 // open tabs with the same calculations the window uses. Times go out as UTC ISO strings,
 // latencies in ms rounded to 0.01.
 import { groupEvents } from "./events.ts";
-import { type HopStats, lowerBound, mos, stats } from "./stats.ts";
-import type { Hop, Trace } from "./trace.ts";
+import { DEFAULTS } from "./settings.ts";
+import { type HopStats, lowerBound, mos, period, stats, stretchWidth, tallyStats } from "./stats.ts";
+import type { Hop, RangeHop, Trace } from "./trace.ts";
 
 /** Arguments of a tool call, as the agent sent them. */
 export type Arguments = Record<string, unknown>;
+
+/**
+ * Reads a period of a trace's history files, as `historyRange` in trace.ts does: from,
+ * to and width in seconds, and the hop numbers (0 for the round trip) to get stretches of.
+ * Passed in, so that the tools can be tried without the backend.
+ */
+export type History = (trace: Trace, from: number, to: number, width: number, graphed: number[]) => Promise<RangeHop[]>;
+
+/** The tallies of a period the window no longer holds, by hop number, or null when it holds it. */
+async function older(trace: Trace, span: number, history?: History) {
+  const p = period(trace, span);
+  if (!p.older || !history) return null;
+  // One stretch over the whole period, in whole minutes, which the backend keeps tallied.
+  const width = Math.max(60, Math.ceil((p.to - p.from) / 60) * 60);
+  const hops = await history(trace, p.from, p.to, width, []);
+  return { ...p, totals: new Map(hops.map((hop) => [hop.ttl, tallyStats(hop.total)])) };
+}
 
 const DEFAULT_MINUTES = 10;
 const DEFAULT_HISTORY_MINUTES = 60;
@@ -67,9 +85,10 @@ export function findTrace(traces: Trace[], target: unknown): Trace {
 }
 
 /** What list_targets says about one tab, with the round trip over the newest `span` seconds. */
-export function describeTrace(trace: Trace, span: number) {
+export async function describeTrace(trace: Trace, span: number, history?: History) {
   const { config } = trace;
   const target = newest(trace.target, span);
+  const disk = await older(trace, span, history);
   const usesPort = config.protocol === "udp" || config.protocol === "tcp";
   return {
     id: config.sessionId,
@@ -83,31 +102,36 @@ export function describeTrace(trace: Trace, span: number) {
       interval_ms: config.intervalMs,
     },
     hops: trace.pathEnd || null,
-    alert_thresholds: { latency_ms: config.alertLatencyMs || null, loss_pct: config.alertLossPct || null },
-    from: target.times.length ? iso(target.times[0]) : null,
+    alert_thresholds: {
+      latency_ms: config.alertLatencyMs || null,
+      loss_pct: config.alertLossPct || null,
+      window_s: config.alertSeconds ?? DEFAULTS.alertSeconds,
+    },
+    from: disk ? iso(disk.from) : target.times.length ? iso(target.times[0]) : null,
     to: target.times.length ? iso(target.times[target.times.length - 1]) : null,
-    round_trip: numbers(stats(target.rtts)),
+    round_trip: numbers(disk?.totals.get(0) ?? stats(target.rtts)),
   };
 }
 
-export function listTargets(traces: Trace[], args: Arguments) {
+export async function listTargets(traces: Trace[], args: Arguments, history?: History) {
   const span = seconds(args.minutes, DEFAULT_MINUTES);
-  return { targets: traces.map((trace) => describeTrace(trace, span)) };
+  return { targets: await Promise.all(traces.map((trace) => describeTrace(trace, span, history))) };
 }
 
 /** Every hop on the current route, then the round trip to the target, as the hop table shows them. */
-export function getHops(traces: Trace[], args: Arguments) {
+export async function getHops(traces: Trace[], args: Arguments, history?: History) {
   const trace = findTrace(traces, args.target);
   const span = seconds(args.minutes, DEFAULT_MINUTES);
+  const disk = await older(trace, span, history);
   // Hops past the end of a route that got shorter get no more probes; the table leaves them out too.
   const route = trace.hops.slice(0, trace.pathEnd || trace.hops.length);
   return {
-    ...describeTrace(trace, span),
+    ...(await describeTrace(trace, span, history)),
     route: route.map((hop) => ({
       hop: hop.ttl,
       address: hop.addr,
       name: hop.name,
-      ...numbers(stats(newest(hop, span).rtts)),
+      ...numbers(disk ? (disk.totals.get(hop.ttl) ?? stats([])) : stats(newest(hop, span).rtts)),
     })),
   };
 }
@@ -136,8 +160,11 @@ export function getRouteChanges(traces: Trace[], args: Arguments) {
   };
 }
 
-/** The newest stretch of one series cut into equal slices, each summed up. */
-export function getLatencyHistory(traces: Trace[], args: Arguments) {
+/**
+ * The newest stretch of one series cut into equal slices, each summed up. A period older
+ * than the window holds is read from the history files in slices of whole stretches.
+ */
+export async function getLatencyHistory(traces: Trace[], args: Arguments, history?: History) {
   const trace = findTrace(traces, args.target);
   let series = trace.target;
   if (args.hop !== undefined) {
@@ -146,12 +173,35 @@ export function getLatencyHistory(traces: Trace[], args: Arguments) {
     series = hop;
   }
   const span = seconds(args.minutes, DEFAULT_HISTORY_MINUTES);
-  const { times, rtts } = newest(series, span);
   const base = { id: trace.config.sessionId, host: trace.config.host, hop: args.hop === undefined ? "round trip" : series.ttl };
+  const parts = count(args.slices, DEFAULT_SLICES, 1, 300);
+  const p = period(trace, span);
+  if (p.older && history) {
+    const ttl = args.hop === undefined ? 0 : series.ttl;
+    const width = stretchWidth(p.to - p.from, parts, trace.config.intervalMs / 1000);
+    const hops = await history(trace, p.from, p.to, width, [ttl]);
+    const stretches = hops.find((hop) => hop.ttl === ttl)?.stretches ?? [];
+    return {
+      ...base,
+      slices: stretches.map((stretch) => {
+        const s = tallyStats(stretch);
+        return {
+          from: iso(stretch.t / 1000),
+          to: iso(stretch.t / 1000 + width),
+          sent: s.sent,
+          loss_pct: round(s.lossPct),
+          avg_ms: round(s.avg),
+          min_ms: round(s.min),
+          max_ms: round(s.max),
+          jitter_ms: round(s.jitter),
+        };
+      }),
+    };
+  }
+  const { times, rtts } = newest(series, span);
   if (!times.length) return { ...base, slices: [] };
   const start = times[0];
   const end = times[times.length - 1];
-  const parts = count(args.slices, DEFAULT_SLICES, 1, 300);
   const width = Math.max((end - start) / parts, 1e-9);
   const slices: { from: string; to: string; [key: string]: unknown }[] = [];
   let first = 0;
@@ -176,7 +226,7 @@ export function getLatencyHistory(traces: Trace[], args: Arguments) {
 }
 
 /** The read-only tools by name. start_trace and stop_trace change tabs, so the page runs those. */
-export const READ_TOOLS: Record<string, (traces: Trace[], args: Arguments) => unknown> = {
+export const READ_TOOLS: Record<string, (traces: Trace[], args: Arguments, history?: History) => unknown> = {
   list_targets: listTargets,
   get_hops: getHops,
   get_route_changes: getRouteChanges,

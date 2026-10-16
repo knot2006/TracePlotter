@@ -8,8 +8,8 @@
   import "uplot/dist/uPlot.min.css";
   import { popupMenu } from "./ContextMenu.svelte";
   import { settings } from "./settings";
-  import { jitterSeries, lossSeries, niceCeil } from "./stats";
-  import { timeOfDay } from "./time";
+  import { BLEND_RADIUS, jitterSeries, latencyAxis, lossSeries, thin, type ThinData } from "./stats";
+  import { dateTime, timeOfDay, timeTicks } from "./time";
   import type { Hop } from "./trace";
 
   type Props = {
@@ -20,6 +20,11 @@
     from: number;
     to: number;
     intervalMs: number;
+    /**
+     * The graph of a period older than the window holds, tallied from the history files;
+     * drawn instead of `hop`'s samples. `bucket` is the seconds its loss is counted over.
+     */
+    range?: { data: ThinData; breaks: Set<number>; bucket: number };
     /** Graphs with the same key move their cursors together. */
     syncKey: string;
     /** Adds the thin jitter strip above the latency graph. */
@@ -35,10 +40,13 @@
     /** Copies just this graph to the clipboard as a PNG. */
     oncopy: () => void;
   };
-  let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose, onsave, oncopy }: Props = $props();
+  let { hop, heading, from, to, intervalMs, range, syncKey, withJitter, onpan, onreset, onclose, onsave, oncopy }: Props =
+    $props();
 
   /** Right-click menu of the graph. */
   function graphMenu(event: MouseEvent) {
+    // The readout would show through under the menu.
+    tip = null;
     popupMenu(event, {
       items: [
         { id: "live", text: "Back to live", action: onreset },
@@ -64,7 +72,7 @@
   let shown = { js: [] as (number | null)[], breaks: new Set<number>(), bucket: 0 };
 
   // The loss axis shows only while the period has a lost probe.
-  const lossy = $derived(hop.rtts.includes(null));
+  const lossy = $derived(range ? range.data.ls.some((loss) => !!loss) : hop.rtts.includes(null));
 
   /** The canvas of the latency graph, for the PNG export. */
   export function canvas() {
@@ -144,7 +152,7 @@
       tip = null;
       return;
     }
-    const [xs, ls, ys] = u.data;
+    const [xs, ls, lo, hi, ys] = u.data;
     // uPlot points at the nearest sample however far away it is. Over a stretch without
     // samples (before the trace began, or while it was stopped) there is nothing to read.
     const at = u.valToPos(xs[idx], "x");
@@ -153,7 +161,8 @@
       tip = null;
       return;
     }
-    const time = timeOfDay(xs[idx]);
+    // Over more than a day the time alone does not say which day.
+    const time = to - from > 86_400 ? dateTime(xs[idx]) : timeOfDay(xs[idx]);
     const rtt = ys[idx];
     const jitter = shown.js[idx];
     const loss = ls[idx];
@@ -161,7 +170,12 @@
       ? [time, "not probing"]
       : [
           time,
-          rtt == null ? "lost" : `${rtt.toFixed(1)} ms`,
+          rtt == null
+            ? "lost"
+            : lo[idx] === hi[idx]
+              ? `${rtt.toFixed(1)} ms`
+              : // A thinned point stands for several probes.
+                `${rtt.toFixed(1)} ms average (${lo[idx]!.toFixed(1)}–${hi[idx]!.toFixed(1)})`,
           ...(jitter == null ? [] : [`jitter ${jitter.toFixed(1)} ms`]),
           // The loss is that of the stretch of time the probe falls in, not of the whole graph.
           ...(loss ? [`loss ${loss.toFixed(0)} % in these ${Math.round(shown.bucket)} s`] : []),
@@ -212,15 +226,9 @@
     const withLoss = lossy;
     const axis = { stroke: "#9aa4b2", grid: { stroke: "rgba(255, 255, 255, 0.08)" }, ticks: { stroke: "#232a36" } };
     const range = (_u: uPlot, _min: number, max: number): [number, number] => [0, Math.max(1, max * 1.1)];
-    // The latency axis starts at 0 and ends at a round number a fifth above the
-    // highest value in view. Starting at 0 keeps heights honest: a wobble of 1 ms on 10 ms
-    // looks small, not like the full-height swings an axis fitted to 10..12 would show.
-    // The headroom keeps the line off the top edge, and round ends keep the axis from
-    // jumping with every new maximum.
-    const fit = (_u: uPlot, _min: number | null, max: number | null): [number, number] => [
-      0,
-      niceCeil((max ?? 0) * 1.2),
-    ];
+    // From 0, or from just below the lowest reply when 0 would leave much of the graph
+    // empty, to a round number above the highest (see `latencyAxis`).
+    const fit = (_u: uPlot, min: number | null, max: number | null) => latencyAxis(min, max);
     const line = { width: 1.5, points: { show: false }, paths: uPlot.paths.stepped!({ align: 1 }) };
     const shared = {
       cursor: {
@@ -248,19 +256,24 @@
           loss: { range: [0, 100] },
         },
         axes: [
-          { ...axis, values: (_u, ticks) => ticks.map(timeOfDay) },
+          { ...axis, values: (_u, ticks) => timeTicks(ticks) },
           { ...axis, label: "Latency (ms)", labelSize: 20, size: 44 },
           { show: withLoss, scale: "loss", side: 1, stroke: LOSS, label: "Packet loss %", labelSize: 20, size: 36, grid: { show: false }, ticks: { stroke: "#232a36" } },
         ],
-        // Loss is drawn first so the latency line stays on top of it.
+        // Loss is drawn first so the latency line stays on top of it. On a long period each
+        // point stands for several probes: the line is their average, and the band behind
+        // it runs from the lowest to the highest of them.
         series: [
           {},
           { ...line, show: withLoss, scale: "loss", width: 1, stroke: LOSS, fill: "rgba(239, 68, 68, 0.55)" },
+          { ...line, width: 0 },
+          { ...line, width: 0 },
           { ...line, stroke: "#f8fafc" },
         ],
+        bands: [{ series: [3, 2], fill: "rgba(248, 250, 252, 0.22)" }],
         hooks: { drawClear: [drawBands], setCursor: [readout] },
       },
-      [[], [], []],
+      [[], [], [], [], []],
       chartEl,
     );
     const strip = jitterEl;
@@ -303,14 +316,33 @@
     lossy;
     jitterEl;
     if (!plot) return;
-    const { xs, ys, js, ls, breaks, bucket } = graphData();
-    shown = { js, breaks, bucket };
+    if (range) {
+      const { data, breaks, bucket } = range;
+      shown = { js: data.js, breaks, bucket };
+      show(data);
+      return;
+    }
+    const { breaks, bucket, ...all } = graphData();
+    // Up to one probe per pixel is drawn as it is. Beyond that each pixel averages its
+    // probes, blended with its neighbours so that the line does not beat against latency
+    // that swings every few pixels' worth of time. A graph not laid out
+    // yet has no width, and gets enough for a wide window.
+    // ponytail: thinned for the width at the last refresh; a paused tab widened later
+    // stays coarse until it is shown again. Thin again in the ResizeObserver if that shows.
+    const pixels = (chartEl.clientWidth || 2000) * devicePixelRatio;
+    const thinned = thin(all, breaks, pixels, BLEND_RADIUS);
+    shown = { js: thinned.js, breaks, bucket };
+    show(thinned);
+  });
+
+  function show({ xs, ys, js, ls, lo, hi }: ThinData) {
+    if (!plot) return;
     const x = { min: from, max: Math.max(to, from + 1) };
-    plot.setData([xs, ls, ys], false);
+    plot.setData([xs, ls, lo, hi, ys], false);
     plot.setScale("x", x);
     jitterPlot?.setData([xs, js], false);
     jitterPlot?.setScale("x", x);
-  });
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -424,33 +456,6 @@
   .title button:focus-visible {
     outline: 2px solid var(--accent);
   }
-  .tip {
-    position: fixed;
-    z-index: 10;
-    --dx: 12px;
-    --dy: 12px;
-    translate: var(--dx) var(--dy);
-    padding: 4px 8px;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    background: rgba(15, 19, 25, 0.92);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    pointer-events: none;
-  }
-  .tip.flip {
-    --dx: calc(-100% - 12px);
-  }
-  .tip.up {
-    --dy: calc(-100% - 12px);
-  }
-  .tip.pinned {
-    --dy: 0px;
-  }
-  .tip div:first-child {
-    color: var(--muted);
-  }
   /* The page prints dark on white, but the graphs are drawn in light colours on their
      canvases, so each graph keeps the dark background it was drawn for. */
   @media print {
@@ -468,7 +473,7 @@
       height: auto;
       overflow: visible;
     }
-    .tip {
+    :global(.tip) {
       display: none;
     }
     /* uPlot sizes these in px for the window; let them follow the paper width instead. */
