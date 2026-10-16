@@ -54,10 +54,10 @@
 
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { Menu } from "@tauri-apps/api/menu";
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
   import { exportName } from "./import";
+  import { popupMenu } from "./ContextMenu.svelte";
   import { WINDOWS, settings } from "./settings";
   import { ALERT_WINDOW, lowerBound, mos, stats, textTable } from "./stats";
   import { dateTime, timeOfDay } from "./time";
@@ -316,10 +316,9 @@
    * Right-click menu of a table header: move that column left or right, then a tick per
    * column, as in View > Columns. `key` is null for the Hop column, which stays first.
    */
-  async function columnMenu(event: MouseEvent, key: string | null) {
-    event.preventDefault();
+  function columnMenu(event: MouseEvent, key: string | null) {
     const at = columns.findIndex((column) => column.key === key);
-    const menu = await Menu.new({
+    popupMenu(event, {
       items: [
         ...(key === null
           ? []
@@ -336,14 +335,12 @@
         })),
       ],
     });
-    await menu.popup();
   }
 
   /** Right-click menu of a hop row. */
-  async function hopMenu(event: MouseEvent, hop: Hop) {
-    event.preventDefault();
+  function hopMenu(event: MouseEvent, hop: Hop) {
     const { addr, name } = hop;
-    const menu = await Menu.new({
+    popupMenu(event, {
       items: [
         // A hop that never answered has no address, but the report can still be copied.
         ...(addr
@@ -358,7 +355,6 @@
         { id: "copy-report", text: "Copy MTR report", action: copyReport },
       ],
     });
-    await menu.popup();
   }
 
   // Height of the hop table in px once the divider was dragged; null keeps it as tall as its

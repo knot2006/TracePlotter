@@ -4,9 +4,9 @@
 </script>
 
 <script lang="ts">
-  import { Menu } from "@tauri-apps/api/menu";
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
+  import { popupMenu } from "./ContextMenu.svelte";
   import { settings } from "./settings";
   import { jitterSeries, lossSeries, niceCeil } from "./stats";
   import { timeOfDay } from "./time";
@@ -38,9 +38,8 @@
   let { hop, heading, from, to, intervalMs, syncKey, withJitter, onpan, onreset, onclose, onsave, oncopy }: Props = $props();
 
   /** Right-click menu of the graph. */
-  async function graphMenu(event: MouseEvent) {
-    event.preventDefault();
-    const menu = await Menu.new({
+  function graphMenu(event: MouseEvent) {
+    popupMenu(event, {
       items: [
         { id: "live", text: "Back to live", action: onreset },
         { item: "Separator" },
@@ -50,7 +49,6 @@
         { id: "close", text: "Close this graph", enabled: !!onclose, action: () => onclose?.() },
       ],
     });
-    await menu.popup();
   }
 
   const LOSS = "#f87171";

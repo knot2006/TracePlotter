@@ -7,6 +7,7 @@
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
   import { BAND_FILLS } from "../lib/HopGraph.svelte";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
+  import ContextMenu from "../lib/ContextMenu.svelte";
   import Picker from "../lib/Picker.svelte";
   import Settings from "../lib/Settings.svelte";
   import {
@@ -843,6 +844,8 @@
     <p class="empty">Type a host above and press the green button. Each target opens in its own tab.</p>
   {/if}
 </main>
+
+<ContextMenu />
 
 <style>
   :global(:root) {
