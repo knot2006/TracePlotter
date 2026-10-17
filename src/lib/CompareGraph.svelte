@@ -285,7 +285,7 @@
     traces;
     focusSeconds;
     load();
-    const timer = setInterval(() => load(true), REFRESH_MS);
+    const timer = setInterval(() => document.hidden || load(true), REFRESH_MS);
     return () => clearInterval(timer);
   });
 </script>

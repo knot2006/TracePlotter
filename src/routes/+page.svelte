@@ -62,9 +62,12 @@
   // The open tab: a trace's id, the overview of all targets, the settings, or none (a new
   // target is being typed).
   let activeId = $state<number | "summary" | "settings" | null>(null);
-  // Traces are plain objects mutated in place; bumping `rev` is what redraws.
+  // Traces are plain objects mutated in place; bumping `rev` is what redraws. A minimized
+  // window keeps probing but skips the redraws, and catches up once it is shown again.
   let rev = $state(0);
-  const bump = () => rev++;
+  const bump = () => {
+    if (!document.hidden) rev++;
+  };
 
   // Toolbar fields. They show the open tab's target; editing them describes a new one,
   // which starts from the defaults in the settings.
@@ -672,6 +675,8 @@
     if (mcpOn || (await invoke<boolean>("mcp_flag").catch(() => false))) setAgentAccess(true, false);
   });
 </script>
+
+<svelte:document onvisibilitychange={() => !document.hidden && rev++} />
 
 <header>
   {#if update}

@@ -1874,6 +1874,18 @@ pub fn run() {
             if let WindowEvent::CloseRequested { .. } = event {
                 save_window_state(window);
             }
+            // WebView2 goes on drawing a minimized window until it is told the window is
+            // hidden. Then the page sees `document.hidden` and stops redrawing; probing goes on.
+            // A minimized window is resized to nothing.
+            #[cfg(windows)]
+            if let WindowEvent::Resized(size) = event {
+                let visible = size.width > 0 && size.height > 0;
+                for webview in window.webviews() {
+                    let _ = webview.with_webview(move |webview| unsafe {
+                        let _ = webview.controller().SetIsVisible(visible);
+                    });
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             start_trace,

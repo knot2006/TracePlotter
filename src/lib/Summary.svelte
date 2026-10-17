@@ -109,7 +109,7 @@
     traces;
     focusSeconds;
     readOlder();
-    const timer = setInterval(readOlder, 5000);
+    const timer = setInterval(() => document.hidden || readOlder(), 5000);
     return () => clearInterval(timer);
   });
 
