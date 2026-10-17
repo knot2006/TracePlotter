@@ -107,6 +107,8 @@
     onprobe: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
+    /** Called to show the default columns again. */
+    oncolumnsreset: () => void;
     /** Called to change the time span, in seconds, 0 for everything. */
     onspan: (seconds: number) => void;
     /** Whether the latency bars are shown and have room to draw; the toolbar's legend follows them. */
@@ -120,6 +122,7 @@
     onsave,
     onprobe,
     oncolumn,
+    oncolumnsreset,
     onspan,
     barShown = $bindable(false),
   }: Props = $props();
@@ -440,9 +443,19 @@
     }
   }
 
+  /** Puts the columns back as a first launch has them: their order, widths and which show. */
+  function resetColumns() {
+    order = [];
+    widths = {};
+    localStorage.removeItem(COLUMN_ORDER_KEY);
+    localStorage.removeItem(COLUMN_WIDTHS_KEY);
+    oncolumnsreset();
+  }
+
   /**
    * Right-click menu of a table header: move that column left or right, then a tick per
-   * column, as in View > Columns. `key` is null for the Hop column, which stays first.
+   * column, as in View > Columns, then a reset. `key` is null for the Hop column, which
+   * stays first.
    */
   function columnMenu(event: MouseEvent, key: string | null) {
     const at = columns.findIndex((column) => column.key === key);
@@ -461,6 +474,8 @@
           checked: !hidden.includes(column.key),
           action: () => oncolumn(column.key),
         })),
+        { item: "Separator" as const },
+        { id: "reset-columns", text: "Reset to defaults", action: resetColumns },
       ],
     });
   }
@@ -561,13 +576,17 @@
     jitter: 64,
     mos: 60,
   };
+  // The latency bar as the last column always reaches the table's right edge: a width of its
+  // own would leave an empty filler behind it that its grip could not drag back.
+  const barLast = $derived(columns.at(-1)?.key === "bar");
   const colWidth = (key: string) => {
+    if (key === "bar" && barLast) return undefined;
     const width = widths[key] ?? DEFAULT_WIDTHS[key];
     return width ? `${width}px` : undefined;
   };
   // An empty last column takes the space left over when the latency bar is hidden or has
   // a width of its own; otherwise the browser would stretch every column to fill the table.
-  const filler = $derived(!columns.some((column) => column.key === "bar") || widths.bar !== undefined);
+  const filler = $derived(!columns.some((column) => column.key === "bar") || (widths.bar !== undefined && !barLast));
 
   // The headers' widths on screen. The latency bars take the room the other columns
   // leave, which on a narrow window can be next to none.
@@ -774,7 +793,7 @@
               {column.key === "bar"
                 ? `Latency (0 – ${scale.toFixed(scale < 10 ? 1 : 0)} ms)${barZoom > 1 ? " · zoomed" : ""}`
                 : column.label}
-              {@render grip(column.key, column.label)}
+              {#if column.key !== "bar" || !barLast}{@render grip(column.key, column.label)}{/if}
             </th>
           {/each}
           {#if filler}<th></th>{/if}

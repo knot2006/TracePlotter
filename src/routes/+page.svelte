@@ -317,6 +317,12 @@
     buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
   }
 
+  function resetHidden() {
+    hidden = DEFAULT_HIDDEN;
+    localStorage.removeItem(COLUMNS_KEY);
+    buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
+  }
+
   async function togglePause(trace: Trace) {
     try {
       await setPaused(trace, !trace.paused, bump);
@@ -849,6 +855,7 @@
         onsave={saveSession}
         onprobe={() => reprobe(active)}
         oncolumn={toggleColumn}
+        oncolumnsreset={resetHidden}
         onspan={changeSpan}
       />
     {/key}
