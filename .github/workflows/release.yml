@@ -10,8 +10,8 @@
 # The Rust tests are not repeated here; the CI workflow runs them for the same commit.
 #
 # The Windows job publishes the release with the exe in it, so "latest release" never points at
-# one the app cannot update from. The Linux job runs after it and adds its packages. The other
-# platforms come back one at a time the same way.
+# one the app cannot update from. The Linux job and then the Arch job run after it, one at a
+# time, and add their packages to that release.
 #
 # The Rust builds are not cached: a tag's run can read only caches saved by that tag or by
 # main, so a cache saved here was never used again and only pushed main's out.
@@ -139,3 +139,30 @@ jobs:
         run: |
           cd src-tauri/target/release/bundle
           gh release upload "$TAG" deb/*.deb rpm/*.rpm appimage/*.AppImage --repo "$GITHUB_REPOSITORY"
+
+  # The Arch Linux package, built from the tag's source by src-tauri/linux/arch/PKGBUILD.
+  # The PKGBUILD goes with it, with the version and checksum filled in, for the AUR.
+  arch:
+    needs: linux
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The PKGBUILD's dependencies, installed here because makepkg does not run as root.
+      - run: pacman -Syu --noconfirm --needed rust nodejs npm gtk3 libcap webkit2gtk-4.1 pacman-contrib github-cli
+      - name: Build the package
+        run: |
+          useradd -m builder
+          cp src-tauri/linux/arch/PKGBUILD src-tauri/linux/arch/traceplotter.install /home/builder/
+          cd /home/builder
+          sed -i "s/^pkgver=.*/pkgver=${TAG#v}/" PKGBUILD
+          chown -R builder: .
+          su builder -c "updpkgsums && makepkg --noconfirm"
+      - name: Add the package to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /home/builder
+          gh release upload "$TAG" *.pkg.tar.zst PKGBUILD traceplotter.install --repo "$GITHUB_REPOSITORY"
