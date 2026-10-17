@@ -10,8 +10,8 @@
 # The Rust tests are not repeated here; the CI workflow runs them for the same commit.
 #
 # The Windows job publishes the release with the exe in it, so "latest release" never points at
-# one the app cannot update from. The Linux job and then the Arch job run after it, one at a
-# time, and add their packages to that release.
+# one the app cannot update from. The Linux and Arch jobs run after it, side by side, and add
+# their packages to that release.
 #
 # The Rust builds are not cached: a tag's run can read only caches saved by that tag or by
 # main, so a cache saved here was never used again and only pushed main's out.
@@ -143,7 +143,7 @@ jobs:
   # The Arch Linux package, built from the tag's source by src-tauri/linux/arch/PKGBUILD.
   # The PKGBUILD goes with it, with the version and checksum filled in, for the AUR.
   arch:
-    needs: linux
+    needs: windows
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     env:
