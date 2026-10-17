@@ -11,6 +11,10 @@ export default defineConfig(() => ({
   // See https://svelte.dev/docs/kit/single-page-apps and https://v2.tauri.app/start/frontend/sveltekit/
   plugins: [sveltekit({ adapter: adapter({ fallback: "index.html" }) })],
 
+  // Rolldown cannot follow the `"extends": "$app/tsconfig"` of SvelteKit 3 and then fails to
+  // prebundle the SSR dependencies of the dev server, so it does not read tsconfig there.
+  environments: { ssr: { optimizeDeps: { rolldownOptions: { tsconfig: false } } } },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
