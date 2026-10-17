@@ -8,7 +8,7 @@
   import "uplot/dist/uPlot.min.css";
   import { popupMenu } from "./ContextMenu.svelte";
   import { settings } from "./settings";
-  import { BLEND_RADIUS, jitterSeries, latencyAxis, lossSeries, thin, type ThinData } from "./stats";
+  import { BLEND_RADIUS, jitterSeries, latencyAxis, lossSeries, stretchWidth, thin, type ThinData } from "./stats";
   import { dateTime, timeOfDay, timeTicks } from "./time";
   import type { Hop } from "./trace";
 
@@ -31,6 +31,8 @@
     withJitter: boolean;
     /** The user dragged the graph or turned the wheel: move the period by this fraction of its length. */
     onpan: (fraction: number) => void;
+    /** The user turned the wheel with Ctrl held: zoom out or in, keeping the moment at `at` (0 to 1 across the graph) in place. */
+    onzoom: (out: boolean, at: number) => void;
     /** The user double-clicked: back to the live period. */
     onreset: () => void;
     /** Closes this graph. Left out for the only graph, which cannot be closed. */
@@ -40,7 +42,7 @@
     /** Copies just this graph to the clipboard as a PNG. */
     oncopy: () => void;
   };
-  let { hop, heading, from, to, intervalMs, range, syncKey, withJitter, onpan, onreset, onclose, onsave, oncopy }: Props =
+  let { hop, heading, from, to, intervalMs, range, syncKey, withJitter, onpan, onzoom, onreset, onclose, onsave, oncopy }: Props =
     $props();
 
   /** Right-click menu of the graph. */
@@ -62,6 +64,8 @@
   const LOSS = "#f87171";
 
   let chartEl: HTMLDivElement;
+  // The graph's width in px, kept by its ResizeObserver; thinning follows it.
+  let plotWidth = $state(0);
   let jitterEl = $state<HTMLDivElement>();
   let plot: uPlot | undefined;
   let jitterPlot: uPlot | undefined;
@@ -299,6 +303,7 @@
     plot = chart;
     jitterPlot = jitter;
     const resize = new ResizeObserver(() => {
+      plotWidth = chartEl.clientWidth;
       chart.setSize({ width: chartEl.clientWidth, height: chartEl.clientHeight });
       if (jitter && strip) jitter.setSize({ width: strip.clientWidth, height: strip.clientHeight });
     });
@@ -323,14 +328,14 @@
       return;
     }
     const { breaks, bucket, ...all } = graphData();
-    // Up to one probe per pixel is drawn as it is. Beyond that each pixel averages its
-    // probes, blended with its neighbours so that the line does not beat against latency
-    // that swings every few pixels' worth of time. A graph not laid out
-    // yet has no width, and gets enough for a wide window.
-    // ponytail: thinned for the width at the last refresh; a paused tab widened later
-    // stays coarse until it is shown again. Thin again in the ResizeObserver if that shows.
-    const pixels = (chartEl.clientWidth || 2000) * devicePixelRatio;
-    const thinned = thin(all, breaks, pixels, BLEND_RADIUS);
+    // Up to one probe per pixel is drawn as it is. Beyond that each pixel's stretch of time
+    // averages its probes, blended with its neighbours so that the line does not beat
+    // against latency that swings every few pixels' worth of time. Done again when the
+    // graph changes size. A graph not laid out yet has no width, and gets enough for a
+    // wide window.
+    const pixels = (plotWidth || 2000) * devicePixelRatio;
+    const width = all.xs.length > pixels ? stretchWidth(to - from, pixels, intervalMs / 1000) : 0;
+    const thinned = thin(all, breaks, width, BLEND_RADIUS);
     shown = { js: thinned.js, breaks, bucket };
     show(thinned);
   });
@@ -352,14 +357,16 @@
   {/if}
   <div
     class="chart"
-    role="img"
-    aria-label="Latency graph for {heading}. Drag or turn the wheel to move in time, double-click to return to live."
+    role="figure"
+    aria-label="Latency graph for {heading}. Drag or turn the wheel to move in time, Ctrl and the wheel to zoom, double-click to return to live."
     class:dragging
     bind:this={chartEl}
     onpointerdown={startDrag}
     onwheel={(event) => {
       event.preventDefault();
-      onpan(Math.sign(event.deltaY) * 0.1);
+      if (!event.ctrlKey) return onpan(Math.sign(event.deltaY) * 0.1);
+      const area = plot?.over.getBoundingClientRect();
+      onzoom(event.deltaY > 0, area ? Math.min(1, Math.max(0, (event.clientX - area.left) / area.width)) : 1);
     }}
     ondblclick={onreset}
     onmouseenter={() => (hovered = true)}
@@ -408,7 +415,7 @@
     left: 50%;
     translate: -50%;
     z-index: 1;
-    font-size: 11px;
+    font-size: 12px;
     color: #f87171;
     pointer-events: none;
   }
@@ -440,10 +447,14 @@
     font-weight: 600;
     pointer-events: none;
   }
+  /* At least 24 px square, so that it is easy to hit. */
   .title button {
     all: unset;
-    margin-left: 6px;
-    padding: 0 4px;
+    display: inline-grid;
+    place-items: center;
+    min-width: 24px;
+    min-height: 24px;
+    margin-left: 2px;
     font-size: 15px;
     line-height: 1;
     color: var(--muted);

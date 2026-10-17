@@ -21,6 +21,7 @@ test("settings are kept within their limits", () => {
   assert.equal(cleanSettings({ protocol: "tcp" }, false).protocol, "tcp");
   assert.equal(cleanSettings({ notifications: false }, false).notifications, false);
   assert.equal(cleanSettings({ notifications: "no" }, false).notifications, true);
+  assert.equal(cleanSettings({ lossByTarget: true }, false).lossByTarget, true);
 });
 
 test("the Windows ICMP API is a default on Windows only", () => {

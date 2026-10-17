@@ -56,6 +56,8 @@ export type Settings = {
   historyDays: number;
   /** Whether alerts and route changes raise a desktop notification. */
   notifications: boolean;
+  /** Whether the compare graph colours each target's loss bars as its line, rather than red. */
+  lossByTarget: boolean;
 };
 
 export const DEFAULTS: Settings = {
@@ -71,6 +73,7 @@ export const DEFAULTS: Settings = {
   badMs: 200,
   historyDays: 7,
   notifications: true,
+  lossByTarget: false,
 };
 
 /** The lowest and highest value of each setting that is a free number. */
@@ -104,7 +107,9 @@ export function cleanSettings(raw: unknown, systemIcmp: boolean): Settings {
   if (INTERVALS.includes(Number(given.intervalMs))) clean.intervalMs = Number(given.intervalMs);
   const protocol = given.protocol as Protocol;
   if (PROTOCOLS.includes(protocol) && (systemIcmp || protocol !== "winicmp")) clean.protocol = protocol;
-  if (typeof given.notifications === "boolean") clean.notifications = given.notifications;
+  for (const key of ["notifications", "lossByTarget"] as const) {
+    if (typeof given[key] === "boolean") clean[key] = given[key];
+  }
   // Red starts above yellow.
   clean.badMs = Math.max(clean.badMs, clean.warnMs + 1);
   return clean;

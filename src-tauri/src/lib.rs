@@ -1856,7 +1856,8 @@ pub fn run() {
             }
             fs::create_dir_all(data_dir())?;
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-                .title("TracePlotter")
+                // Made-up data must not pass for a real trace, in the window or a screenshot of it.
+                .title(if demo() { "TracePlotter (demo)" } else { "TracePlotter" })
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(640.0, 420.0)
                 .data_directory(data_dir().join("webview"))

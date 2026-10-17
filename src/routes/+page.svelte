@@ -596,14 +596,25 @@
     hostInput.focus();
   }
 
-  /** Closes the tab and erases its history. */
+  /** Closes the tab and erases its history, once the user has said so: there is no undo. */
   function close(trace: Trace) {
+    if (!confirm(`Close the tab of ${trace.config.host}?\n\nIts history is erased.`)) return;
     closeTrace(trace).catch((e) => showToast(`History of ${trace.config.host} not erased: ${e}`, true));
     const index = traces.indexOf(trace);
     traces = traces.filter((t) => t !== trace);
     if (activeId === trace.id) activeId = (traces[index] ?? traces[index - 1])?.id ?? null;
     session = session.filter((c) => c !== trace.config);
     saveSession();
+  }
+
+  /** Arrow keys, Home and End move between the tabs, as in a tab strip; Enter or Space opens one. */
+  function tabKeys(event: KeyboardEvent) {
+    const tabs = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]')];
+    const at = tabs.indexOf(event.target as HTMLElement);
+    const keys: Record<string, number> = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: tabs.length - 1 };
+    if (at < 0 || !(event.key in keys)) return;
+    event.preventDefault();
+    tabs[(keys[event.key] + tabs.length) % tabs.length].focus();
   }
 
   onMount(async () => {
@@ -705,7 +716,7 @@
       {/if}
     </div>
   {/if}
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" tabindex="-1" onkeydown={tabKeys}>
     {#if traces.length}
       <div class="tab" class:active={activeId === "summary"}>
         <!-- The host box is emptied: with no tab open it describes a new target, and leaving
@@ -738,7 +749,7 @@
     <button class="add" aria-label="New target" title="New target (Ctrl+T)" onclick={newTarget}>+</button>
     <div class="tab settings" class:active={activeId === "settings"}>
       <button class="all" role="tab" aria-selected={activeId === "settings"} title="Settings (Ctrl+,)" onclick={openSettings}>
-        ⚙ Settings
+        ⚙&#xFE0E; Settings
       </button>
     </div>
   </div>
@@ -772,7 +783,7 @@
       aria-label={running ? "Pause trace" : current ? "Resume trace" : "Start trace"}
       data-tip={running ? "Pause trace" : current ? "Resume trace" : "Start trace"}
     >
-      {running ? "⏸" : "▶"}
+      {running ? "⏸︎" : "▶︎"}
     </button>
     {#if current}
       <button
@@ -836,6 +847,7 @@
         onsave={saveSession}
         onprobe={() => reprobe(active)}
         oncolumn={toggleColumn}
+        onspan={changeSpan}
       />
     {/key}
   {:else if activeId === "settings"}
@@ -864,9 +876,10 @@
       {focusSeconds}
       onopen={(trace) => (activeId = trace.id)}
       ontoggle={togglePause}
+      onspan={changeSpan}
     />
   {:else}
-    <p class="empty">Type a host above and press the green button. Each target opens in its own tab.</p>
+    <p class="empty">Type a host above and press Enter or Start (▶&#xFE0E;). Each target opens in its own tab.</p>
   {/if}
 </main>
 
@@ -878,6 +891,9 @@
     --bg: #0f1319;
     --panel: #161b24;
     --line: #232a36;
+    /* The edge of a field or button: a little clearer than --line, which is made for faint
+       grid lines, without drawing a strong frame around every control. */
+    --edge: #343d4b;
     --text: #e6eaf0;
     --muted: #9aa4b2;
     --accent: #2f8fe6;
@@ -935,6 +951,16 @@
     white-space: nowrap;
     pointer-events: none;
   }
+  /* Windows high contrast replaces backgrounds with its own colours, which would erase the
+     colours that carry meaning here: status dots, latency badges, bars and legend. */
+  :global(.dot),
+  :global(.badge),
+  :global(.track),
+  :global(.legend),
+  :global(.swatch),
+  :global(.go) {
+    forced-color-adjust: none;
+  }
   header {
     background: var(--panel);
     border-bottom: 1px solid var(--line);
@@ -959,9 +985,10 @@
     padding: 2px 10px;
     cursor: pointer;
   }
+  /* Darker than the accent: white on the accent itself is too faint to read. */
   .update .install {
-    background: var(--accent);
-    border-color: var(--accent);
+    background: #1f6fc2;
+    border-color: #1f6fc2;
     color: #fff;
     font-weight: 600;
   }
@@ -1041,14 +1068,21 @@
   .dot.running {
     background: var(--good);
   }
+  /* Each state has its own shape as well as its colour, which red-green colour blindness
+     cannot tell apart: a ring while paused, a diamond while alerting. */
   .dot.paused {
-    background: var(--warn);
+    width: 7px;
+    height: 7px;
+    background: none;
+    border: 2px solid var(--warn);
   }
   .dot.alerting {
+    border-radius: 1px;
+    rotate: 45deg;
     background: var(--bad);
   }
   .tab .close {
-    padding: 4px 10px 6px 4px;
+    padding: 4px 10px 6px 6px;
     font-size: 16px;
     opacity: 0.75;
   }
@@ -1082,7 +1116,7 @@
     font: inherit;
     color: var(--text);
     background: var(--bg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 4px;
     padding: 5px 8px;
   }
@@ -1114,7 +1148,7 @@
     width: 30px;
     height: 30px;
     padding: 0;
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 50%;
     background: var(--bg);
     color: var(--text);
@@ -1180,7 +1214,7 @@
     color: #fbbf24;
   }
   .legend .bad {
-    color: #f87171;
+    color: #fca5a5;
   }
   .error {
     color: #f87171;

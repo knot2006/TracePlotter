@@ -123,12 +123,15 @@ export type GraphData = { xs: number[]; ys: (number | null)[]; js: (number | nul
 export type ThinData = GraphData & { lo: (number | null)[]; hi: (number | null)[] };
 
 /**
- * Graph data cut down to at most about `maxPoints` for drawing a long period, which
- * would otherwise put many probes on every pixel and draw them as a solid wall. Each run
- * of points becomes one, at the run's first time, with the run's average latency and
+ * Graph data cut down to a point per stretch of `width` seconds for drawing a long period,
+ * which would otherwise put many probes on every pixel and draw them as a solid wall. Each
+ * run of points becomes one, at the run's first time, with the run's average latency and
  * jitter, and the lowest and highest latency in `lo` and `hi` for a band around the line.
- * A run in which every probe was lost stays lost, so the gap shows. Points at `breaks`
- * (where probing stopped) are kept as they are and end a run. Data that is short enough
+ * The stretches start at multiples of `width`, as the backend's do, not at the first
+ * point: so a run holds the same probes from one round to the next while the period
+ * moves on, and the line and band stay still instead of shifting with every round. A
+ * run in which every probe was lost stays lost, so the gap shows. Points at `breaks`
+ * (where probing stopped) are kept as they are and end a run. With no `width` the data
  * comes back unchanged, its band no wider than the line.
  *
  * With a `radius`, each point's latency is then weighed together with its neighbours' out
@@ -138,10 +141,10 @@ export type ThinData = GraphData & { lo: (number | null)[]; hi: (number | null)[
  * an hour, and draw a wave that is not there. The weights never reach across a break,
  * and a point without replies stays a gap.
  */
-export function thin(data: GraphData, breaks: Set<number>, maxPoints: number, radius = 0): ThinData {
+export function thin(data: GraphData, breaks: Set<number>, width: number, radius = 0): ThinData {
   const { xs, ys, js, ls } = data;
-  if (xs.length <= maxPoints) return { ...data, lo: ys, hi: ys };
-  const size = Math.ceil(xs.length / maxPoints);
+  if (!(width > 0)) return { ...data, lo: ys, hi: ys };
+  const stretch = (x: number) => Math.floor(x / width);
   const out: ThinData = { xs: [], ys: [], js: [], ls: [], lo: [], hi: [] };
   // Replies behind each point, which weigh its average when neighbours are blended.
   const counts: number[] = [];
@@ -165,7 +168,7 @@ export function thin(data: GraphData, breaks: Set<number>, maxPoints: number, ra
     let jSum = 0;
     let jitters = 0;
     let end = start;
-    for (; end < xs.length && end - start < size && !breaks.has(xs[end]); end++) {
+    for (; end < xs.length && stretch(xs[end]) === stretch(xs[start]) && !breaks.has(xs[end]); end++) {
       const y = ys[end];
       if (y !== null) {
         sum += y;
@@ -355,6 +358,26 @@ export function spanShort(seconds: number): string {
   if (!seconds) return "all";
   const unit = SPAN_UNITS.find((u) => seconds % u.seconds === 0)!;
   return `${seconds / unit.seconds}${unit.letter}`;
+}
+
+/** The time spans Ctrl and the wheel step through, in seconds. */
+const ZOOM_SPANS = [
+  10, 15, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10_800, 21_600, 43_200, 86_400, 172_800, 259_200,
+  604_800, 1_209_600, 2_592_000,
+];
+
+/**
+ * The time span one turn of the wheel zooms to from `span` seconds (0 for everything), over
+ * a history `available` seconds long: the next round span in or out, which the time span
+ * box can name. Zooming out to the whole history or past it shows everything.
+ */
+export function zoomSpan(span: number, out: boolean, available: number): number {
+  const current = span || available;
+  if (out) {
+    const next = ZOOM_SPANS.find((s) => s > current);
+    return next === undefined || next >= available ? 0 : next;
+  }
+  return [...ZOOM_SPANS].reverse().find((s) => s < current) ?? ZOOM_SPANS[0];
 }
 
 /** Number of latest probes an alert looks at: `seconds` of them at the interval, at least one. */

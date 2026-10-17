@@ -22,14 +22,20 @@
   }
 </script>
 
-{#if shown}
-  {#key shown.id}
-    <div class="toast" class:error={shown.error} role={shown.error ? "alert" : "status"}>
-      <span>{shown.text}</span>
-      <button aria-label="Close the message" title="Close" onclick={close}>×</button>
-    </div>
-  {/key}
-{/if}
+<!-- The live regions are always there, so that a message put into one is read out; a
+     region that appears together with its message often is not. -->
+{#each [false, true] as error}
+  <div role={error ? "alert" : "status"}>
+    {#if shown && shown.error === error}
+      {#key shown.id}
+        <div class="toast" class:error>
+          <span>{shown.text}</span>
+          <button aria-label="Close the message" title="Close" onclick={close}>×</button>
+        </div>
+      {/key}
+    {/if}
+  </div>
+{/each}
 
 <style>
   .toast {

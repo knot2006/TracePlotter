@@ -4,6 +4,8 @@
     | { item: "Separator" };
 
   let open = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  // What had the focus before the menu opened; it gets it back when the menu closes.
+  let opener: HTMLElement | null = null;
 
   /**
    * Shows a right-click menu at the pointer. It is drawn by the page rather than by Windows:
@@ -11,6 +13,7 @@
    */
   export function popupMenu(event: MouseEvent, { items }: { items: MenuItem[] }) {
     event.preventDefault();
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     open = { x: event.clientX, y: event.clientY, items };
   }
 </script>
@@ -30,8 +33,14 @@
     if (open) menuEl?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   });
 
-  function choose(item: MenuItem) {
+  /** Closes the menu from the keyboard or by a choice, and gives the focus back. */
+  function dismiss() {
     open = null;
+    opener?.focus();
+  }
+
+  function choose(item: MenuItem) {
+    dismiss();
     if ("action" in item) item.action();
   }
 
@@ -42,17 +51,18 @@
   }
 
   function keys(event: KeyboardEvent) {
-    if (!open) return;
-    if (event.key === "Escape") {
-      open = null;
+    if (!open || !menuEl) return;
+    if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      dismiss();
       return;
     }
-    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    if (!step || !menuEl) return;
-    event.preventDefault();
     const buttons = [...menuEl.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
     const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    buttons[(at + step + buttons.length) % buttons.length]?.focus();
+    const keys: Record<string, number> = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: buttons.length - 1 };
+    if (!(event.key in keys)) return;
+    event.preventDefault();
+    buttons[(keys[event.key] + buttons.length) % buttons.length]?.focus();
   }
 </script>
 

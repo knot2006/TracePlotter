@@ -19,6 +19,7 @@ import {
   tallyStats,
   textTable,
   thin,
+  zoomSpan,
 } from "./stats.ts";
 
 test("time spans are parsed from short forms and written out in words", () => {
@@ -147,20 +148,35 @@ test("thin averages each run, keeps its lowest and highest, gaps and breaks", ()
     ls: ys.map(() => 0),
   });
   const short = data([1, 2, 3]);
-  assert.deepEqual(thin(short, new Set(), 10), { ...short, lo: short.ys, hi: short.ys });
-  // Runs of 4, each at its first time.
-  const long = thin(data([3, 9, 2, 6, 5, 1, null, 6]), new Set(), 2);
+  assert.deepEqual(thin(short, new Set(), 0), { ...short, lo: short.ys, hi: short.ys });
+  // Stretches of 4 s, each point at its first time.
+  const long = thin(data([3, 9, 2, 6, 5, 1, null, 6]), new Set(), 4);
   assert.deepEqual(long.xs, [0, 4]);
   assert.deepEqual(long.ys, [5, 4]);
   assert.deepEqual(long.lo, [2, 1]);
   assert.deepEqual(long.hi, [9, 6]);
   assert.deepEqual(long.js, [10, 8]);
   // A run of only lost probes stays lost.
-  assert.deepEqual(thin(data([null, null, null, null, 5, 5, 5, 5]), new Set(), 2).ys, [null, 5]);
-  // A break point is kept, lost, and cuts the run around it.
-  const broken = thin(data([1, 3, 0, 3, 4, 5, 6, 7]), new Set([2]), 4);
-  assert.deepEqual(broken.xs, [0, 2, 3, 5, 7]);
-  assert.deepEqual(broken.ys, [2, null, 3.5, 5.5, 7]);
+  assert.deepEqual(thin(data([null, null, null, null, 5, 5, 5, 5]), new Set(), 4).ys, [null, 5]);
+  // A break point is kept, lost, and cuts the stretch it falls in.
+  const broken = thin(data([1, 3, 0, 3, 4, 5, 6, 7]), new Set([2]), 2);
+  assert.deepEqual(broken.xs, [0, 2, 3, 4, 6]);
+  assert.deepEqual(broken.ys, [2, null, 3, 4.5, 6.5]);
+});
+
+test("thin keeps its stretches in place while the period moves on", () => {
+  const ys = [5, 9, 1, 7, 3, 8, 2, 6, 4, 10];
+  const at = (from: number) => ({
+    xs: ys.slice(from).map((_, i) => from + i),
+    ys: ys.slice(from),
+    js: ys.slice(from).map(() => null),
+    ls: ys.slice(from).map(() => 0),
+  });
+  // One round later the first stretch has lost a probe, but the others hold the same ones.
+  const before = thin(at(0), new Set(), 3);
+  const after = thin(at(1), new Set(), 3);
+  assert.deepEqual(after.xs.slice(1), before.xs.slice(1));
+  assert.deepEqual(after.ys.slice(1), before.ys.slice(1));
 });
 
 test("thin with a radius blends neighbours by triangle weights, not across a break", () => {
@@ -168,14 +184,14 @@ test("thin with a radius blends neighbours by triangle weights, not across a bre
   // A wave that repeats every two probes; runs of one keep it, the blend flattens it.
   const ys = xs.map((i) => (i % 2 ? 20 : 10));
   const data = { xs, ys, js: ys.map(() => null), ls: ys.map(() => 0) };
-  const blended = thin(data, new Set(), 11, 2).ys;
+  const blended = thin(data, new Set(), 2, 2).ys;
   assert.ok(blended.slice(2, -2).every((y) => y !== null && Math.abs(y - 15) < 2.6), String(blended));
   // The band keeps the extremes of each run.
-  assert.deepEqual(thin(data, new Set(), 6, 2).lo.slice(0, 2), [10, 10]);
+  assert.deepEqual(thin(data, new Set(), 2, 2).lo.slice(0, 2), [10, 10]);
   // A break stops the blend: the points before it do not see the high values after it.
   const steps = { ...data, ys: [10, 10, 10, 10, 10, null, 50, 50, 50, 50, 50, 50] };
-  // Runs of two: points at 0, 2, 4, the break at 5, then 6, 8, 10.
-  const split = thin(steps, new Set([5]), 11, 3);
+  // Stretches of 2 s: points at 0, 2, 4, the break at 5, then 6, 8, 10.
+  const split = thin(steps, new Set([5]), 2, 3);
   assert.deepEqual(split.xs, [0, 2, 4, 5, 6, 8, 10]);
   assert.deepEqual(split.ys, [10, 10, 10, null, 50, 50, 50]);
 });
@@ -258,4 +274,18 @@ test("lines with points at different times line up, holding their value where th
     [1, 1, null],
     [null, 5, 6],
   ]);
+});
+
+test("Ctrl and the wheel step through round time spans, out to everything", () => {
+  assert.equal(zoomSpan(600, false, 86_400), 300);
+  assert.equal(zoomSpan(600, true, 86_400), 900);
+  // From a span between steps, to the next one either way.
+  assert.equal(zoomSpan(700, false, 86_400), 600);
+  assert.equal(zoomSpan(700, true, 86_400), 900);
+  // Never under 10 seconds.
+  assert.equal(zoomSpan(10, false, 86_400), 10);
+  // Out to the whole history is everything; in from everything is the step below the history.
+  assert.equal(zoomSpan(3600, true, 5000), 0);
+  assert.equal(zoomSpan(0, true, 5000), 0);
+  assert.equal(zoomSpan(0, false, 5000), 3600);
 });

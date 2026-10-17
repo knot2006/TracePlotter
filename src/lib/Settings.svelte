@@ -103,26 +103,26 @@
     </label>
     <label class="row">
       <span>Wait for replies <small>At least the interval</small></span>
-      <span><input {...number("timeoutMs")} step="100" /> ms</span>
+      <span class="field"><input {...number("timeoutMs")} step="100" /> ms</span>
     </label>
     <label class="row">
       <span>Packet size <small>The whole IP packet; TCP ignores it</small></span>
-      <span><input {...number("packetSize")} /> bytes</span>
+      <span class="field"><input {...number("packetSize")} /> bytes</span>
     </label>
 
     <h3>Alerts</h3>
     <p>Raised when the round trip's latest probes go over a limit. 0 switches a limit off.</p>
     <label class="row">
       <span>Average latency over</span>
-      <span><input {...number("alertLatencyMs")} /> ms</span>
+      <span class="field"><input {...number("alertLatencyMs")} /> ms</span>
     </label>
     <label class="row">
       <span>Packet loss of at least</span>
-      <span><input {...number("alertLossPct")} /> %</span>
+      <span class="field"><input {...number("alertLossPct")} /> %</span>
     </label>
     <label class="row">
       <span>Over the last <small>An alert waits until it has this much</small></span>
-      <span><input {...number("alertSeconds")} /> s</span>
+      <span class="field"><input {...number("alertSeconds")} /> s</span>
     </label>
   </section>
 
@@ -132,11 +132,25 @@
     <p>Where the table, the bars and the graphs turn from green to yellow and from yellow to red.</p>
     <label class="row">
       <span><i class="swatch warn"></i>Yellow from</span>
-      <span><input {...number("warnMs")} /> ms</span>
+      <span class="field"><input {...number("warnMs")} /> ms</span>
     </label>
     <label class="row">
       <span><i class="swatch bad"></i>Red from</span>
-      <span><input {...number("badMs")} /> ms</span>
+      <span class="field"><input {...number("badMs")} /> ms</span>
+    </label>
+
+    <h3>Compare graph</h3>
+    <label class="row">
+      <span>Loss bars in each target's colour <small>Otherwise red, as on a hop's graph</small></span>
+      <input
+        type="checkbox"
+        checked={shown.lossByTarget}
+        onchange={(event) => {
+          changeSetting("lossByTarget", event.currentTarget.checked);
+          shown = { ...settings };
+          onchange("lossByTarget");
+        }}
+      />
     </label>
 
     <h3>Hop table columns</h3>
@@ -173,7 +187,7 @@
     <h2>History</h2>
     <label class="row">
       <span>Keep per target <small>Every round, on disk; older days are deleted</small></span>
-      <span><input {...number("historyDays")} /> days</span>
+      <span class="field"><input {...number("historyDays")} /> days</span>
     </label>
     <p>
       A day of history takes about 35 MB per target at an interval of one second. The newest day is held in
@@ -202,7 +216,7 @@
     </label>
     <label class="row">
       <span>Port</span>
-      <input {...number("mcpPort")} />
+      <span class="field"><input {...number("mcpPort")} /></span>
     </label>
     <div class="row">
       <span>Address</span>
@@ -315,6 +329,11 @@
   .row > :last-child {
     flex: none;
   }
+  /* A number field and its unit, as wide as the longest unit needs, so that the fields
+     line up whatever unit follows them. */
+  .field {
+    width: 120px;
+  }
   small {
     display: block;
     font-size: 12px;
@@ -348,7 +367,7 @@
     text-align: right;
     color: var(--text);
     background: var(--bg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 4px;
   }
   select {
@@ -361,7 +380,7 @@
     font: inherit;
     color: var(--text);
     background: var(--bg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 6px;
     padding: 2px 10px;
     cursor: pointer;

@@ -1,24 +1,38 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
   import { popupMenu } from "./ContextMenu.svelte";
   import { captionedImage, copyImage, saveExport, saveImage } from "./exports";
   import { exportName } from "./import";
-  import { alignLines, BLEND_RADIUS, latencyAxis, rangeGraph, stretchWidth, tallyStats, type Tally } from "./stats";
+  import { changeSetting, settings } from "./settings";
+  import { alignLines, BLEND_RADIUS, latencyAxis, rangeGraph, stretchWidth, tallyStats, zoomSpan, type Tally } from "./stats";
   import { dateTime, timeTicks } from "./time";
-  import { historyRange, type Trace } from "./trace";
+  import { historyRange, protocolLabel, type Trace } from "./trace";
 
   type Props = {
     /** The targets to compare, each drawn as its own line. */
     traces: Trace[];
     /** Length of the newest stretch shown, 0 for everything. */
     focusSeconds: number;
+    /** The user turned the wheel with Ctrl held: show this many newest seconds, 0 for everything. */
+    onspan: (seconds: number) => void;
   };
-  let { traces, focusSeconds }: Props = $props();
+  let { traces, focusSeconds, onspan }: Props = $props();
+  // Seconds from the oldest round of any target to the newest, as of the last load.
+  let available = 0;
 
   // Told apart on the dark background, and none of them the green, yellow or red that
-  // grade latency elsewhere.
-  const COLORS = ["#60a5fa", "#f59e0b", "#c084fc", "#2dd4bf", "#f472b6", "#a3e635", "#fb923c", "#e2e8f0"];
+  // grade latency elsewhere. Beyond these the colours come round again with dashed lines.
+  const COLORS = ["#60a5fa", "#f59e0b", "#c084fc", "#2dd4bf", "#f472b6", "#a3e635", "#e2e8f0"];
+  const dashed = (i: number) => i >= COLORS.length;
+  /** A target as the legend and readout name it: with its probe when another target has the same host. */
+  const name = ({ config }: Trace) =>
+    traces.filter((other) => other.config.host === config.host).length > 1
+      ? `${config.host} ${protocolLabel(config)}`
+      : config.host;
+  // Loss bars unless they take the targets' colours, as on a hop's graph.
+  const LOSS = "#f87171";
   // New rounds keep coming; the lines follow them this often.
   const REFRESH_MS = 2000;
 
@@ -41,7 +55,10 @@
     if (!canvas) return null;
     const caption = [
       { text: `Round trip · ${dateTime(shown.from)} – ${dateTime(shown.to)} · `, color: "#e6eaf0" },
-      ...traces.map((trace, i) => ({ text: `■ ${trace.config.host}   `, color: COLORS[i % COLORS.length] })),
+      ...traces.map((trace, i) => ({
+        text: `${dashed(i) ? "┅" : "■"} ${name(trace)}   `,
+        color: COLORS[i % COLORS.length],
+      })),
     ];
     return captionedImage([{ canvas, caption }]);
   }
@@ -86,6 +103,8 @@
         { id: "copy", text: "Copy graph as PNG", action: copyPng },
         { item: "Separator" },
         { id: "csv", text: "Save stretches as CSV…", action: exportCsv },
+        { item: "Separator" },
+        { id: "loss-colours", text: "Loss bars in each target's colour", checked: lossByTarget, action: toggleLossColours },
       ],
     });
   }
@@ -124,7 +143,7 @@
             ? `all ${s.sent} lost`
             : `${s.avg.toFixed(1)} ms (${s.min!.toFixed(1)}–${s.max!.toFixed(1)}), ` +
               `loss ${s.lossPct.toFixed(1)} %, jitter ${s.jitter === null ? "–" : s.jitter.toFixed(1)} ms`;
-        return { color: COLORS[i % COLORS.length], host: trace.config.host, text };
+        return { color: COLORS[i % COLORS.length], host: name(trace), text };
       }),
     };
   }
@@ -133,8 +152,22 @@
   const LEGEND_HEIGHT = 48;
   const plotHeight = () => Math.max(100, chartEl.clientHeight - LEGEND_HEIGHT);
 
+  // Whether a target lost probes in the period; the loss axis shows only then.
+  let lossy = $state(false);
+  // The setting of the same name, here so that changing it from the menu redraws the plot.
+  let lossByTarget = $state(settings.lossByTarget);
+
+  function toggleLossColours() {
+    changeSetting("lossByTarget", !lossByTarget);
+    lossByTarget = settings.lossByTarget;
+  }
+
   $effect(() => {
+    // uPlot cannot show or hide an axis later, so the plot is rebuilt when loss starts or ends.
+    const withLoss = lossy;
+    const byTarget = lossByTarget;
     const axis = { stroke: "#9aa4b2", grid: { stroke: "rgba(255, 255, 255, 0.08)" }, ticks: { stroke: "#232a36" } };
+    const line = { points: { show: false }, paths: uPlot.paths.stepped!({ align: 1 }) };
     const chart = new uPlot(
       {
         width: chartEl.clientWidth,
@@ -143,26 +176,49 @@
         // The numbers at the cursor are in the readout, so the legend only names the lines.
         legend: { live: false },
         hooks: { setCursor: [readout] },
-        scales: { y: { range: (_u, min, max) => latencyAxis(min, max) } },
+        scales: {
+          y: { range: (_u, min, max) => latencyAxis(min, max) },
+          // The full 0 to 100 %, as on a hop's graph, so a bar's height is the share lost.
+          loss: { range: [0, 100] },
+        },
         axes: [
           { ...axis, values: (_u, ticks) => timeTicks(ticks) },
           { ...axis, label: "Round trip (ms)", labelSize: 20, size: 44 },
+          { ...axis, show: withLoss, scale: "loss", side: 1, label: "Packet loss %", labelSize: 20, size: 36, grid: { show: false } },
         ],
+        // Each target's loss as bars from the bottom, red as on a hop's graph or in the
+        // target's own colour (see the settings and the right-click menu), drawn first so that the latency lines stay
+        // on top of them.
         series: [
           {},
           ...traces.map((trace, i) => ({
-            label: trace.config.host,
+            ...line,
+            label: `${name(trace)} loss`,
+            scale: "loss",
+            stroke: byTarget ? COLORS[i % COLORS.length] : LOSS,
+            fill: byTarget ? `${COLORS[i % COLORS.length]}4d` : "rgba(239, 68, 68, 0.45)",
+            // Filled without an outline, which would run along the bottom where nothing is lost.
+            width: 0,
+          })),
+          ...traces.map((trace, i) => ({
+            label: name(trace),
             stroke: COLORS[i % COLORS.length],
+            dash: dashed(i) ? [6, 4] : undefined,
             width: 1.5,
-            points: { show: false },
-            paths: uPlot.paths.stepped!({ align: 1 }),
+            ...line,
           })),
         ],
       },
-      [[], ...traces.map(() => [])],
+      [[], ...traces.flatMap(() => [[], []])],
       chartEl,
     );
     plot = chart;
+    // The legend names each target once, by its line: the loss bars are all red or share
+    // the line's colour. Its last rows are the loss series, then the lines.
+    const rows = chart.root.querySelectorAll<HTMLElement>(".u-legend .u-series");
+    for (let i = 0; i < traces.length; i++) rows[rows.length - 2 * traces.length + i]?.style.setProperty("display", "none");
+    // A rebuilt plot starts empty; it is filled at once, not at the next refresh.
+    untrack(() => load());
     const resize = new ResizeObserver(() => chart.setSize({ width: chartEl.clientWidth, height: plotHeight() }));
     resize.observe(chartEl);
     return () => {
@@ -191,6 +247,7 @@
     if (!latest || !plot) return;
     const earliest = Math.min(...targets.map((trace) => trace.diskStart || trace.target.times[0] || latest));
     const to = latest;
+    available = latest - earliest;
     const from = focusSeconds ? to - focusSeconds : earliest;
     const fastest = Math.min(...targets.map((trace) => trace.config.intervalMs)) / 1000;
     const width = stretchWidth(to - from, (chartEl.clientWidth || 2000) * devicePixelRatio, fastest);
@@ -203,13 +260,19 @@
       const trips = results.map((hops) => hops.find((hop) => hop.ttl === 0)?.stretches ?? []);
       shown = { stretches: trips.map((trip) => new Map(trip.map((s) => [s.t / 1000, s]))), width, from, to };
       // Averages blend with their neighbours once a stretch holds several probes (see `thin`).
-      const lines = trips.map((stretches, i) => {
+      // Loss is counted over stretches of at least 10 probes, about 120 across the graph, as
+      // on a hop's graph: over single stretches one lost probe would draw a tall bar.
+      const graphs = trips.map((stretches, i) => {
         const several = stretches.length && stretches.reduce((n, s) => n + s.sent, 0) > 1.5 * stretches.length;
         const interval = targets[i].config.intervalMs / 1000;
-        const { data } = rangeGraph(stretches, width, width, several ? BLEND_RADIUS : 0, interval);
-        return new Map(data.xs.map((x, i) => [x, data.ys[i]]));
+        const lossSeconds = Math.max(10 * interval, (to - from) / 120, width);
+        return rangeGraph(stretches, width, lossSeconds, several ? BLEND_RADIUS : 0, interval).data;
       });
-      const { xs, ys } = alignLines(lines);
+      const { xs, ys } = alignLines([
+        ...graphs.map((data) => new Map(data.xs.map((x, i) => [x, data.ls[i]]))),
+        ...graphs.map((data) => new Map(data.xs.map((x, i) => [x, data.ys[i]]))),
+      ]);
+      lossy = graphs.some((data) => data.ls.some((loss) => !!loss));
       plot.setData([xs, ...ys], false);
       plot.setScale("x", { min: from, max: Math.max(to, from + 1) });
     } finally {
@@ -230,9 +293,16 @@
 <div
   class="compare"
   bind:this={chartEl}
-  role="img"
-  aria-label="Round-trip latency of {traces.map((t) => t.config.host).join(', ')}"
+  role="figure"
+  aria-label="Round-trip latency of {traces.map(name).join(', ')}"
   onmouseleave={() => (tip = null)}
+  onwheel={(event) => {
+    // Ctrl and the wheel zoom the time span; the newest data stays at the right edge.
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    const next = zoomSpan(focusSeconds, event.deltaY > 0, available);
+    if (next !== focusSeconds) onspan(next);
+  }}
   oncontextmenu={graphMenu}
 >
   {#if tip}

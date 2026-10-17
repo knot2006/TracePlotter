@@ -14,8 +14,10 @@
     onopen: (trace: Trace) => void;
     /** The user asked to pause a running trace or resume a paused one. */
     ontoggle: (trace: Trace) => void;
+    /** Called to change the time span, in seconds, 0 for everything. */
+    onspan: (seconds: number) => void;
   };
-  let { traces, rev, focusSeconds, onopen, ontoggle }: Props = $props();
+  let { traces, rev, focusSeconds, onopen, ontoggle, onspan }: Props = $props();
 
   const SPARK_WIDTH = 160;
   const SPARK_HEIGHT = 24;
@@ -163,7 +165,7 @@
                 class:running={!trace.paused}
                 aria-label="{trace.paused ? 'Resume' : 'Pause'} the trace to {host}"
                 title={trace.paused ? "Resume trace" : "Pause trace"}
-                onclick={() => ontoggle(trace)}>{trace.paused ? "▶" : "⏸"}</button
+                onclick={() => ontoggle(trace)}>{trace.paused ? "▶︎" : "⏸︎"}</button
               >
             </td>
             <td class="text">
@@ -191,7 +193,7 @@
     </table>
   </div>
   {#if comparing.length}
-    <CompareGraph bind:this={compare} traces={comparing} {focusSeconds} />
+    <CompareGraph bind:this={compare} traces={comparing} {focusSeconds} {onspan} />
   {:else}
     <p class="hint">Tick targets under Compare to draw their round trips in one graph.</p>
   {/if}
@@ -296,10 +298,15 @@
     border-radius: 50%;
     background: var(--good);
   }
+  /* Shapes as on the tabs: a ring while paused, a diamond while alerting. */
   .dot.paused {
-    background: var(--warn);
+    box-sizing: border-box;
+    background: none;
+    border: 2px solid var(--warn);
   }
   .dot.alerting {
+    border-radius: 1px;
+    rotate: 45deg;
     background: var(--bad);
   }
   .warn {

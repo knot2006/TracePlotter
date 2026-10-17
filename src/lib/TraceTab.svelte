@@ -47,13 +47,20 @@
       value: (r) => (r.mos === null ? "–" : r.mos.toFixed(2)),
       cls: (r) => (r.mos === null || r.mos >= 4 ? "" : r.mos < 3.1 ? "bad" : "warn"),
     },
-    { key: "bar", label: "Latency bar", text: true, value: () => "" },
+    {
+      key: "bar",
+      label: "Latency bar",
+      title: "Wheel or + and − zoom in on low latency; double-click or 0 fits. Drag to move this column.",
+      text: true,
+      value: () => "",
+    },
   ];
   export const DEFAULT_HIDDEN = ["mos"];
 </script>
 
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { innerWidth as windowWidth } from "svelte/reactivity/window";
   import { groupEvents } from "./events";
   import HopGraph from "./HopGraph.svelte";
   import { exportName } from "./import";
@@ -70,6 +77,7 @@
     stretchWidth,
     tallyStats,
     textTable,
+    zoomSpan,
   } from "./stats";
   import { dateTime, timeOfDay } from "./time";
   import { whoisFacts, whoisRecord } from "./whois";
@@ -99,6 +107,8 @@
     onprobe: () => void;
     /** Called to show or hide the column with this key. */
     oncolumn: (key: string) => void;
+    /** Called to change the time span, in seconds, 0 for everything. */
+    onspan: (seconds: number) => void;
     /** Whether the latency bars are shown and have room to draw; the toolbar's legend follows them. */
     barShown?: boolean;
   };
@@ -110,6 +120,7 @@
     onsave,
     onprobe,
     oncolumn,
+    onspan,
     barShown = $bindable(false),
   }: Props = $props();
 
@@ -223,6 +234,11 @@
   // files: per hop number (0 for the round trip) its numbers, and stretches of `width`
   // seconds for the graphs. Kept until the next one arrives, so the table does not flicker.
   let range = $state.raw<{ hops: RangeHop[]; width: number; lossSeconds: number } | null>(null);
+  // The stretches' length follows the window's width, but changes only in whole seconds or
+  // minutes, so resizing reads the history files again only when the graph would differ.
+  const rangeWidth = $derived(
+    stretchWidth(view.to - view.from, (windowWidth.current ?? 2000) * devicePixelRatio, trace.config.intervalMs / 1000),
+  );
   $effect(() => {
     const { from, to, older } = view;
     if (!older) {
@@ -230,7 +246,7 @@
       return;
     }
     const interval = trace.config.intervalMs / 1000;
-    const width = stretchWidth(to - from, innerWidth * devicePixelRatio, interval);
+    const width = rangeWidth;
     // Loss over stretches of at least 10 probes, about 120 across the graph, as for samples.
     const lossSeconds = Math.max(10 * interval, (to - from) / 120, width);
     let current = true;
@@ -274,9 +290,20 @@
   const rowKey = (row: { roundTrip: boolean; hop: Hop }) => (row.roundTrip ? ROUND_TRIP : row.hop.ttl);
   const tipRow = $derived(barTip && rows.find((row) => rowKey(row) === barTip!.key));
 
+  const zoomBy = (factor: number) => (barZoom = Math.max(1, Math.min(64, barZoom * factor)));
+
   function zoomBars(event: WheelEvent) {
     event.preventDefault();
-    barZoom = Math.max(1, Math.min(64, barZoom * (event.deltaY < 0 ? 1.25 : 0.8)));
+    zoomBy(event.deltaY < 0 ? 1.25 : 0.8);
+  }
+
+  /** The same zoom from the keyboard, anywhere in the table: + and − zoom, 0 fits. */
+  function zoomKeys(event: KeyboardEvent) {
+    const factor = ({ "+": 1.25, "=": 1.25, "-": 0.8, "0": 0 } as Record<string, number>)[event.key];
+    if (factor === undefined || event.ctrlKey || event.altKey || event.metaKey) return;
+    event.preventDefault();
+    if (factor) zoomBy(factor);
+    else barZoom = 1;
   }
   // Green, yellow and red latency zones behind the bars, on the same scale as the bars.
   const bands = $derived.by(() => {
@@ -316,6 +343,18 @@
     if (!focusSeconds) return;
     const end = Math.max(view.earliest + focusSeconds, view.to + focusSeconds * fraction);
     pinnedEnd = end >= view.latest - 1 ? null : end;
+  }
+
+  /**
+   * Zooms the time span one step out or in, keeping the moment at `at` (0 to 1 across the
+   * graphs) where it is, unless that would reach past the newest data: then it follows it live.
+   */
+  function zoom(out: boolean, at: number) {
+    const next = zoomSpan(focusSeconds, out, view.latest - view.earliest);
+    if (next === focusSeconds) return;
+    const end = view.from + at * (view.to - view.from) + (1 - at) * next;
+    pinnedEnd = next && end < view.latest - 1 ? end : null;
+    onspan(next);
   }
 
   const grade = (avg: number | null) =>
@@ -452,6 +491,10 @@
   let tableHeight = $state<number | null>(Number(localStorage.getItem(TABLE_HEIGHT_KEY)) || null);
   let traceEl: HTMLDivElement;
   let hopsEl: HTMLDivElement;
+  // Sizes on screen, for the values the resize handles announce.
+  let traceHeight = $state(0);
+  let hopsHeight = $state(0);
+  let hopsWidth = $state(0);
   /** Height kept free for the graphs when the table is sized. */
   const GRAPH_MIN = 260;
 
@@ -644,7 +687,7 @@
   }
 </script>
 
-<div class="trace" bind:this={traceEl}>
+<div class="trace" bind:this={traceEl} bind:clientHeight={traceHeight}>
   <h1 class="print-only">
     TracePlotter · {label}{#if view.to > view.from} · {clock(view.from)} – {clock(view.to)}{/if}
   </h1>
@@ -665,7 +708,15 @@
     </p>
   {/if}
 
-  <div class="hops" bind:this={hopsEl} style:height={tableHeight === null ? undefined : `${tableHeight}px`}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="hops"
+    bind:this={hopsEl}
+    bind:clientHeight={hopsHeight}
+    bind:clientWidth={hopsWidth}
+    style:height={tableHeight === null ? undefined : `${tableHeight}px`}
+    onkeydown={zoomKeys}
+  >
     {#snippet grip(key: string, label: string)}
       <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <span
@@ -673,6 +724,10 @@
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize the {label} column. Double-click for its usual width."
+        aria-valuenow={Math.round(headWidths[key] ?? widths[key] ?? DEFAULT_WIDTHS[key] ?? 0)}
+        aria-valuemin={36}
+        aria-valuemax={hopsWidth}
+        aria-valuetext="{Math.round(headWidths[key] ?? widths[key] ?? DEFAULT_WIDTHS[key] ?? 0)} pixels"
         title="Drag to resize. Double-click for the usual width."
         tabindex="0"
         onpointerdown={(event) => dragColumn(event, key)}
@@ -782,6 +837,10 @@
     role="separator"
     aria-orientation="horizontal"
     aria-label="Resize the hop table. Double-click to fit its rows."
+    aria-valuenow={hopsHeight}
+    aria-valuemin={60}
+    aria-valuemax={Math.max(60, traceHeight - GRAPH_MIN)}
+    aria-valuetext="{hopsHeight} pixels"
     title="Drag to resize the table. Double-click to fit its rows."
     tabindex="0"
     onpointerdown={dragDivider}
@@ -819,6 +878,7 @@
         syncKey="trace-{trace.id}"
         withJitter={graphHops.length === 1}
         onpan={pan}
+        onzoom={zoom}
         onreset={() => (pinnedEnd = null)}
       />
     {/each}
@@ -831,6 +891,7 @@
       class:live={pinnedEnd === null}
       type="range"
       aria-label="Scroll the time span back in time"
+      aria-valuetext={pinnedEnd === null ? `Live, ${stamp(view.to)}` : `Up to ${stamp(view.to)}`}
       title={pinnedEnd === null ? "Live: following the newest data" : "Scrolled back. Drag fully right to go live."}
       min={view.earliest + focusSeconds}
       max={view.latest}
@@ -852,7 +913,7 @@
         <div>Min {ms(s.min)} · Avg {ms(s.avg)} · Max {ms(s.max)} · Last {s.last === null ? "lost" : ms(s.last)} ms</div>
       {/if}
       {#if s.lossPct > 0}<div class="bad">Loss {s.lossPct.toFixed(1)}% (red bar)</div>{/if}
-      <div class="note">Wheel zooms · double-click fits</div>
+      <div class="note">Wheel or + − zooms · double-click or 0 fits</div>
     </div>
   {/if}
 
@@ -1087,9 +1148,10 @@
     background: var(--panel);
   }
   /* Rows that have a graph: a clear blue tint and a blue bar on the left edge. */
+  /* Dark enough that red loss and grey names on it keep 4.5:1. */
   tr.selected,
   tr.selected:hover {
-    background: #1c3f63;
+    background: #173452;
   }
   tr.selected td:first-child {
     box-shadow: inset 4px 0 var(--accent);
@@ -1131,9 +1193,10 @@
   td .badge.warn {
     background: var(--warn);
   }
+  /* Dark text, as on green and yellow: white on this red is too faint. */
   td .badge.bad {
     background: var(--bad);
-    color: #fff;
+    color: #1c0505;
   }
   td .badge.none {
     background: #4b5563;
@@ -1183,7 +1246,7 @@
   }
   .bar-tip .note {
     color: var(--muted);
-    font-size: 11px;
+    font-size: 12px;
   }
   .loss {
     position: absolute;
@@ -1242,7 +1305,7 @@
     font: inherit;
     color: var(--text);
     background: var(--bg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 6px;
     padding: 2px 10px;
     cursor: pointer;
@@ -1296,7 +1359,7 @@
     font: inherit;
     color: var(--text);
     background: var(--bg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 4px;
   }
   /* The dialog is the only thing that scrolls; its Close button stays in view at the bottom. */
