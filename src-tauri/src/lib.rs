@@ -1875,7 +1875,7 @@ pub fn run() {
                 save_window_state(window);
             }
             // WebView2 goes on drawing a minimized window until it is told the window is
-            // hidden. Then the page sees `document.hidden` and stops redrawing; probing goes on.
+            // hidden. Then the page gets no animation frames and stops redrawing; probing goes on.
             // A minimized window is resized to nothing.
             #[cfg(windows)]
             if let WindowEvent::Resized(size) = event {

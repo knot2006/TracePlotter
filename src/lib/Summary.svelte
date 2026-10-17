@@ -1,5 +1,6 @@
 <script lang="ts">
   import CompareGraph from "./CompareGraph.svelte";
+  import { onFrame } from "./frame";
   import { settings } from "./settings";
   import { type HopStats, lowerBound, period, stats, stretchWidth, tallyStats } from "./stats";
   import { historyRange, protocolLabel, type Trace } from "./trace";
@@ -109,8 +110,12 @@
     traces;
     focusSeconds;
     readOlder();
-    const timer = setInterval(() => document.hidden || readOlder(), 5000);
-    return () => clearInterval(timer);
+    const refresh = onFrame(readOlder);
+    const timer = setInterval(refresh, 5000);
+    return () => {
+      clearInterval(timer);
+      refresh.cancel();
+    };
   });
 
   const rows = $derived.by(() => {

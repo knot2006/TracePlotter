@@ -3,6 +3,7 @@
   import uPlot from "uplot";
   import "uplot/dist/uPlot.min.css";
   import { popupMenu } from "./ContextMenu.svelte";
+  import { onFrame } from "./frame";
   import { captionedImage, copyImage, saveExport, saveImage } from "./exports";
   import { exportName } from "./import";
   import { changeSetting, settings } from "./settings";
@@ -285,8 +286,12 @@
     traces;
     focusSeconds;
     load();
-    const timer = setInterval(() => document.hidden || load(true), REFRESH_MS);
-    return () => clearInterval(timer);
+    const refresh = onFrame(() => load(true));
+    const timer = setInterval(refresh, REFRESH_MS);
+    return () => {
+      clearInterval(timer);
+      refresh.cancel();
+    };
   });
 </script>
 

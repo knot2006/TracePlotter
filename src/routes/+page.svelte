@@ -5,6 +5,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { AGENT_MIN_INTERVAL_MS, describeTrace, findTrace, READ_TOOLS, type Arguments } from "../lib/agent";
+  import { onFrame } from "../lib/frame";
   import { BAND_FILLS } from "../lib/HopGraph.svelte";
   import { guessInterval, hostFromFileName, parseSamplesCsv } from "../lib/import";
   import ContextMenu from "../lib/ContextMenu.svelte";
@@ -65,9 +66,7 @@
   // Traces are plain objects mutated in place; bumping `rev` is what redraws. A minimized
   // window keeps probing but skips the redraws, and catches up once it is shown again.
   let rev = $state(0);
-  const bump = () => {
-    if (!document.hidden) rev++;
-  };
+  const bump = onFrame(() => rev++);
 
   // Toolbar fields. They show the open tab's target; editing them describes a new one,
   // which starts from the defaults in the settings.
@@ -675,8 +674,6 @@
     if (mcpOn || (await invoke<boolean>("mcp_flag").catch(() => false))) setAgentAccess(true, false);
   });
 </script>
-
-<svelte:document onvisibilitychange={() => !document.hidden && rev++} />
 
 <header>
   {#if update}
