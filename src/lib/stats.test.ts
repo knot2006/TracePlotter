@@ -258,6 +258,15 @@ test("a stretch missing at an interval wider than the stretch is no break", () =
   assert.equal(rangeGraph([0, 2000, 62_000].map(tally), 1, 1, 0, 2.5).breaks.size, 1);
 });
 
+test("stretches of one probe each are drawn as they are, not blended", () => {
+  const tally = (t: number, i: number) => {
+    const rtt = i % 2 ? 60 : 8;
+    return { t, sent: 1, received: 1, sum: rtt, min: rtt, max: rtt, jitter_sum: 0, jitter_count: 0, last: rtt };
+  };
+  const { data } = rangeGraph([0, 1000, 2000, 3000].map(tally), 1, 10, 2, 1);
+  assert.deepEqual(data.ys, [8, 60, 8, 60]);
+});
+
 test("lines with points at different times line up, holding their value where they have none", () => {
   const { xs, ys } = alignLines([
     new Map([

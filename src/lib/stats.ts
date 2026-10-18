@@ -9,7 +9,8 @@ export function period(trace: Trace, span: number) {
   const to = times.at(-1) ?? 0;
   const held = times[0] ?? 0;
   const from = span ? to - span : trace.diskStart && times.length ? Math.min(held, trace.diskStart) : held;
-  const older = !!trace.diskStart && times.length > 0 && from < held - (2 * trace.config.intervalMs) / 1000;
+  // A period that starts before the files do reaches no further back than they begin.
+  const older = !!trace.diskStart && times.length > 0 && Math.max(from, trace.diskStart) < held - (2 * trace.config.intervalMs) / 1000;
   return { from, to, older };
 }
 
@@ -277,7 +278,8 @@ export function alignLines(lines: Map<number, number | null>[]) {
 /**
  * Graph data from a hop's tallied stretches of `width` seconds (`t` in Unix ms), drawn
  * the way `thin` draws a long period: each stretch's average blended with `radius`
- * neighbours, inside a band from its lowest to its highest reply. Where probing stopped,
+ * neighbours, inside a band from its lowest to its highest reply. Stretches no longer than
+ * the `interval` hold one probe each, which is drawn as it is. Where probing stopped,
  * a break point ends the line: a gap longer than a graph of samples breaks at (5 s or
  * three intervals), and longer than a stretch and a half, as stretches without a probe
  * are normal when they are not much longer than the `interval`. Loss is counted over
@@ -319,7 +321,7 @@ export function rangeGraph(
     }
     push(x, s, (lost.get(group(s.t))! / sent.get(group(s.t))!) * 100);
   });
-  blend(data, counts, breaks, radius);
+  if (width > interval) blend(data, counts, breaks, radius);
   return { data, breaks };
 }
 

@@ -216,7 +216,9 @@
     const latest = times.at(-1) ?? 0;
     const held = times[0] ?? 0;
     const earliest = trace.diskStart && times.length ? Math.min(held, trace.diskStart) : held;
-    const older = (from: number) => from < held - (2 * trace.config.intervalMs) / 1000;
+    // A period that starts before the trace's first round, as when the trace is younger
+    // than the period, holds nothing older than the window's rounds.
+    const older = (from: number) => Math.max(from, earliest) < held - (2 * trace.config.intervalMs) / 1000;
     if (!focusSeconds) {
       return { hops: route, target: trace.target, from: earliest, to: latest, earliest, latest, older: older(earliest) };
     }
