@@ -364,12 +364,20 @@
 
   const grade = (avg: number | null) =>
     avg === null ? "none" : avg >= settings.badMs ? "bad" : avg >= settings.warnMs ? "warn" : "good";
+  let eventsReadRev = $state(0);
   // The events as list entries, newest first; a whole re-routing is one entry.
   const events = $derived.by(() => {
     rev;
+    eventsReadRev;
     const groups = groupEvents(trace.events);
-    return { count: groups.length, latest: groups.slice(-100).reverse() };
+    const unread = groups.length > 0 && trace.events.at(-1) !== trace.lastReadEvent;
+    return { count: groups.length, latest: groups.slice(-100).reverse(), unread };
   });
+
+  function markEventsRead() {
+    trace.lastReadEvent = trace.events.at(-1);
+    eventsReadRev++;
+  }
   const alerting = $derived.by(() => {
     rev;
     return trace.alerting;
@@ -879,7 +887,15 @@
       <button class:alerting onclick={openAlerts}>
         {alerting ? "Alerting" : alertsOn ? "Alerts on" : "Alerts off"}
       </button>
-      <button onclick={() => eventsDialog.showModal()}>Events ({events.count})</button>
+      <button
+        class:unread={events.unread}
+        aria-label={events.unread ? `Events (${events.count}), new events` : `Events (${events.count})`}
+        title={events.unread ? "New events since you last viewed the list" : "View events"}
+        onclick={() => {
+          eventsDialog.showModal();
+          markEventsRead();
+        }}>Events ({events.count})</button
+      >
     </span>
   </div>
   <div class="graph">
@@ -1007,7 +1023,7 @@
     <form method="dialog"><button>Close</button></form>
   </dialog>
 
-  <dialog bind:this={eventsDialog} aria-labelledby="events-title">
+  <dialog bind:this={eventsDialog} aria-labelledby="events-title" onclose={markEventsRead}>
     <h2 id="events-title">Events for {trace.config.host}</h2>
     <ul class="events">
       {#each events.latest as event}
@@ -1335,6 +1351,11 @@
     border-color: var(--bad);
     background: #4c1d1d;
     color: #fecaca;
+  }
+  .tools button.unread {
+    border-color: var(--warn);
+    background: #422e0a;
+    color: #fde68a;
   }
   .graph {
     flex: 1 1 0;

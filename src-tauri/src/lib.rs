@@ -693,6 +693,9 @@ fn demo_look(host: &str) -> DemoLook {
 /// One made-up round at Unix time `t` in ms: steady near hops, a slow swell and the odd
 /// spike shared by the hops beyond the provider's edge, and one hop that often stays silent.
 fn demo_sample(rng: &mut DemoRng, look: &DemoLook, t: u64) -> Sample {
+    // Keep each random route for 30 seconds so that a change stays visible in Events.
+    let mut route_rng = DemoRng((t / 30_000).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ look.phase.to_bits());
+    let edge = ["203.0.113.77", "203.0.113.78", "203.0.113.79"][(route_rng.next() * 3.0) as usize];
     let day = std::f64::consts::TAU * (t % DAY_MS) as f64 / DAY_MS as f64;
     let swell = 1.0
         + look.swell * (t as f64 / look.period_ms + look.phase).sin().max(0.0)
@@ -706,6 +709,7 @@ fn demo_sample(rng: &mut DemoRng, look: &DemoLook, t: u64) -> Sample {
         .iter()
         .enumerate()
         .map(|(i, (addr, _, usual, loss))| {
+            let addr = if i == 4 { edge } else { addr };
             let far = i >= 2;
             // Beyond the first ocean the route is the target's own.
             let usual = if i >= 4 { usual * look.scale } else { *usual };
@@ -2109,6 +2113,21 @@ mod tests {
         let lost = |ttl: u8| rounds.iter().filter(|r| r.hops[ttl as usize - 1].rtt.is_none()).count();
         assert!((40..110).contains(&lost(6)), "hop 6 lost {}", lost(6));
         assert!(lost(9) < 10);
+    }
+
+    #[test]
+    fn demo_route_changes_stay_put_between_events() {
+        let mut rng = DemoRng(1);
+        let look = demo_look("demo.example");
+        let rounds: Vec<Sample> = (0..600).map(|i| demo_sample(&mut rng, &look, i * 1000)).collect();
+        assert!(rounds.windows(2).any(|pair| pair[0].hops[4].addr != pair[1].hops[4].addr));
+        for pair in rounds.windows(2) {
+            if pair[0].t / 30_000 == pair[1].t / 30_000 {
+                assert_eq!(pair[0].hops[4].addr, pair[1].hops[4].addr);
+            }
+        }
+        let target: IpAddr = DEMO_ROUTE[8].0.parse().unwrap();
+        assert!(rounds.iter().all(|round| round.hops[8].addr.is_none_or(|addr| addr == target)));
     }
 
     #[test]

@@ -84,6 +84,8 @@ export type Trace = {
   error: string | null;
   alerting: boolean;
   events: TraceEvent[];
+  /** Last event viewed in this tab; kept across tab switches, until the app closes. */
+  lastReadEvent?: TraceEvent;
   /** Hop count of the last round that reached its final hop, 0 before the first. */
   pathLength: number;
   /**
