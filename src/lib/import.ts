@@ -59,7 +59,7 @@ const fileSafe = (text: string) =>
  */
 export function exportName(
   host: string,
-  kind: "report" | "samples" | "graph" | "stretches",
+  kind: "report" | "samples" | "graph" | "stretches" | "incident",
   extension: string,
   at = new Date(),
 ) {

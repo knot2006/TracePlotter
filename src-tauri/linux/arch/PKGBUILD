@@ -9,7 +9,7 @@ arch=(x86_64)
 url="https://github.com/knot2006/TracePlotter"
 license=(Apache-2.0)
 # libcap for the setcap in traceplotter.install.
-depends=(gtk3 libcap webkit2gtk-4.1)
+depends=(gtk3 libcap webkit2gtk-4.1 libappindicator-gtk3)
 makedepends=(cargo nodejs npm)
 install=traceplotter.install
 # makepkg's LTO compiles C code (ring's) to GCC bitcode, which Rust's linker cannot read;

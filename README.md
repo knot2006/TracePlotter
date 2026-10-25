@@ -60,6 +60,12 @@ To try the interface without probing anything, start it in [demo mode](#demo-mod
 
 - Per-hop loss, last/avg/min/max latency and jitter, and MOS (estimated call quality)
 - Latency, jitter and packet-loss graphs for any hop, with a slider to scroll back in time
+- Route changes, alerts and recoveries marked on graphs; click a mark or an event's time to inspect it
+- A selected event stays highlighted on its button and graph. Click it again or use the strip's ×
+  button to clear the selection without moving the period; **Back to live** clears it as well.
+- Optional hop-table columns show median, p95 and p99 latency and the longest consecutive loss burst.
+  Turn them on under **View > Columns** or by right-clicking a table header. Hover over Loss for
+  explanations that distinguish router replies from destination replies.
 - Open targets are restored on the next launch, with 7 days of history per target at full
   resolution (1 to 365 days in the settings)
 
@@ -67,12 +73,37 @@ To try the interface without probing anything, start it in [demo mode](#demo-mod
 
 - Route changes are logged and notified; the trace recovers by itself after a network change
 - Alerts on latency or loss of the round trip, with a desktop notification
+- Alert durations in Events, and overlapping incidents across targets in the All targets tab
 
 **Export and import**
 
 - Export the hop table as text, samples as CSV, the graph as PNG and the page as PDF
 - Import a samples CSV again (**File > Import samples (.csv)…**), to look at a capture made earlier
   or on another machine: it opens as a paused tab
+- Export the displayed period under **File > Export > Support report (.html)…**, with graphs, probe
+  settings, hop statistics and events in a self-contained file. Address redaction replaces names and
+  addresses with consistent placeholders, including graph captions. Open the file in a browser to
+  print it or save it as PDF.
+
+Percentiles use recorded replies at 0.1 ms resolution. Reply availability counts answered probes;
+it does not measure service uptime. Paused and unrecorded time is excluded, and loss-burst durations
+are estimates from probe timing. Intermediate routers may limit or filter their own replies, so
+loss on a hop alone does not establish that it drops traffic to the destination.
+Detailed columns for older history refresh in the background; their update time is shown beside
+the graph's period. Recent periods use the same live probes as the other table columns.
+
+**Background monitoring**
+
+- **View > Hide to tray** keeps monitoring and alerts running. Click the tray icon, or use its
+  **Show TracePlotter** menu item, to return.
+- Enable **Close to tray** or **Minimize to tray** under Settings > Background monitoring. Both
+  start switched off. **File > Exit and stop monitoring** or the tray's exit item always quits.
+- On Windows, **Start when I sign in to Windows** optionally starts in the tray and restores targets.
+  Turn it on again after moving the portable exe. Demo mode cannot change startup registration.
+
+On Linux the desktop needs system tray support. If the tray cannot be created, the app keeps its
+normal window and closing behavior. Windows startup registration belongs to your Windows account; removing
+the portable data folder does not remove it. Switch it off in Settings before removing the exe.
 
 Every tab is its own session, even when two tabs trace the same host. Closing a tab or restarting
 its trace erases that tab's history.
@@ -172,8 +203,8 @@ itself: when a newer release is found, it offers a link to the project page.
 On Windows there is no installer. `TracePlotter.exe` runs from any folder and keeps everything it
 stores in a `TracePlotter-data` folder next to itself: trace history (`history`, a folder per tab
 with one JSON-lines file per day), open tabs and settings (`webview`) and the window's size and position (`window.json`). Copy
-the exe together with that folder to move the app; delete the folder to reset it. Nothing is written
-to the user profile.
+the exe together with that folder to move the app; delete the folder to reset it. App data stays
+in that folder; optional Windows startup registration is stored in your account's registry instead.
 
 Not portable: the WebView2 runtime and the Windows Firewall rules above, which belong to the
 machine.

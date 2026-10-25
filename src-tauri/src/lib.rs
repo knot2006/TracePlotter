@@ -17,6 +17,8 @@ use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tr
 #[cfg(any(windows, target_os = "linux"))]
 mod echo;
 mod mcp;
+mod insights;
+mod background;
 #[cfg(target_os = "linux")]
 mod pingsock;
 #[cfg(windows)]
@@ -627,6 +629,11 @@ fn export_samples(app: AppHandle, session: String, name: String) -> Result<Optio
 fn demo() -> bool {
     static DEMO: OnceLock<bool> = OnceLock::new();
     *DEMO.get_or_init(|| std::env::args().any(|arg| arg == "--demo"))
+}
+
+#[tauri::command]
+fn is_demo() -> bool {
+    demo()
 }
 
 /// The demo route: address, name, usual latency in ms and share of probes lost per hop.
@@ -1851,6 +1858,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Traces::default())
         .manage(mcp::Mcp::default())
+        .manage(background::Background::default())
         // The window is created here, not in tauri.conf.json, to point the webview's
         // storage at the data folder. It stays hidden until it is placed where it was.
         .setup(|app| {
@@ -1859,6 +1867,10 @@ pub fn run() {
                 let _ = fs::remove_file(exe.with_extension("exe.old"));
             }
             fs::create_dir_all(data_dir())?;
+            #[cfg(windows)]
+            app.handle().plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--background"]),
+            ))?;
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // Made-up data must not pass for a real trace, in the window or a screenshot of it.
                 .title(if demo() { "TracePlotter (demo)" } else { "TracePlotter" })
@@ -1871,13 +1883,18 @@ pub fn run() {
                 .visible(false)
                 .build()?;
             restore_window_state(&window);
-            window.show()?;
+            background::setup(app.handle());
+            let background_start = std::env::args().any(|arg| arg == "--background");
+            if !background_start || app.tray_by_id("monitor").is_none() {
+                window.show()?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
                 save_window_state(window);
             }
+            background::window_event(window, event);
             // WebView2 goes on drawing a minimized window until it is told the window is
             // hidden. Then the page gets no animation frames and stops redrawing; probing goes on.
             // A minimized window is resized to nothing.
@@ -1896,6 +1913,13 @@ pub fn run() {
             stop_trace,
             read_history,
             history_range,
+            insights::history_details,
+            background::background_status,
+            background::set_background,
+            background::set_startup,
+            background::hide_to_tray,
+            background::exit_app,
+            is_demo,
             history_start,
             append_event,
             read_events,

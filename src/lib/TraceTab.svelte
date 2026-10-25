@@ -1,9 +1,10 @@
 <script lang="ts" module>
   import type { HopStats } from "./stats";
   import type { Hop } from "./trace";
+  import type { ExtraStats } from "./insights";
 
   /** A table row: a hop, or the round trip to the target itself. */
-  type Row = { hop: Hop; s: HopStats; mos: number | null; roundTrip: boolean };
+  type Row = { hop: Hop; s: HopStats; extra: ExtraStats | null; mos: number | null; roundTrip: boolean };
   type Column = {
     key: string;
     label: string;
@@ -40,6 +41,11 @@
     { key: "min", label: "Min", value: (r) => ms(r.s.min) },
     { key: "max", label: "Max", value: (r) => ms(r.s.max) },
     { key: "jitter", label: "Jitter", value: (r) => ms(r.s.jitter) },
+    { key: "median", label: "Median", title: "Middle reply latency in ms", value: (r) => r.extra ? ms(r.extra.median) : "…" },
+    { key: "p95", label: "p95", title: "95% of replies were at or below this latency in ms", value: (r) => r.extra ? ms(r.extra.p95) : "…" },
+    { key: "p99", label: "p99", title: "99% of replies were at or below this latency in ms", value: (r) => r.extra ? ms(r.extra.p99) : "…" },
+    { key: "lossBurst", label: "Longest loss", title: "Longest consecutive run of missed probes; duration is estimated from probe timing",
+      value: (r) => r.extra ? `${r.extra.longest_lost} ${r.extra.longest_lost === 1 ? "probe" : "probes"} · ${r.extra.longest_loss_seconds.toFixed(1)} s` : "…" },
     {
       key: "mos",
       label: "MOS",
@@ -55,13 +61,17 @@
       value: () => "",
     },
   ];
-  export const DEFAULT_HIDDEN = ["mos"];
+  export const EXTRA_COLUMNS = ["median", "p95", "p99", "lossBurst"];
+  export const DEFAULT_HIDDEN = ["mos", ...EXTRA_COLUMNS];
 </script>
 
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { untrack } from "svelte";
   import { innerWidth as windowWidth } from "svelte/reactivity/window";
-  import { groupEvents } from "./events";
+  import { eventLabel, groupEvents, incidents, type EventGroup, type TraceEvent } from "./events";
+  import { explainLoss, sampleExtras, type Detail } from "./insights";
+  import { redactor, supportReport } from "./report";
   import HopGraph from "./HopGraph.svelte";
   import { exportName } from "./import";
   import { popupMenu } from "./ContextMenu.svelte";
@@ -188,6 +198,7 @@
   let graphed = $state<number[]>([ROUND_TRIP]);
   // End of the focus period in Unix seconds while scrolled back in time; null follows the newest data.
   let pinnedEnd = $state<number | null>(null);
+  let selectedEvent = $state.raw<EventGroup | null>(null);
   let graphs = $state<(HopGraph | undefined)[]>([]);
 
   // Cutting the hops down and working out their numbers and graphs costs time in step
@@ -239,6 +250,7 @@
   // files: per hop number (0 for the round trip) its numbers, and stretches of `width`
   // seconds for the graphs. Kept until the next one arrives, so the table does not flicker.
   let range = $state.raw<{ hops: RangeHop[]; width: number; lossSeconds: number } | null>(null);
+  let rangeLoading = $state(false);
   // The stretches' length follows the window's width, but changes only in whole seconds or
   // minutes, so resizing reads the history files again only when the graph would differ.
   const rangeWidth = $derived(
@@ -248,6 +260,7 @@
     const { from, to, older } = view;
     if (!older) {
       range = null;
+      rangeLoading = false;
       return;
     }
     const interval = trace.config.intervalMs / 1000;
@@ -255,11 +268,15 @@
     // Loss over stretches of at least 10 probes, about 120 across the graph, as for samples.
     const lossSeconds = Math.max(10 * interval, (to - from) / 120, width);
     let current = true;
+    rangeLoading = true;
     historyRange(trace, from, to, width, graphed)
       .then((hops) => {
-        if (current) range = { hops, width, lossSeconds };
+        if (current) {
+          range = { hops, width, lossSeconds };
+          rangeLoading = false;
+        }
       })
-      .catch(() => {});
+      .catch((e) => { if (current) showToast(`History could not be read: ${e}`, true); });
     return () => (current = false);
   });
   const rangeHop = (ttl: number) => range?.hops.find((hop) => hop.ttl === ttl);
@@ -273,13 +290,63 @@
     );
   });
 
+  const extrasNeeded = $derived(EXTRA_COLUMNS.some((key) => !hidden.includes(key)));
+  const historicalExtras = $derived(extrasNeeded && view.older);
+  const extraScope = $derived.by(() => { rev; return `${trace.config.sessionId} ${focusSeconds} ${pinnedEnd}`; });
+  const extraRefresh = $derived(historicalExtras ? `${extraScope} ${Math.floor(view.to / 30)}` : "");
+  let extraSnapshot = $state.raw<{ scope: string; from: number; to: number; hops: Detail[] } | null>(null);
+  const extraForView = $derived(extraSnapshot?.scope === extraScope ? extraSnapshot : null);
+  let extraPending: { scope: string; from: number; to: number; config: Trace["config"] } | null = null;
+  let extraWorking = false;
+  let extrasAlive = true;
+
+  // Long histories read one request at a time. Scrolling replaces the queued request;
+  // live periods refresh at most twice a minute, without holding up the graph.
+  async function readExtraColumns() {
+    if (extraWorking) return;
+    extraWorking = true;
+    try {
+      while (extraPending && extrasAlive) {
+        const request = extraPending;
+        extraPending = null;
+        try {
+          const hops = await readDetails(request.from, request.to, request.config);
+          if (extrasAlive && request.scope === untrack(() => extraScope) && untrack(() => historicalExtras)) {
+            extraSnapshot = { ...request, hops };
+          }
+        } catch (e) {
+          if (extrasAlive && request.scope === untrack(() => extraScope)) showToast(`Detailed statistics could not be read: ${e}`, true);
+        }
+      }
+    } finally { extraWorking = false; }
+  }
+  $effect(() => {
+    const refresh = extraRefresh;
+    const scope = extraScope;
+    if (!refresh) {
+      extraSnapshot = null;
+      extraPending = null;
+      return;
+    }
+    untrack(() => {
+      if (extraSnapshot?.scope !== scope) extraSnapshot = null;
+    });
+    const request = untrack(() => ({ scope, from: view.from, to: view.to, config: { ...trace.config } }));
+    const timer = setTimeout(() => { extraPending = request; readExtraColumns(); }, 150);
+    return () => clearTimeout(timer);
+  });
+  $effect(() => () => { extrasAlive = false; extraPending = null; });
+
   // One row per hop, then the round trip to the target itself.
   const rows = $derived(
     (view.target.times.length || rangeHop(ROUND_TRIP) ? [...focused, view.target] : focused).map((hop) => {
       const roundTrip = hop === view.target;
       const tally = rangeHop(roundTrip ? ROUND_TRIP : hop.ttl)?.total;
       const s = range ? (tally ? tallyStats(tally) : stats([])) : stats(hop.rtts);
-      return { hop, s, mos: mos(s), roundTrip };
+      const extra = !extrasNeeded ? null : view.older
+        ? extraForView?.hops.find((d) => d.ttl === (roundTrip ? ROUND_TRIP : hop.ttl)) ?? null
+        : sampleExtras(hop.times, hop.rtts, trace.config.intervalMs, view.target.times);
+      return { hop, s, extra, mos: mos(s), roundTrip };
     }),
   );
   // The latency bars share one scale. Unzoomed it ends at the highest maximum, so every
@@ -365,11 +432,117 @@
   const grade = (avg: number | null) =>
     avg === null ? "none" : avg >= settings.badMs ? "bad" : avg >= settings.warnMs ? "warn" : "good";
   let eventsReadRev = $state(0);
+  let savedEvents = $state.raw<TraceEvent[]>([]);
+  const eventSession = $derived.by(() => { rev; return trace.config.sessionId; });
+  const latestEvent = $derived.by(() => { rev; return trace.events.at(-1); });
+  async function readEvents(session = trace.config.sessionId) {
+    const lines = await invoke<string[]>("read_events", { session });
+    return lines.flatMap((line) => {
+      try { return [JSON.parse(line) as TraceEvent]; } catch { return []; }
+    });
+  }
+  $effect(() => {
+    const session = eventSession;
+    savedEvents = [];
+    selectedEvent = null;
+    let current = true;
+    readEvents(session).then((found) => { if (current) savedEvents = [...found, ...trace.events]; })
+      .catch((e) => showToast(`Events could not be read: ${e}`, true));
+    return () => { current = false; };
+  });
+  $effect(() => {
+    eventSession;
+    latestEvent;
+    untrack(() => {
+      const unique = new Map([...savedEvents, ...trace.events].map((e) => [JSON.stringify(e), e]));
+      const earliest = (trace.target.times.at(-1) ?? 0) - settings.historyDays * 86400;
+      savedEvents = [...unique.values()].filter((e) => e.t >= earliest);
+    });
+  });
+  const allEvents = $derived.by(() => {
+    latestEvent;
+    const unique = new Map([...savedEvents, ...trace.events].map((event) => [JSON.stringify(event), event]));
+    return [...unique.values()].sort((a, b) => a.t - b.t);
+  });
+  const timeline = $derived(groupEvents(allEvents));
+  const visibleEvents = $derived(timeline.filter((event) => event.t >= view.from && event.t <= view.to));
+  const alertIncidents = $derived(incidents(allEvents).filter((i) => i.from <= view.to && (i.to ?? view.to) >= view.from));
+
+  function jumpToEvent(event: EventGroup) {
+    selectedEvent = event;
+    const span = Math.min(300, Math.max(10, view.latest - view.earliest));
+    pinnedEnd = Math.min(view.latest, event.t + span / 2);
+    onspan(span);
+    eventsDialog.close();
+  }
+
+  function backToLive() {
+    pinnedEnd = null;
+    selectedEvent = null;
+  }
+
+  function toggleEvent(event: EventGroup) {
+    if (selectedEvent?.t === event.t && selectedEvent.kind === event.kind) selectedEvent = null;
+    else jumpToEvent(event);
+  }
+
+  let reportDialog: HTMLDialogElement;
+  let reportRedacted = $state(false);
+  let reportBusy = $state(false);
+
+  function readDetails(from: number, to: number, config = trace.config) {
+    return invoke<Detail[]>("history_details", { session: config.sessionId,
+      from: Math.max(0, Math.floor(from * 1000)), to: Math.floor(to * 1000) + 1, interval: config.intervalMs });
+  }
+
+  export function openSupportReport() {
+    reportDialog.showModal();
+  }
+
+  async function exportSupportReport() {
+    if (rangeLoading || reportBusy) return;
+    reportBusy = true;
+    try {
+      // Freeze the window, settings and graph before waiting for disk reads.
+      const { from, to } = view;
+      const config = { ...trace.config };
+      const target = `${config.host} (${trace.addr})`;
+      const graphSnapshot = graphs.flatMap((graph, i) => {
+        const source = graph?.canvas();
+        if (!source || !graphHops[i]) return [];
+        const canvas = document.createElement("canvas");
+        canvas.width = source.width;
+        canvas.height = source.height;
+        canvas.getContext("2d")!.drawImage(source, 0, 0);
+        return [{ canvas, heading: `${headingOf(graphHops[i])} · ${stamp(from)} – ${stamp(to)}` }];
+      });
+      const redacted = reportRedacted;
+      const eventSnapshot = [...allEvents];
+      const addresses = [config.host, trace.addr, ...trace.hops.flatMap((hop) => [hop.addr ?? "", hop.name ?? ""])];
+      const diskEvents = await readEvents(config.sessionId);
+      // Include older events as well as live events not yet flushed to disk.
+      const eventMap = new Map([...diskEvents, ...eventSnapshot].map((e) => [JSON.stringify(e), e]));
+      const reportEvents = [...eventMap.values()].sort((a, b) => a.t - b.t);
+      addresses.push(...reportEvents.flatMap((e) => e.kind === "hop" ? [e.from, e.to] : []));
+      const found = await readDetails(from, to, config);
+      addresses.push(...found.flatMap((d) => d.addr ? [d.addr] : []));
+      const redact = redacted ? redactor(addresses) : (text: string) => text;
+      const image = captionedImage(graphSnapshot.map(({ canvas, heading }) => ({ canvas,
+        caption: [{ text: redact(heading), color: "#e6eaf0" }] })));
+      const demo = await invoke<boolean>("is_demo");
+      const html = supportReport({ target, from, to,
+        probe: `${protocolLabel(config)}, interval ${config.intervalMs} ms, timeout ${config.timeoutMs ?? DEFAULT_TIMEOUT_MS} ms, packet ${config.packetSize ?? DEFAULT_PACKET_SIZE} bytes, alert latency ${config.alertLatencyMs} ms, alert loss ${config.alertLossPct}%, alert window ${config.alertSeconds ?? DEFAULT_ALERT_SECONDS} s`,
+        details: found, events: reportEvents, graph: image?.toDataURL("image/png") ?? null, redact, redacted, demo });
+      await saveExport(exportName(redacted ? "redacted" : config.host, "incident", "html"), new TextEncoder().encode(html));
+      reportDialog.close();
+    } catch (e) { showToast(`Report failed: ${e}`, true); }
+    finally { reportBusy = false; }
+  }
   // The events as list entries, newest first; a whole re-routing is one entry.
   const events = $derived.by(() => {
     rev;
     eventsReadRev;
-    const groups = groupEvents(trace.events);
+    const groups = timeline;
     const unread = groups.length > 0 && trace.events.at(-1) !== trace.lastReadEvent;
     return { count: groups.length, latest: groups.slice(-100).reverse(), unread };
   });
@@ -584,6 +757,10 @@
     min: 64,
     max: 64,
     jitter: 64,
+    median: 72,
+    p95: 72,
+    p99: 72,
+    lossBurst: 172,
     mos: 60,
   };
   // The latency bar as the last column always reaches the table's right edge: a width of its
@@ -692,13 +869,13 @@
 
   // The graphs, one under the other, or with `only` just the graph at that position,
   // each under its heading and the period.
-  function graphImage(only?: number) {
+  function graphImage(only?: number, redact = (text: string) => text) {
     const period = `${stamp(view.from)} – ${stamp(view.to)}`;
     return captionedImage(
       graphs.flatMap((graph, i) => {
         const canvas = graph?.canvas();
         const wanted = only === undefined || only === i;
-        const caption = graphHops[i] && [{ text: `${headingOf(graphHops[i])} · ${period}`, color: "#e6eaf0" }];
+        const caption = graphHops[i] && [{ text: redact(`${headingOf(graphHops[i])} · ${period}`), color: "#e6eaf0" }];
         return wanted && canvas && caption ? [{ canvas, caption }] : [];
       }),
     );
@@ -848,7 +1025,9 @@
                   </div>
                 </td>
               {:else}
-                <td class={column.cls?.(row)} class:text={column.text}>{column.value(row)}</td>
+                <td class={column.cls?.(row)} class:text={column.text}
+                  title={column.key === "loss" ? explainLoss(row.s, rows.find((r) => r.roundTrip)?.s ?? { sent: 0, received: 0 }, row.roundTrip)
+                    : EXTRA_COLUMNS.includes(column.key) && extraForView ? `Calculated for ${clock(extraForView.from)} – ${clock(extraForView.to)}` : undefined}>{column.value(row)}</td>
               {/if}
             {/each}
             {#if filler}<td></td>{/if}
@@ -881,9 +1060,12 @@
     <span>
       {#if view.to > view.from}{stamp(view.from)} – {stamp(view.to)}{/if}
       {#if pinnedEnd !== null}(scrolled back){/if}
+      {#if historicalExtras}
+        <span class="extra-updated">· {extraForView ? `Detailed columns updated ${stamp(extraForView.to)}` : "Reading detailed columns…"}</span>
+      {/if}
     </span>
     <span class="tools">
-      {#if pinnedEnd !== null}<button onclick={() => (pinnedEnd = null)}>Back to live</button>{/if}
+      {#if pinnedEnd !== null}<button onclick={backToLive}>Back to live</button>{/if}
       <button class:alerting onclick={openAlerts}>
         {alerting ? "Alerting" : alertsOn ? "Alerts on" : "Alerts off"}
       </button>
@@ -898,6 +1080,24 @@
       >
     </span>
   </div>
+  {#if visibleEvents.length}
+    <nav class="timeline" aria-label="Events in the displayed period">
+      <span class="timeline-label" aria-hidden="true">Events</span>
+      <div class="timeline-items">
+        {#each visibleEvents.slice(-100) as event}
+          {@const chosen = selectedEvent?.t === event.t && selectedEvent?.kind === event.kind}
+          <button class="event-mark {event.kind}" class:selected={chosen} aria-pressed={chosen} title={eventLabel(event)} onclick={() => toggleEvent(event)}>
+            <span class="event-dot" aria-hidden="true"></span>
+            <time datetime={new Date(event.t * 1000).toISOString()}>{timeOfDay(event.t)}</time>
+            <span>{event.kind === "route" ? "Route changed" : event.kind === "alert" ? "Alert" : "Recovered"}</span>
+          </button>
+        {/each}
+      </div>
+      {#if selectedEvent}
+        <button class="timeline-clear" aria-label="Clear event selection" title="Clear event selection" onclick={() => selectedEvent = null}>×</button>
+      {/if}
+    </nav>
+  {/if}
   <div class="graph">
     {#each graphHops as hop, i (hop === view.target ? ROUND_TRIP : hop.ttl)}
       {@const key = hop === view.target ? ROUND_TRIP : hop.ttl}
@@ -916,7 +1116,10 @@
         withJitter={graphHops.length === 1}
         onpan={pan}
         onzoom={zoom}
-        onreset={() => (pinnedEnd = null)}
+        onreset={backToLive}
+        events={visibleEvents}
+        {selectedEvent}
+        onevent={toggleEvent}
       />
     {/each}
   </div>
@@ -950,6 +1153,7 @@
         <div>Min {ms(s.min)} · Avg {ms(s.avg)} · Max {ms(s.max)} · Last {s.last === null ? "lost" : ms(s.last)} ms</div>
       {/if}
       {#if s.lossPct > 0}<div class="bad">Loss {s.lossPct.toFixed(1)}% (red bar)</div>{/if}
+      <div>{explainLoss(s, rows.find((row) => row.roundTrip)?.s ?? { sent: 0, received: 0 }, tipRow.roundTrip)}</div>
       <div class="note">Wheel or + − zooms · double-click or 0 fits</div>
     </div>
   {/if}
@@ -1025,6 +1229,15 @@
 
   <dialog bind:this={eventsDialog} aria-labelledby="events-title" onclose={markEventsRead}>
     <h2 id="events-title">Events for {trace.config.host}</h2>
+    <p>Click a time to inspect that moment. Blue graph marks are route changes, red alerts and green recoveries.</p>
+    {#if alertIncidents.length}
+      <h3>Alert incidents overlapping the displayed period</h3>
+      <ul>
+        {#each alertIncidents as incident}
+          <li>{clock(incident.from)} · {incident.to === null ? "No recovery recorded" : `${Math.round(incident.to - incident.from)} s until recovery`} · {incident.text}</li>
+        {/each}
+      </ul>
+    {/if}
     <ul class="events">
       {#each events.latest as event}
         <li>
@@ -1041,7 +1254,7 @@
                 {event.text}
               {/if}
             </span>
-            <time>{clock(event.t)}</time>
+            <button onclick={() => jumpToEvent(event)} title="Show this moment on the graph">{clock(event.t)}</button>
           </div>
           {#if event.kind === "route" && event.hops.length}
             <div class="moves">
@@ -1059,6 +1272,16 @@
       {/each}
     </ul>
     <form method="dialog"><button>Close</button></form>
+  </dialog>
+
+  <dialog bind:this={reportDialog} aria-labelledby="support-report-title">
+    <h2 id="support-report-title">Export support report</h2>
+    <p>Exports the displayed period with its graphs, probe settings, hop statistics, reply observations, alert incidents and route changes as one HTML file. Open it in a browser to print or save as PDF.</p>
+    <p>{clock(view.from)} – {clock(view.to)}. Use the time span and graph slider to select another period before exporting.</p>
+    <label><input type="checkbox" bind:checked={reportRedacted} disabled={reportBusy} /> Replace target names and addresses with consistent placeholders</label>
+    {#if rangeLoading}<p role="status">Waiting for the selected history to load…</p>{/if}
+    <div class="report-actions"><button disabled={reportBusy || rangeLoading} onclick={exportSupportReport}>{reportBusy ? "Preparing report…" : "Save report…"}</button>
+      <button disabled={reportBusy} onclick={() => reportDialog.close()}>Cancel</button></div>
   </dialog>
 
   <dialog bind:this={whoisDialog} aria-labelledby="whois-title">
@@ -1082,6 +1305,109 @@
 </div>
 
 <style>
+  .timeline {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 3px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .timeline-label {
+    flex: none;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .timeline-items {
+    display: flex;
+    flex: 1;
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 4px 3px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--edge) transparent;
+  }
+  .event-mark {
+    --event-color: #7cb5f2;
+    --event-bg: rgba(96, 165, 250, 0.06);
+    --event-hover: rgba(96, 165, 250, 0.14);
+    appearance: none;
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 5px 9px;
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+    background: var(--event-bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.25;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+  .event-mark time {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .event-dot {
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--event-color);
+  }
+  .event-mark.alert {
+    --event-color: #f28b8b;
+    --event-bg: rgba(248, 113, 113, 0.06);
+    --event-hover: rgba(248, 113, 113, 0.14);
+  }
+  .event-mark.recover {
+    --event-color: #6cdb9a;
+    --event-bg: rgba(74, 222, 128, 0.06);
+    --event-hover: rgba(74, 222, 128, 0.14);
+  }
+  .event-mark:hover,
+  .event-mark:focus-visible {
+    border-color: var(--event-color);
+    background: var(--event-hover);
+  }
+  .event-mark.selected {
+    border-color: var(--event-color);
+    background: var(--event-hover);
+    box-shadow: inset 0 0 0 1px var(--event-color);
+  }
+  .event-mark.selected time { color: var(--text); }
+  .event-mark.selected .event-dot { box-shadow: 0 0 0 3px var(--event-hover); }
+  .timeline-clear {
+    appearance: none;
+    flex: none;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .timeline-clear:hover { border-color: var(--edge); color: var(--text); background: var(--bg); }
+  .event-mark:active { background: var(--panel); }
+  @media (prefers-reduced-motion: reduce) {
+    .event-mark { transition: none; }
+  }
+  .extra-updated { font-size: 11px; }
+  .report-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   .trace {
     display: flex;
     flex-direction: column;
@@ -1278,7 +1604,8 @@
     background: rgba(15, 19, 25, 0.95);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-    white-space: nowrap;
+    max-width: min(420px, 80vw);
+    white-space: normal;
     pointer-events: none;
   }
   .bar-tip .note {
@@ -1405,6 +1732,7 @@
     border-radius: 4px;
   }
   /* The dialog is the only thing that scrolls; its Close button stays in view at the bottom. */
+  dialog input[type="checkbox"] { width: auto; }
   dialog form {
     position: sticky;
     bottom: 0;
@@ -1468,7 +1796,7 @@
   .event-head .what {
     flex: 1;
   }
-  .events time {
+  .event-head button {
     color: var(--muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { showToast } from "./Toast.svelte";
   import {
     INTERVALS,
     LIMITS,
@@ -59,6 +62,25 @@
 
   // `settings` is a plain object; this copy of it is what redraws the fields.
   let shown = $state({ ...settings });
+  type BackgroundStatus = { available: boolean; closeToTray: boolean; minimizeToTray: boolean; startup: boolean; startupAvailable: boolean };
+  let background = $state<BackgroundStatus>();
+  let backgroundBusy = $state(false);
+  let backgroundError = $state("");
+  onMount(() => {
+    invoke<BackgroundStatus>("background_status").then((status) => background = status)
+      .catch((e) => backgroundError = String(e));
+  });
+
+  async function setBackground(key: "closeToTray" | "minimizeToTray" | "startup", field: HTMLInputElement) {
+    if (!background) return;
+    backgroundBusy = true;
+    try {
+      if (key === "startup") await invoke("set_startup", { enabled: field.checked });
+      else await invoke("set_background", { options: { closeToTray: background.closeToTray, minimizeToTray: background.minimizeToTray, [key]: field.checked } });
+      background = await invoke<BackgroundStatus>("background_status");
+    } catch (e) { showToast(`Background setting was not changed: ${e}`, true); }
+    finally { field.checked = background[key]; backgroundBusy = false; }
+  }
 
   /** Takes over a field's value and writes back what it became within its limits. */
   function set(key: keyof Settings, field: HTMLInputElement | HTMLSelectElement) {
@@ -82,6 +104,20 @@
      on the right. -->
 <div class="settings">
 <div class="cards">
+  <section>
+    <h2>Background monitoring</h2>
+    <p>Monitoring and alerts continue while the window is hidden. Reopen it from the tray icon. File > Exit or the tray's Exit and stop monitoring ends the app.</p>
+    {#if backgroundError}<p role="alert">{backgroundError}</p>{/if}
+    {#if background && !background.available}<p>The system tray is unavailable on this desktop. Closing the window exits the app.</p>{/if}
+    <label class="row"><span>Close to tray <small>The window's × button keeps monitoring running</small></span>
+      <input type="checkbox" disabled={!background?.available || backgroundBusy} checked={background?.closeToTray ?? false} onchange={(e) => setBackground("closeToTray", e.currentTarget)} /></label>
+    <label class="row"><span>Minimize to tray</span>
+      <input type="checkbox" disabled={!background?.available || backgroundBusy} checked={background?.minimizeToTray ?? false} onchange={(e) => setBackground("minimizeToTray", e.currentTarget)} /></label>
+    {#if WINDOWS}
+      <label class="row"><span>Start when I sign in to Windows <small>Starts in the tray and restores running targets. Turn this on again if you move the portable exe. Unavailable in demo mode.</small></span>
+        <input type="checkbox" disabled={!background?.startupAvailable || backgroundBusy} checked={background?.startup ?? false} onchange={(e) => setBackground("startup", e.currentTarget)} /></label>
+    {/if}
+  </section>
   <section>
     <h2>New targets</h2>
     <p>What a new tab starts with. Open tabs keep their own: change those in the toolbar and under Trace.</p>
