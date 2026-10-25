@@ -61,4 +61,6 @@ strip = true
 [profile.fast]
 inherits = "release"
 codegen-units = 16
-lto = "thin"
+# Avoid cross-crate LTO and reuse compiled code between local builds.
+lto = false
+incremental = true

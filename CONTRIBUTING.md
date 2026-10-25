@@ -12,6 +12,10 @@ code is kept portable.
 - Rust (stable, MSVC toolchain)
 - Visual Studio Build Tools with "Desktop development with C++"
 
+Windows x64 builds use Rust's bundled LLD linker, set in `.cargo/config.toml`, to shorten
+linking without installing another tool. The Visual Studio Build Tools are still needed for
+the Windows SDK and libraries. Rust 1.90 and newer already use LLD on x64 Linux.
+
 ## Run from source
 
 A normal terminal will do. Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need
@@ -62,11 +66,14 @@ The exe is written to `src-tauri/target/release/traceplotter.exe`. That is a bui
 app's `TracePlotter-data` folder next to it is deleted by `cargo clean`.
 
 The release build optimises on one core and takes a few minutes. For a local test build, the
-`fast` profile compiles on all cores and writes `src-tauri/target/fast/traceplotter.exe`:
+`fast` profile compiles on all cores, skips cross-crate link-time optimisation and reuses compiled
+code between builds. It writes `src-tauri/target/fast/traceplotter.exe`:
 
 ```bash
 npm run tauri build -- --no-bundle -- --profile fast
 ```
+
+This trades some runtime optimisation for shorter builds; published builds still use `release`.
 
 ## Where things are
 
