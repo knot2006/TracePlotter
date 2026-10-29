@@ -92321,5 +92321,1348 @@
       100.001
     ],
     "expected": 150
+  },
+  {
+    "name": "restoreEvents",
+    "args": [
+      [
+        {
+          "t": 90,
+          "kind": "hop",
+          "ttl": 2,
+          "from": "a",
+          "to": "b"
+        },
+        {
+          "t": 100,
+          "kind": "alert",
+          "text": "slow"
+        },
+        {
+          "t": 105,
+          "kind": "alert",
+          "text": "again"
+        },
+        {
+          "t": 130,
+          "kind": "recover",
+          "text": "ok"
+        },
+        {
+          "t": 140,
+          "kind": "recover",
+          "text": "late"
+        },
+        {
+          "t": 150,
+          "kind": "alert",
+          "text": "open"
+        },
+        {
+          "t": 95,
+          "kind": "length",
+          "from": 8,
+          "to": 9
+        }
+      ],
+      [
+        {
+          "t": 100,
+          "kind": "alert",
+          "text": "slow"
+        },
+        {
+          "t": 96,
+          "kind": "hop",
+          "ttl": 3,
+          "from": "x",
+          "to": "y"
+        }
+      ],
+      98
+    ],
+    "expected": [
+      {
+        "t": 90,
+        "kind": "hop",
+        "ttl": 2,
+        "from": "a",
+        "to": "b"
+      },
+      {
+        "t": 95,
+        "kind": "length",
+        "from": 8,
+        "to": 9
+      },
+      {
+        "t": 96,
+        "kind": "hop",
+        "ttl": 3,
+        "from": "x",
+        "to": "y"
+      },
+      {
+        "t": 100,
+        "kind": "alert",
+        "text": "slow"
+      },
+      {
+        "t": 105,
+        "kind": "alert",
+        "text": "again"
+      },
+      {
+        "t": 130,
+        "kind": "recover",
+        "text": "ok"
+      },
+      {
+        "t": 140,
+        "kind": "recover",
+        "text": "late"
+      },
+      {
+        "t": 150,
+        "kind": "alert",
+        "text": "open"
+      }
+    ]
+  },
+  {
+    "name": "incidents",
+    "args": [
+      [
+        {
+          "t": 90,
+          "kind": "hop",
+          "ttl": 2,
+          "from": "a",
+          "to": "b"
+        },
+        {
+          "t": 100,
+          "kind": "alert",
+          "text": "slow"
+        },
+        {
+          "t": 105,
+          "kind": "alert",
+          "text": "again"
+        },
+        {
+          "t": 130,
+          "kind": "recover",
+          "text": "ok"
+        },
+        {
+          "t": 140,
+          "kind": "recover",
+          "text": "late"
+        },
+        {
+          "t": 150,
+          "kind": "alert",
+          "text": "open"
+        },
+        {
+          "t": 95,
+          "kind": "length",
+          "from": 8,
+          "to": 9
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "from": 100,
+        "to": 130,
+        "text": "slow"
+      },
+      {
+        "from": 150,
+        "to": null,
+        "text": "open"
+      }
+    ]
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 90,
+        "kind": "route",
+        "length": null,
+        "hops": [
+          {
+            "ttl": 2,
+            "from": "a",
+            "to": "b"
+          }
+        ]
+      }
+    ],
+    "expected": "Route changed: hop 2: a → b"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 100,
+        "kind": "alert",
+        "text": "slow"
+      }
+    ],
+    "expected": "Alert: slow"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 105,
+        "kind": "alert",
+        "text": "again"
+      }
+    ],
+    "expected": "Alert: again"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 130,
+        "kind": "recover",
+        "text": "ok"
+      }
+    ],
+    "expected": "Recovered: ok"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 140,
+        "kind": "recover",
+        "text": "late"
+      }
+    ],
+    "expected": "Recovered: late"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 150,
+        "kind": "alert",
+        "text": "open"
+      }
+    ],
+    "expected": "Alert: open"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 95,
+        "kind": "route",
+        "length": {
+          "from": 8,
+          "to": 9
+        },
+        "hops": []
+      }
+    ],
+    "expected": "Route changed: 8 → 9 hops"
+  },
+  {
+    "name": "eventLabel",
+    "args": [
+      {
+        "t": 160,
+        "kind": "route",
+        "length": null,
+        "hops": [
+          {
+            "ttl": 4,
+            "from": "c",
+            "to": "d"
+          }
+        ]
+      }
+    ],
+    "expected": "Route changed: hop 4: c → d"
+  },
+  {
+    "name": "correlateIncidents",
+    "args": [
+      [
+        {
+          "from": 100,
+          "to": 130,
+          "text": "a",
+          "target": "one",
+          "observedUntil": 200
+        },
+        {
+          "from": 120,
+          "to": null,
+          "text": "b",
+          "target": "two",
+          "observedUntil": 180
+        },
+        {
+          "from": 300,
+          "to": 310,
+          "text": "c",
+          "target": "one",
+          "observedUntil": 400
+        },
+        {
+          "from": 90,
+          "to": 95,
+          "text": "d",
+          "target": "three",
+          "observedUntil": 95
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "from": 90,
+        "to": 95,
+        "entries": [
+          {
+            "from": 90,
+            "to": 95,
+            "text": "d",
+            "target": "three",
+            "observedUntil": 95
+          }
+        ]
+      },
+      {
+        "from": 100,
+        "to": 180,
+        "entries": [
+          {
+            "from": 100,
+            "to": 130,
+            "text": "a",
+            "target": "one",
+            "observedUntil": 200
+          },
+          {
+            "from": 120,
+            "to": null,
+            "text": "b",
+            "target": "two",
+            "observedUntil": 180
+          }
+        ]
+      },
+      {
+        "from": 300,
+        "to": 310,
+        "entries": [
+          {
+            "from": 300,
+            "to": 310,
+            "text": "c",
+            "target": "one",
+            "observedUntil": 400
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 5,
+        "received": 5
+      },
+      {
+        "sent": 5,
+        "received": 5
+      },
+      false
+    ],
+    "expected": "Too few probes to interpret loss; collect at least 10 probes."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 20
+      },
+      {
+        "sent": 20,
+        "received": 20
+      },
+      false
+    ],
+    "expected": "This hop answered every recorded probe in this period."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 15
+      },
+      {
+        "sent": 20,
+        "received": 20
+      },
+      false
+    ],
+    "expected": "This hop missed replies while the destination answered every probe in this period. Reply limiting or filtering may explain this; it alone is not evidence of forwarding loss."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 15
+      },
+      {
+        "sent": 20,
+        "received": 18
+      },
+      false
+    ],
+    "expected": "Both this hop and the destination missed replies in this period. This does not establish where loss occurred: probes and return paths can differ, and routers may limit replies."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 20
+      },
+      {
+        "sent": 20,
+        "received": 0
+      },
+      true
+    ],
+    "expected": "No destination replies in this period. The destination may be unreachable or may filter this probe protocol; this does not establish a service outage."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 20
+      },
+      {
+        "sent": 20,
+        "received": 19
+      },
+      true
+    ],
+    "expected": "Some destination probes received no reply. Loss, filtering, reply limits or the return path may contribute; traceroute alone cannot identify the cause."
+  },
+  {
+    "name": "explainLoss",
+    "args": [
+      {
+        "sent": 20,
+        "received": 20
+      },
+      {
+        "sent": 20,
+        "received": 20
+      },
+      true
+    ],
+    "expected": "The destination answered every recorded probe in this period."
+  },
+  {
+    "name": "replyAvailability",
+    "args": [
+      0,
+      0
+    ],
+    "expected": "–"
+  },
+  {
+    "name": "replyAvailability",
+    "args": [
+      3,
+      2
+    ],
+    "expected": "66.67%"
+  },
+  {
+    "name": "replyAvailability",
+    "args": [
+      7,
+      7
+    ],
+    "expected": "100.00%"
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1025,
+        1026,
+        1027,
+        1028
+      ],
+      [
+        null,
+        6.857142857142857,
+        12.142857142857142,
+        17.428571428571427,
+        22.714285714285715,
+        null,
+        33.285714285714285,
+        38.57142857142857,
+        43.857142857142854
+      ],
+      1000,
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1025,
+        1026,
+        1027,
+        1028
+      ]
+    ],
+    "expected": {
+      "median": 22.7,
+      "p95": 43.9,
+      "p99": 43.9,
+      "longest_lost": 1,
+      "longest_loss_seconds": 1
+    }
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1029,
+        1030,
+        1031,
+        1032,
+        1033,
+        1034,
+        1035,
+        1036,
+        1037
+      ],
+      [
+        null,
+        8.428571428571429,
+        13.714285714285714,
+        19,
+        24.285714285714285,
+        null,
+        34.857142857142854,
+        40.142857142857146,
+        45.42857142857143,
+        50.714285714285715,
+        null,
+        4.142857142857143,
+        9.428571428571429,
+        14.714285714285714,
+        20,
+        null,
+        30.571428571428573,
+        35.857142857142854
+      ],
+      1000,
+      [
+        1000,
+        1002,
+        1003,
+        1004,
+        1006,
+        1007,
+        1008,
+        1030,
+        1031,
+        1032,
+        1034,
+        1035,
+        1036
+      ]
+    ],
+    "expected": {
+      "median": 22.15,
+      "p95": 50.7,
+      "p99": 50.7,
+      "longest_lost": 1,
+      "longest_loss_seconds": 1
+    }
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1033,
+        1034,
+        1035,
+        1036,
+        1037,
+        1038,
+        1039,
+        1040,
+        1041,
+        1042,
+        1043,
+        1044,
+        1045,
+        1046
+      ],
+      [
+        null,
+        10,
+        15.285714285714286,
+        20.571428571428573,
+        25.857142857142858,
+        null,
+        36.42857142857143,
+        41.714285714285715,
+        47,
+        52.285714285714285,
+        null,
+        5.714285714285714,
+        11,
+        16.285714285714285,
+        21.571428571428573,
+        null,
+        32.142857142857146,
+        37.42857142857143,
+        42.714285714285715,
+        48,
+        null,
+        1.4285714285714286,
+        6.714285714285714,
+        12,
+        17.285714285714285,
+        null,
+        27.857142857142858
+      ],
+      1000,
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1033,
+        1034,
+        1035,
+        1036,
+        1037,
+        1038,
+        1039,
+        1040,
+        1041,
+        1042,
+        1043,
+        1044,
+        1045,
+        1046
+      ]
+    ],
+    "expected": {
+      "median": 21.6,
+      "p95": 48,
+      "p99": 52.3,
+      "longest_lost": 1,
+      "longest_loss_seconds": 1
+    }
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1037,
+        1038,
+        1039,
+        1040,
+        1041,
+        1042,
+        1043,
+        1044,
+        1045,
+        1046,
+        1047,
+        1048,
+        1049,
+        1050,
+        1051,
+        1052,
+        1053,
+        1054,
+        1055
+      ],
+      [
+        null,
+        11.571428571428571,
+        16.857142857142858,
+        22.142857142857142,
+        27.428571428571427,
+        null,
+        38,
+        43.285714285714285,
+        48.57142857142857,
+        53.857142857142854,
+        null,
+        7.285714285714286,
+        12.571428571428571,
+        17.857142857142858,
+        23.142857142857142,
+        null,
+        33.714285714285715,
+        39,
+        44.285714285714285,
+        49.57142857142857,
+        null,
+        3,
+        8.285714285714286,
+        13.571428571428571,
+        18.857142857142858,
+        null,
+        29.428571428571427,
+        34.714285714285715,
+        40,
+        45.285714285714285,
+        null,
+        55.857142857142854,
+        4,
+        9.285714285714286,
+        14.571428571428571,
+        null
+      ],
+      1000,
+      [
+        1000,
+        1002,
+        1003,
+        1004,
+        1006,
+        1007,
+        1008,
+        1010,
+        1011,
+        1012,
+        1014,
+        1015,
+        1016,
+        1038,
+        1039,
+        1040,
+        1042,
+        1043,
+        1044,
+        1046,
+        1047,
+        1048,
+        1050,
+        1051,
+        1052,
+        1054,
+        1055
+      ]
+    ],
+    "expected": {
+      "median": 25.25,
+      "p95": 53.9,
+      "p99": 55.9,
+      "longest_lost": 1,
+      "longest_loss_seconds": 1
+    }
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1017,
+        1018,
+        1019,
+        1020,
+        1041,
+        1042,
+        1043,
+        1044,
+        1045,
+        1046,
+        1047,
+        1048,
+        1049,
+        1050,
+        1051,
+        1052,
+        1053,
+        1054,
+        1055,
+        1056,
+        1057,
+        1058,
+        1059,
+        1060,
+        1061,
+        1062,
+        1063,
+        1064
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      1000,
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1017,
+        1018,
+        1019,
+        1020,
+        1041,
+        1042,
+        1043,
+        1044,
+        1045,
+        1046,
+        1047,
+        1048,
+        1049,
+        1050,
+        1051,
+        1052,
+        1053,
+        1054,
+        1055,
+        1056,
+        1057,
+        1058,
+        1059,
+        1060,
+        1061,
+        1062,
+        1063,
+        1064
+      ]
+    ],
+    "expected": {
+      "median": null,
+      "p95": null,
+      "p99": null,
+      "longest_lost": 24,
+      "longest_loss_seconds": 24
+    }
+  },
+  {
+    "name": "sampleExtras",
+    "args": [
+      [
+        1000,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008,
+        1009,
+        1010,
+        1011,
+        1012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1017,
+        1018,
+        1019,
+        1020,
+        1021,
+        1022,
+        1023,
+        1024,
+        1045,
+        1046,
+        1047,
+        1048,
+        1049,
+        1050,
+        1051,
+        1052,
+        1053,
+        1054,
+        1055,
+        1056,
+        1057,
+        1058,
+        1059,
+        1060,
+        1061,
+        1062,
+        1063,
+        1064,
+        1065,
+        1066,
+        1067,
+        1068,
+        1069,
+        1070,
+        1071,
+        1072,
+        1073
+      ],
+      [
+        null,
+        14.714285714285714,
+        20,
+        25.285714285714285,
+        30.571428571428573,
+        null,
+        41.142857142857146,
+        46.42857142857143,
+        51.714285714285715,
+        57,
+        null,
+        10.428571428571429,
+        15.714285714285714,
+        21,
+        26.285714285714285,
+        null,
+        36.857142857142854,
+        42.142857142857146,
+        47.42857142857143,
+        52.714285714285715,
+        null,
+        6.142857142857143,
+        11.428571428571429,
+        16.714285714285715,
+        22,
+        null,
+        32.57142857142857,
+        37.857142857142854,
+        43.142857142857146,
+        48.42857142857143,
+        null,
+        1.8571428571428572,
+        7.142857142857143,
+        12.428571428571429,
+        17.714285714285715,
+        null,
+        28.285714285714285,
+        33.57142857142857,
+        38.857142857142854,
+        44.142857142857146,
+        null,
+        54.714285714285715,
+        2.857142857142857,
+        8.142857142857142,
+        13.428571428571429,
+        null,
+        24,
+        29.285714285714285,
+        34.57142857142857,
+        39.857142857142854,
+        null,
+        50.42857142857143,
+        55.714285714285715,
+        3.857142857142857
+      ],
+      1000,
+      [
+        1000,
+        1002,
+        1003,
+        1004,
+        1006,
+        1007,
+        1008,
+        1010,
+        1011,
+        1012,
+        1014,
+        1015,
+        1016,
+        1018,
+        1019,
+        1020,
+        1022,
+        1023,
+        1024,
+        1046,
+        1047,
+        1048,
+        1050,
+        1051,
+        1052,
+        1054,
+        1055,
+        1056,
+        1058,
+        1059,
+        1060,
+        1062,
+        1063,
+        1064,
+        1066,
+        1067,
+        1068,
+        1070,
+        1071,
+        1072
+      ]
+    ],
+    "expected": {
+      "median": 29.3,
+      "p95": 54.7,
+      "p99": 57,
+      "longest_lost": 1,
+      "longest_loss_seconds": 1
+    }
+  },
+  {
+    "name": "redact",
+    "args": [
+      [
+        "192.0.2.1",
+        "example.net",
+        "core1.example.net",
+        "192.0.2.10",
+        ""
+      ],
+      "Hop 3: 192.0.2.1 (core1.example.net) to 192.0.2.10"
+    ],
+    "expected": "Hop 3: [address 4] ([address 1]) to [address 3]"
+  },
+  {
+    "name": "redact",
+    "args": [
+      [
+        "192.0.2.1",
+        "example.net",
+        "core1.example.net",
+        "192.0.2.10",
+        ""
+      ],
+      "example.net and sub.example.net."
+    ],
+    "expected": "[address 2] and sub.example.net."
+  },
+  {
+    "name": "redact",
+    "args": [
+      [
+        "192.0.2.1",
+        "example.net",
+        "core1.example.net",
+        "192.0.2.10",
+        ""
+      ],
+      "192.0.2.1:443 x192.0.2.1 192.0.2.10"
+    ],
+    "expected": "192.0.2.1:443 x192.0.2.1 [address 3]"
+  },
+  {
+    "name": "redact",
+    "args": [
+      [
+        "192.0.2.1",
+        "example.net",
+        "core1.example.net",
+        "192.0.2.10",
+        ""
+      ],
+      ""
+    ],
+    "expected": ""
+  },
+  {
+    "name": "supportReport",
+    "args": [
+      [
+        {
+          "ttl": 1,
+          "addr": "192.0.2.1",
+          "total": {
+            "sent": 4,
+            "received": 3,
+            "sum": 30.5,
+            "min": 9.5,
+            "max": 11,
+            "jitter_sum": 1.5,
+            "jitter_count": 2,
+            "last": 11
+          },
+          "median": 10,
+          "p95": 11,
+          "p99": 11,
+          "longest_lost": 1,
+          "longest_loss_seconds": 1
+        },
+        {
+          "ttl": 0,
+          "addr": null,
+          "total": {
+            "sent": 4,
+            "received": 4,
+            "sum": 80,
+            "min": 19,
+            "max": 21,
+            "jitter_sum": 2,
+            "jitter_count": 3,
+            "last": 20
+          },
+          "median": 20,
+          "p95": 21,
+          "p99": 21,
+          "longest_lost": 0,
+          "longest_loss_seconds": 0
+        }
+      ],
+      [
+        {
+          "t": 1000,
+          "kind": "alert",
+          "text": "Loss 25% to <example.net>"
+        },
+        {
+          "t": 1030.5,
+          "kind": "recover",
+          "text": "fine"
+        },
+        {
+          "t": 1040,
+          "kind": "hop",
+          "ttl": 1,
+          "from": "192.0.2.1",
+          "to": "192.0.2.9"
+        },
+        {
+          "t": 5000,
+          "kind": "alert",
+          "text": "later"
+        }
+      ],
+      [
+        "example.net",
+        "192.0.2.1",
+        "192.0.2.9"
+      ],
+      false
+    ],
+    "expected": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'\"><title>TracePlotter support report</title><style>body{font:14px system-ui,sans-serif;line-height:1.5;margin:32px;color:#18202c}h1{font-size:24px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:6px;border:1px solid #ccd2da;text-align:right}th:first-child,td:first-child{text-align:left}img{max-width:100%;background:#0f1319}li{margin:8px 0}time{font-family:monospace}section{overflow:auto}@media print{body{margin:0;font-size:10px}img{break-inside:avoid}th{background:#eee}}</style></head><body>\n<h1>TracePlotter support report</h1>\n<p>Target: example.net (192.0.2.1)<br>Period (UTC): 1970-01-01T00:16:30.000Z → 1970-01-01T00:18:20.250Z<br>Probe settings: ICMP, interval 1000 ms<br>Address redaction: off</p>\n<h2>Selected-period statistics</h2><p>Latencies are milliseconds, recorded here at 0.1 ms resolution. p95 and p99 use nearest rank; the median averages the two central replies for an even count. Availability is the percentage of recorded probes answered, not service uptime. Pauses and unrecorded time are excluded. Loss durations estimate consecutive missed-probe spans from the configured interval.</p>\n<section><table><thead><tr><th>Hop</th><th>Latest address in period</th><th>Sent</th><th>Received</th><th>Loss</th><th>Reply availability</th><th>Last</th><th>Average</th><th>Min</th><th>Max</th><th>Jitter</th><th>Median</th><th>p95</th><th>p99</th><th>Longest loss (probes)</th><th>Longest loss (s)</th></tr></thead><tbody><tr><td>Hop 1</td><td>192.0.2.1</td><td>4</td><td>3</td><td>25.00%</td><td>75.00%</td><td>11.0</td><td>10.2</td><td>9.5</td><td>11.0</td><td>0.8</td><td>10.0</td><td>11.0</td><td>11.0</td><td>1</td><td>1.0</td></tr><tr><td>Round trip</td><td>–</td><td>4</td><td>4</td><td>0.00%</td><td>100.00%</td><td>20.0</td><td>20.0</td><td>19.0</td><td>21.0</td><td>0.7</td><td>20.0</td><td>21.0</td><td>21.0</td><td>0</td><td>0.0</td></tr></tbody></table></section>\n<h2>Graphs</h2><img alt=\"Selected-period latency graphs\" src=\"data:image/png;base64,iVBORw0KGgo=\"><p>Graph labels use the recording computer's local time; the timeline below uses UTC. Red marks indicate alerts, green recoveries and blue route changes.</p>\n<h2>Alert incidents</h2><ul><li>1970-01-01T00:16:40.000Z → 1970-01-01T00:17:10.500Z · 31 s within this period · Loss 25% to &lt;example.net&gt;</li></ul>\n<h2>Events in period</h2><ul><li><time>1970-01-01T00:16:40.000Z</time> Alert: Loss 25% to &lt;example.net&gt;</li><li><time>1970-01-01T00:17:10.500Z</time> Recovered: fine</li><li><time>1970-01-01T00:17:20.000Z</time> Route changed: hop 1: 192.0.2.1 → 192.0.2.9</li></ul></body></html>"
+  },
+  {
+    "name": "supportReport",
+    "args": [
+      [
+        {
+          "ttl": 1,
+          "addr": "192.0.2.1",
+          "total": {
+            "sent": 4,
+            "received": 3,
+            "sum": 30.5,
+            "min": 9.5,
+            "max": 11,
+            "jitter_sum": 1.5,
+            "jitter_count": 2,
+            "last": 11
+          },
+          "median": 10,
+          "p95": 11,
+          "p99": 11,
+          "longest_lost": 1,
+          "longest_loss_seconds": 1
+        },
+        {
+          "ttl": 0,
+          "addr": null,
+          "total": {
+            "sent": 4,
+            "received": 4,
+            "sum": 80,
+            "min": 19,
+            "max": 21,
+            "jitter_sum": 2,
+            "jitter_count": 3,
+            "last": 20
+          },
+          "median": 20,
+          "p95": 21,
+          "p99": 21,
+          "longest_lost": 0,
+          "longest_loss_seconds": 0
+        }
+      ],
+      [
+        {
+          "t": 1000,
+          "kind": "alert",
+          "text": "Loss 25% to <example.net>"
+        },
+        {
+          "t": 1030.5,
+          "kind": "recover",
+          "text": "fine"
+        },
+        {
+          "t": 1040,
+          "kind": "hop",
+          "ttl": 1,
+          "from": "192.0.2.1",
+          "to": "192.0.2.9"
+        },
+        {
+          "t": 5000,
+          "kind": "alert",
+          "text": "later"
+        }
+      ],
+      [
+        "example.net",
+        "192.0.2.1",
+        "192.0.2.9"
+      ],
+      true
+    ],
+    "expected": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'\"><title>TracePlotter support report</title><style>body{font:14px system-ui,sans-serif;line-height:1.5;margin:32px;color:#18202c}h1{font-size:24px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:6px;border:1px solid #ccd2da;text-align:right}th:first-child,td:first-child{text-align:left}img{max-width:100%;background:#0f1319}li{margin:8px 0}time{font-family:monospace}section{overflow:auto}@media print{body{margin:0;font-size:10px}img{break-inside:avoid}th{background:#eee}}</style></head><body>\n<h1>TracePlotter support report (DEMO — made-up data)</h1>\n<p>Target: [address 1] ([address 2])<br>Period (UTC): 1970-01-01T00:16:30.000Z → 1970-01-01T00:18:20.250Z<br>Probe settings: ICMP, interval 1000 ms<br>Address redaction: on (consistent placeholders)</p>\n<h2>Selected-period statistics</h2><p>Latencies are milliseconds, recorded here at 0.1 ms resolution. p95 and p99 use nearest rank; the median averages the two central replies for an even count. Availability is the percentage of recorded probes answered, not service uptime. Pauses and unrecorded time are excluded. Loss durations estimate consecutive missed-probe spans from the configured interval.</p>\n<section><table><thead><tr><th>Hop</th><th>Latest address in period</th><th>Sent</th><th>Received</th><th>Loss</th><th>Reply availability</th><th>Last</th><th>Average</th><th>Min</th><th>Max</th><th>Jitter</th><th>Median</th><th>p95</th><th>p99</th><th>Longest loss (probes)</th><th>Longest loss (s)</th></tr></thead><tbody><tr><td>Hop 1</td><td>[address 2]</td><td>4</td><td>3</td><td>25.00%</td><td>75.00%</td><td>11.0</td><td>10.2</td><td>9.5</td><td>11.0</td><td>0.8</td><td>10.0</td><td>11.0</td><td>11.0</td><td>1</td><td>1.0</td></tr><tr><td>Round trip</td><td>–</td><td>4</td><td>4</td><td>0.00%</td><td>100.00%</td><td>20.0</td><td>20.0</td><td>19.0</td><td>21.0</td><td>0.7</td><td>20.0</td><td>21.0</td><td>21.0</td><td>0</td><td>0.0</td></tr></tbody></table></section>\n<h2>Graphs</h2><img alt=\"Selected-period latency graphs\" src=\"data:image/png;base64,iVBORw0KGgo=\"><p>Graph labels use the recording computer's local time; the timeline below uses UTC. Red marks indicate alerts, green recoveries and blue route changes.</p>\n<h2>Alert incidents</h2><ul><li>1970-01-01T00:16:40.000Z → 1970-01-01T00:17:10.500Z · 31 s within this period · Loss 25% to &lt;[address 1]&gt;</li></ul>\n<h2>Events in period</h2><ul><li><time>1970-01-01T00:16:40.000Z</time> Alert: Loss 25% to &lt;[address 1]&gt;</li><li><time>1970-01-01T00:17:10.500Z</time> Recovered: fine</li><li><time>1970-01-01T00:17:20.000Z</time> Route changed: hop 1: [address 2] → [address 3]</li></ul></body></html>"
   }
 ]

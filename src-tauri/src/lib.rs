@@ -28,7 +28,7 @@ mod probe;
 use probe::*;
 #[cfg(feature = "legacy-ui")]
 mod background;
-#[cfg(feature = "legacy-ui")]
+#[cfg(any(feature = "legacy-ui", feature = "egui-ui"))]
 mod insights;
 #[cfg(target_os = "linux")]
 mod pingsock;
@@ -818,7 +818,7 @@ fn history_dir(session: &str) -> Result<PathBuf, String> {
 
 /// Size, position and maximized state of the window, kept between launches.
 /// Position and size are in physical pixels, of the window while not maximized.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct WindowState {
     x: i32,
     y: i32,

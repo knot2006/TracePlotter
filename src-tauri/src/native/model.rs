@@ -94,6 +94,9 @@ impl Config {
     }
 }
 
+/// Optional hop-table columns with the detailed statistics added in 0.1.13.
+pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct Session {
@@ -109,6 +112,11 @@ pub(super) struct Session {
     pub compare: Vec<String>,
     pub check_updates: bool,
     pub mcp: bool,
+    /// Sessions saved before the detailed columns existed get them hidden once.
+    #[serde(default)]
+    pub extra_columns_added: bool,
+    /// Whether the latency graph marks route changes, alerts and recoveries.
+    pub show_events: bool,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -121,7 +129,10 @@ impl Default for Session {
             settings,
             targets: Vec::new(),
             active: "summary".into(),
-            hidden_columns: vec!["mos".into()],
+            hidden_columns: std::iter::once("mos")
+                .chain(EXTRA_COLUMNS)
+                .map(String::from)
+                .collect(),
             column_order: vec![],
             column_widths: BTreeMap::new(),
             table_height: None,
@@ -129,6 +140,8 @@ impl Default for Session {
             compare: vec![],
             check_updates: true,
             mcp: false,
+            extra_columns_added: true,
+            show_events: false,
         }
     }
 }
@@ -163,6 +176,14 @@ impl Session {
         );
         if !state.span.is_finite() || state.span < 0.0 {
             return Err("invalid time span".into());
+        }
+        if !state.extra_columns_added {
+            for column in EXTRA_COLUMNS {
+                if !state.hidden_columns.iter().any(|c| c == column) {
+                    state.hidden_columns.push(column.into());
+                }
+            }
+            state.extra_columns_added = true;
         }
         Ok(state)
     }
@@ -436,6 +457,18 @@ impl Trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {
+        let old = Session::decode(r#"{"version":1,"hiddenColumns":["name"]}"#).unwrap();
+        assert!(old.extra_columns_added);
+        for column in EXTRA_COLUMNS {
+            assert!(old.hidden_columns.iter().any(|c| c == column));
+        }
+        let mut shown = old.clone();
+        shown.hidden_columns.retain(|c| c != "median");
+        let again = Session::decode(&serde_json::to_string(&shown).unwrap()).unwrap();
+        assert!(!again.hidden_columns.iter().any(|c| c == "median"));
+    }
     fn sample(t: u64, rtts: &[Option<f64>]) -> Sample {
         Sample {
             t,

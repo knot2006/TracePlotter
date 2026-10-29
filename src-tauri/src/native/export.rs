@@ -1,6 +1,8 @@
 //! Native dialogs and exports run on workers; images come from the rendered graph view.
 use super::*;
 use app::Snapshot;
+use serde_json::Value;
+use std::collections::HashSet;
 use std::io::BufRead;
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Kind {
@@ -66,7 +68,7 @@ pub(super) fn report(snapshot: &Snapshot, comma: bool) -> String {
                     .chain(
                         shown
                             .iter()
-                            .map(|id| cell(id, hop, stats).replace('–', "-")),
+                            .map(|id| cell(id, hop, stats, hop.map_or(trace.total_extras, |h| h.extras)).replace('–', "-")),
                     )
                     .collect::<Vec<_>>()
             })
@@ -330,7 +332,7 @@ fn graph_image(
             time::date_time(snapshot.plot_range[1])
         ));
         let (mut end, mut pin, mut span) = (None, None, snapshot.session.span);
-        graphs::show(ui, snapshot, &mut end, &mut pin, &mut span, compare);
+        graphs::show(ui, snapshot, &mut end, &mut pin, &mut span, compare, None);
     })
 }
 fn report_row_height(hop: Option<&app::Row>) -> usize {
@@ -404,7 +406,7 @@ fn report_pages(
                             let stats = hop.map_or(trace.total, |h| h.stats);
                             ui.monospace(hop.map_or_else(|| "RT".into(), |h| h.ttl.to_string()));
                             for id in &shown {
-                                let text = cell(id, hop, stats);
+                                let text = cell(id, hop, stats, hop.map_or(trace.total_extras, |h| h.extras));
                                 if ["ip", "name"].contains(&id.as_str()) {
                                     ui.add_sized(
                                         [230.0, (report_row_height(hop) - 6) as f32],
@@ -486,6 +488,101 @@ pub(super) fn render(
         }
     }
     Ok(path.map(|p| format!("Saved {}", p.display())))
+}
+/// The displayed period of the open tab as one HTML file: graphs, probe settings, exact hop
+/// statistics from the history files, incidents and events. Redaction replaces every name
+/// and address, graph captions included, with numbered placeholders.
+pub(super) fn support_report(
+    gpu: &eframe::egui_wgpu::RenderState,
+    snapshot: &Snapshot,
+    redacted: bool,
+    pixels_per_point: f32,
+) -> Result<Option<String>, String> {
+    let trace = snapshot
+        .traces
+        .iter()
+        .find(|t| t.config.session_id == snapshot.session.active)
+        .ok_or("Open a target before exporting a support report.")?;
+    let config = &trace.config;
+    let [from, to] = snapshot.plot_range;
+    let details = crate::insights::read_details(
+        &config.session_id,
+        (from.max(0.0) * 1000.0).floor() as u64,
+        (to.max(0.0) * 1000.0).floor() as u64 + 1,
+        config.interval_ms,
+    )?;
+    // Older events from the log, and live ones not yet written to it.
+    let mut seen = HashSet::new();
+    let mut events: Vec<Value> = read_events(config.session_id.clone())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .chain(trace.events.iter().cloned())
+        .filter(|e| seen.insert(e.to_string()))
+        .collect();
+    events.sort_by(|a, b| {
+        a["t"].as_f64().unwrap_or(0.0).total_cmp(&b["t"].as_f64().unwrap_or(0.0))
+    });
+    let addresses: Vec<String> = [config.host.clone(), trace.addr.clone()]
+        .into_iter()
+        .chain(trace.rows.iter().flat_map(|r| [r.addr.clone(), r.name.clone()]))
+        .chain(events.iter().filter(|e| e["kind"] == "hop").flat_map(|e| {
+            ["from", "to"].map(|k| e[k].as_str().unwrap_or_default().to_owned())
+        }))
+        .chain(details.iter().filter_map(|d| d.addr.map(|a| a.to_string())))
+        .collect();
+    let redactor = logic::redactor(&addresses);
+    let plain = |text: &str| text.to_owned();
+    let redact: &dyn Fn(&str) -> String = if redacted { &redactor } else { &plain };
+    let mut shown = snapshot.clone();
+    for t in &mut shown.traces {
+        t.config.host = redact(&t.config.host);
+    }
+    for plot in &mut shown.plots {
+        plot.label = redact(&plot.label);
+    }
+    let graph = graph_image(gpu, &shown, pixels_per_point).ok().and_then(|image| {
+        let mut png = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .ok()?;
+        Some(format!("data:image/png;base64,{}", report::base64(&png)))
+    });
+    let probe = format!(
+        "{}, interval {} ms, timeout {} ms, packet {} bytes, alert latency {} ms, alert loss {}%, alert window {} s",
+        layout::short_protocol(config),
+        config.interval_ms,
+        config.timeout_ms,
+        config.packet_size,
+        config.alert_latency_ms,
+        config.alert_loss_pct,
+        config.alert_seconds
+    );
+    let html = report::support_report(&report::SupportReport {
+        target: &format!("{} ({})", config.host, trace.addr),
+        from,
+        to,
+        probe: &probe,
+        details: &details,
+        events: &events,
+        graph: graph.as_deref(),
+        redact,
+        redacted,
+        demo: demo(),
+    });
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(time::export_name(
+            if redacted { "redacted" } else { &config.host },
+            "incident",
+            "html",
+        ))
+        .add_filter("html", &["html"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    fs::write(&path, html).map_err(|e| e.to_string())?;
+    Ok(Some(format!("Saved {}", path.display())))
 }
 fn pdf_images(images: &[image::RgbaImage]) -> Vec<u8> {
     use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};

@@ -1,16 +1,16 @@
 use super::*;
 
 /// Detailed statistics are read on request, rather than adding work to every graph refresh.
-#[derive(Default, Serialize)]
-pub(super) struct Detail {
-    ttl: u8,
-    addr: Option<IpAddr>,
-    total: Tally,
-    median: Option<f64>,
-    p95: Option<f64>,
-    p99: Option<f64>,
-    longest_lost: u64,
-    longest_loss_seconds: f64,
+#[derive(Clone, Default, Serialize)]
+pub(crate) struct Detail {
+    pub ttl: u8,
+    pub addr: Option<IpAddr>,
+    pub total: Tally,
+    pub median: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+    pub longest_lost: u64,
+    pub longest_loss_seconds: f64,
     #[serde(skip)]
     replies: BTreeMap<u64, u64>,
     #[serde(skip)]
@@ -100,6 +100,7 @@ fn add_round(details: &mut BTreeMap<u8, Detail>, sample: Sample, interval: u64) 
 }
 
 /// Exact period boundaries and raw rounds, including pauses, for reports and the statistics dialog.
+#[cfg(feature = "legacy-ui")]
 #[tauri::command(async)]
 pub(super) fn history_details(
     session: String,
@@ -107,7 +108,17 @@ pub(super) fn history_details(
     to: u64,
     interval: u64,
 ) -> Result<Vec<Detail>, String> {
-    let dir = history_dir(&session)?;
+    read_details(&session, from, to, interval)
+}
+
+/// Every hop's statistics, the round trip's as hop 0, over `from..to` in milliseconds.
+pub(crate) fn read_details(
+    session: &str,
+    from: u64,
+    to: u64,
+    interval: u64,
+) -> Result<Vec<Detail>, String> {
+    let dir = history_dir(session)?;
     let mut details = BTreeMap::new();
     for (_, path) in day_files(&dir)
         .into_iter()

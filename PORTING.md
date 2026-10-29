@@ -74,6 +74,8 @@ It needs a working GPU or software Vulkan adapter.
 | Toolbar, tabs, columns, settings and dialogs | `native/mod.rs`, `native/layout.rs` | Native egui controls, confirmations, notifications, WHOIS and update/elevation actions |
 | Plots, comparison and navigation | `native/graphs.rs` | Owned time bounds, linked cursors/axes, split gaps, min/max areas, jitter and mapped loss |
 | Import, time and exports | `native/import.rs`, `time.rs`, `export.rs` | CSV import, streaming raw samples, visible-column text, actual tally CSV, PNG/clipboard and paginated PDF |
+| 0.1.13 incidents and statistics | `logic.rs`, shared `insights.rs`, `native/report.rs` | Median, p95, p99 and loss-burst columns, loss explanations, incidents, correlated incidents and the HTML support report; golden comparisons against the TypeScript |
+| Background monitoring | `native/tray.rs` | Tray icon, close and minimize to tray, Hide to tray, Exit and stop monitoring, start at Windows sign-in |
 
 Statistics and graph preparation run in the controller, not in the paint callback. Views
 contain summaries and bounded series, not a clone of each tab's raw day on every frame.
@@ -174,6 +176,16 @@ This is behavior coverage, not a claim that every original test was translated v
   panic a worker. Native port errors use a stable application message rather than a Tauri
   deserialization message.
 - Restart arguments now retain `--egui` and `--demo-days N` as well as `--demo`/`--mcp`.
+- Events are not listed in a strip under the period. The Events button opens a menu with
+  the event list and Show events, off by default, which marks route changes, alerts and
+  recoveries on the latency graph. The event list stays open while events are inspected.
+- The Linux tray uses tray-icon's StatusNotifierItem backend, which runs on its own thread
+  without GTK, libappindicator or libxdo. Winit cannot hide a window on Wayland, so there
+  Hide to tray, Close to tray and Minimize to tray minimize the window instead. Showing a
+  window hidden on Windows or X11 from the tray, and start at sign-in, still need a check
+  on those systems.
+- Both interfaces keep the tray choices in `background.json` and register start at sign-in
+  under the same name, so a transition release keeps them.
 
 ## BeautifulRust and Blaze
 

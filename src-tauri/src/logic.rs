@@ -482,6 +482,290 @@ pub(super) fn group_events(events: &[Value]) -> Vec<Value> {
     groups
 }
 
+/// Restores saved alerts and recoveries as well as route changes older than the replayed
+/// rounds. Alert decisions cannot be reconstructed from samples after settings change.
+pub(super) fn restore_events(saved: &[Value], replayed: &[Value], held: f64) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    let mut events: Vec<Value> = saved
+        .iter()
+        .filter(|e| {
+            e["t"].as_f64().is_some_and(|t| t < held)
+                || matches!(e["kind"].as_str(), Some("alert" | "recover"))
+        })
+        .chain(replayed)
+        .filter(|e| seen.insert(e.to_string()))
+        .cloned()
+        .collect();
+    events.sort_by(|a, b| {
+        a["t"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["t"].as_f64().unwrap_or(0.0))
+    });
+    events
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(super) struct Incident {
+    pub from: f64,
+    pub to: Option<f64>,
+    pub text: String,
+}
+
+/// Pairs alerts with recoveries. An unmatched recovery has no known starting time.
+pub(super) fn incidents(events: &[Value]) -> Vec<Incident> {
+    let mut sorted: Vec<&Value> = events.iter().collect();
+    sorted.sort_by(|a, b| {
+        a["t"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["t"].as_f64().unwrap_or(0.0))
+    });
+    let mut result: Vec<Incident> = Vec::new();
+    let mut open = false;
+    for event in sorted {
+        let t = event["t"].as_f64().unwrap_or(0.0);
+        match event["kind"].as_str() {
+            Some("alert") if !open => {
+                result.push(Incident {
+                    from: t,
+                    to: None,
+                    text: event["text"].as_str().unwrap_or_default().into(),
+                });
+                open = true;
+            }
+            Some("recover") if open => {
+                if let Some(last) = result.last_mut() {
+                    last.to = Some(t);
+                }
+                open = false;
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+/// One line for an event as `group_events` returns it.
+pub(super) fn event_label(event: &Value) -> String {
+    let text = event["text"].as_str().unwrap_or_default();
+    match event["kind"].as_str() {
+        Some("route") => {
+            let mut moves: Vec<String> = event["hops"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|hop| {
+                    format!(
+                        "hop {}: {} → {}",
+                        hop["ttl"],
+                        hop["from"].as_str().unwrap_or_default(),
+                        hop["to"].as_str().unwrap_or_default()
+                    )
+                })
+                .collect();
+            if event["length"].is_object() {
+                moves.insert(
+                    0,
+                    format!(
+                        "{} → {} hops",
+                        event["length"]["from"], event["length"]["to"]
+                    ),
+                );
+            }
+            format!("Route changed: {}", moves.join(", "))
+        }
+        Some("alert") => format!("Alert: {text}"),
+        _ => format!("Recovered: {text}"),
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TargetIncident {
+    #[serde(flatten)]
+    pub incident: Incident,
+    pub target: String,
+    pub observed_until: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct IncidentGroup {
+    pub from: f64,
+    pub to: f64,
+    pub entries: Vec<TargetIncident>,
+}
+
+/// Groups overlapping recorded alert windows without implying that they share a cause.
+pub(super) fn correlate_incidents(mut entries: Vec<TargetIncident>) -> Vec<IncidentGroup> {
+    entries.sort_by(|a, b| a.incident.from.total_cmp(&b.incident.from));
+    let mut groups: Vec<IncidentGroup> = Vec::new();
+    for entry in entries {
+        let end = entry
+            .incident
+            .from
+            .max(entry.incident.to.unwrap_or(entry.observed_until));
+        match groups.last_mut() {
+            Some(last) if entry.incident.from <= last.to => {
+                last.to = last.to.max(end);
+                last.entries.push(entry);
+            }
+            _ => groups.push(IncidentGroup {
+                from: entry.incident.from,
+                to: end,
+                entries: vec![entry],
+            }),
+        }
+    }
+    groups
+}
+
+/// Observations about replies, never a claim that a particular router dropped transit traffic.
+/// Each argument is (sent, received).
+pub(super) fn explain_loss(hop: (u32, u32), target: (u32, u32), round_trip: bool) -> &'static str {
+    if hop.0 < 10 || target.0 < 10 {
+        return "Too few probes to interpret loss; collect at least 10 probes.";
+    }
+    if round_trip {
+        return if target.1 == 0 {
+            "No destination replies in this period. The destination may be unreachable or may filter this probe protocol; this does not establish a service outage."
+        } else if target.1 < target.0 {
+            "Some destination probes received no reply. Loss, filtering, reply limits or the return path may contribute; traceroute alone cannot identify the cause."
+        } else {
+            "The destination answered every recorded probe in this period."
+        };
+    }
+    if hop.0 == hop.1 {
+        "This hop answered every recorded probe in this period."
+    } else if target.1 == target.0 {
+        "This hop missed replies while the destination answered every probe in this period. Reply limiting or filtering may explain this; it alone is not evidence of forwarding loss."
+    } else {
+        "Both this hop and the destination missed replies in this period. This does not establish where loss occurred: probes and return paths can differ, and routers may limit replies."
+    }
+}
+
+pub(super) fn reply_availability(sent: u32, received: u32) -> String {
+    if sent == 0 {
+        "–".into()
+    } else {
+        format!("{:.2}%", f64::from(received) / f64::from(sent) * 100.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub(super) struct Extras {
+    pub median: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+    pub longest_lost: u64,
+    pub longest_loss_seconds: f64,
+}
+
+/// The value at `rank` among replies counted per tenth of a millisecond.
+fn at_rank(histogram: &BTreeMap<u64, u64>, rank: u64) -> Option<f64> {
+    let mut count = 0;
+    histogram.iter().find_map(|(value, n)| {
+        count += n;
+        (count >= rank).then_some(*value as f64 / 10.0)
+    })
+}
+
+/// Median, p95, p99 and the longest run of lost probes, from the same probes as the main
+/// table. `rounds` are the round times, so a round the hop was absent from breaks a run.
+pub(super) fn sample_extras(
+    times: &[f64],
+    rtts: &[Option<f64>],
+    interval_ms: f64,
+    rounds: &[f64],
+) -> Extras {
+    let mut histogram = BTreeMap::new();
+    let (mut received, mut lost, mut lost_start, mut longest, mut seconds) =
+        (0u64, 0u64, 0.0, 0, 0.0f64);
+    let (mut round, mut previous_round) = (0usize, -1isize);
+    for (i, (&time, rtt)) in times.iter().zip(rtts).enumerate() {
+        while round < rounds.len() && rounds[round] < time {
+            round += 1;
+        }
+        if i > 0
+            && (time - times[i - 1] > 5f64.max(3.0 * interval_ms / 1000.0)
+                || round as isize != previous_round + 1)
+        {
+            lost = 0;
+        }
+        previous_round = round as isize;
+        if let Some(rtt) = rtt {
+            *histogram
+                .entry((rtt.max(0.0) * 10.0).round() as u64)
+                .or_insert(0u64) += 1;
+            received += 1;
+            lost = 0;
+        } else {
+            if lost == 0 {
+                lost_start = time;
+            }
+            lost += 1;
+            longest = longest.max(lost);
+            seconds = seconds.max(time - lost_start + interval_ms / 1000.0);
+        }
+    }
+    let middle = at_rank(&histogram, received.div_ceil(2));
+    Extras {
+        median: middle.map(|m| {
+            if received % 2 == 0 {
+                (m + at_rank(&histogram, received / 2 + 1).unwrap_or(m)) / 2.0
+            } else {
+                m
+            }
+        }),
+        p95: at_rank(&histogram, (received as f64 * 0.95).ceil() as u64),
+        p99: at_rank(&histogram, (received as f64 * 0.99).ceil() as u64),
+        longest_lost: longest,
+        longest_loss_seconds: seconds,
+    }
+}
+
+/// Replaces each of `values` with a numbered placeholder wherever it stands alone: not
+/// inside a longer name or address. The same value always gets the same placeholder.
+pub(super) fn redactor(values: &[String]) -> impl Fn(&str) -> String + use<> {
+    let mut unique: Vec<String> = values.iter().filter(|v| !v.is_empty()).cloned().collect();
+    unique.sort();
+    unique.dedup();
+    unique.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    move |text: &str| {
+        let word = |c: char| c.is_ascii_alphanumeric() || "_:%+-".contains(c);
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        'scan: while i < text.len() {
+            let before = text[..i].chars().next_back();
+            if !before.is_some_and(|c| word(c) || c == '.') {
+                for (n, value) in unique.iter().enumerate() {
+                    if !text[i..].starts_with(value.as_str()) {
+                        continue;
+                    }
+                    let rest = &text[i + value.len()..];
+                    let mut next = rest.chars();
+                    let ends = match next.next() {
+                        Some(c) if word(c) => false,
+                        Some('.') => !next
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                        _ => true,
+                    };
+                    if ends {
+                        out.push_str(&format!("[address {}]", n + 1));
+                        i += value.len();
+                        continue 'scan;
+                    }
+                }
+            }
+            let c = text[i..].chars().next().unwrap_or_default();
+            out.push(c);
+            i += c.len_utf8();
+        }
+        out
+    }
+}
+
 pub(super) fn whois_record(text: &str) -> String {
     let mut out = String::new();
     let mut blanks = 0;
@@ -587,6 +871,10 @@ mod tests {
         let fixtures: Vec<Value> =
             serde_json::from_str(include_str!("../fixtures/legacy-logic.json")).unwrap();
         for (i, case) in fixtures.iter().enumerate() {
+            // The support report is native-only and checked in `native::report`.
+            if case["name"] == "supportReport" {
+                continue;
+            }
             let got = evaluate_fixture(case["name"].as_str().unwrap(), &case["args"]);
             compare(
                 &got,
@@ -644,6 +932,55 @@ mod tests {
                 args[4].as_f64().unwrap()
             )),
             "whoisRecord" => json!(whois_record(args[0].as_str().unwrap())),
+            "restoreEvents" => json!(restore_events(
+                args[0].as_array().unwrap(),
+                args[1].as_array().unwrap(),
+                args[2].as_f64().unwrap()
+            )),
+            "incidents" => json!(incidents(args[0].as_array().unwrap())),
+            "eventLabel" => json!(event_label(&args[0])),
+            "correlateIncidents" => json!(correlate_incidents(
+                args[0]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| TargetIncident {
+                        incident: Incident {
+                            from: e["from"].as_f64().unwrap(),
+                            to: e["to"].as_f64(),
+                            text: e["text"].as_str().unwrap().into(),
+                        },
+                        target: e["target"].as_str().unwrap().into(),
+                        observed_until: e["observedUntil"].as_f64().unwrap(),
+                    })
+                    .collect()
+            )),
+            "explainLoss" => {
+                let pair = |v: &Value| {
+                    (
+                        v["sent"].as_u64().unwrap() as u32,
+                        v["received"].as_u64().unwrap() as u32,
+                    )
+                };
+                json!(explain_loss(
+                    pair(&args[0]),
+                    pair(&args[1]),
+                    args[2].as_bool().unwrap()
+                ))
+            }
+            "replyAvailability" => json!(reply_availability(
+                args[0].as_u64().unwrap() as u32,
+                args[1].as_u64().unwrap() as u32
+            )),
+            "sampleExtras" => json!(sample_extras(
+                &serde_json::from_value::<Vec<f64>>(args[0].clone()).unwrap(),
+                &serde_json::from_value::<Vec<Option<f64>>>(args[1].clone()).unwrap(),
+                args[2].as_f64().unwrap(),
+                &serde_json::from_value::<Vec<f64>>(args[3].clone()).unwrap()
+            )),
+            "redact" => json!(redactor(
+                &serde_json::from_value::<Vec<String>>(args[0].clone()).unwrap()
+            )(args[1].as_str().unwrap())),
             _ => panic!("unknown fixture {name}"),
         }
     }

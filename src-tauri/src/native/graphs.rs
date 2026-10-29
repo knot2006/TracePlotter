@@ -2,10 +2,13 @@
 use super::*;
 use crate::logic::{GraphData, latency_axis};
 use app::Snapshot;
+use serde_json::Value;
 use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Line, Plot, PlotPoint, VLine};
 
 pub(super) enum Action {
     Live,
+    /// A route change, alert or recovery mark was clicked.
+    Event(Value),
     Export(export::Kind, Option<(String, u8)>),
     Close(u8),
     LossColors(bool),
@@ -79,13 +82,17 @@ pub(super) struct Output {
     pub action: Option<Action>,
 }
 
-const COLORS: [Color32; 6] = [
-    Color32::from_rgb(84, 186, 244),
-    Color32::from_rgb(169, 139, 250),
-    Color32::from_rgb(68, 211, 170),
-    Color32::from_rgb(255, 190, 92),
-    Color32::from_rgb(239, 126, 179),
-    Color32::from_rgb(138, 205, 86),
+/// Series colours in a fixed order, the dark steps of the dataviz reference palette with
+/// its green and red left out, as those mean good and bad here. Checked with its validator
+/// on the plot surface: lightness band, CVD separation (worst adjacent 8.4), normal-vision
+/// separation (19.3) and 3:1 contrast all pass.
+const SERIES_COLORS: [Color32; 6] = [
+    Color32::from_rgb(0x39, 0x87, 0xe5),
+    Color32::from_rgb(0xd9, 0x59, 0x26),
+    Color32::from_rgb(0x19, 0x9e, 0x70),
+    Color32::from_rgb(0xc9, 0x85, 0x00),
+    Color32::from_rgb(0xd5, 0x51, 0x81),
+    Color32::from_rgb(0x90, 0x85, 0xe9),
 ];
 /// Nulls end a path; a missing reply must never become a line through the gap.
 fn runs(xs: &[f64], ys: &[Option<f64>]) -> Vec<Vec<[f64; 2]>> {
@@ -162,7 +169,7 @@ fn points(
             plot.points(
                 egui_plot::Points::new("Latency", run)
                     .color(color)
-                    .radius(2.0),
+                    .radius(3.0),
             );
         } else {
             plot.line(
@@ -204,11 +211,12 @@ fn coverage(series: &[&app::PlotView]) -> Vec<(f64, f64)> {
     }
     merged
 }
+/// Width of each y axis strip, which holds its tick labels and its title.
+const AXIS_WIDTH: f32 = 58.0;
 fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
     vec![
         AxisHints::new_y()
-            .label("ms")
-            .min_thickness(58.0)
+            .min_thickness(AXIS_WIDTH)
             .tick_label_font(egui::FontId::proportional(12.0))
             .formatter(|mark, _| {
                 if mark.value.abs() >= 1e6 {
@@ -221,8 +229,7 @@ fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
             }),
         AxisHints::new_y()
             .placement(HPlacement::Right)
-            .label(if loss { "Loss" } else { " " })
-            .min_thickness(46.0)
+            .min_thickness(AXIS_WIDTH)
             .tick_label_font(egui::FontId::proportional(12.0))
             .formatter(move |mark, _| {
                 if loss {
@@ -232,6 +239,38 @@ fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
                 }
             }),
     ]
+}
+/// egui_plot sets rotated axis titles a quarter line outside the plot, where the window
+/// edge cuts them, so they are painted at the outer edges of its axis strips instead.
+/// Short plots get short titles, which would otherwise run past their ends.
+/// `rect` is the plot area, between the axis strips.
+fn axis_titles(ui: &egui::Ui, rect: egui::Rect, loss: bool) {
+    let short = rect.height() < 130.0;
+    let left = if loss && !short { "Latency (ms)" } else { "ms" };
+    let right = match (loss, short) {
+        (false, _) => "",
+        (true, false) => "Packet loss %",
+        (true, true) => "Loss",
+    };
+    for (text, at_right) in [(left, false), (right, true)] {
+        let galley = ui.painter().layout_no_wrap(
+            text.into(),
+            egui::FontId::proportional(13.0),
+            ui.visuals().text_color(),
+        );
+        let size = galley.size();
+        // Turned a quarter anticlockwise, the text runs upwards from `pos`, `size.y` wide.
+        let x = if at_right {
+            rect.right() + AXIS_WIDTH - size.y - 2.0
+        } else {
+            rect.left() - AXIS_WIDTH + 2.0
+        };
+        let pos = egui::pos2(x, rect.center().y + size.x / 2.0);
+        ui.painter().add(
+            egui::epaint::TextShape::new(pos, galley, ui.visuals().text_color())
+                .with_angle(-std::f32::consts::FRAC_PI_2),
+        );
+    }
 }
 fn readout(ui: &mut egui::Ui, data: &GraphData, time: f64, width: f64, span: f64) {
     let i = data.xs.partition_point(|x| *x <= time).saturating_sub(1);
@@ -246,7 +285,7 @@ fn readout(ui: &mut egui::Ui, data: &GraphData, time: f64, width: f64, span: f64
             time::time_of_day(data.xs[i])
         })
         .small()
-        .color(Color32::from_rgb(156, 163, 175)),
+        .color(palette().muted),
     );
     if data.ls[i].is_none() {
         ui.small("not probing");
@@ -307,6 +346,7 @@ pub(super) fn show(
     pinned: &mut Option<f64>,
     span: &mut f64,
     compare: bool,
+    selected: Option<&Value>,
 ) -> Output {
     let mut action = None;
     if compare {
@@ -316,6 +356,16 @@ pub(super) fn show(
     let [from, to] = snapshot.plot_range;
     let span_seconds = (to - from).max(1.0);
     let (first, latest) = navigation(snapshot);
+    // Events are marked when the Events menu asks for it, for a single target; comparisons
+    // stay unmarked.
+    let events: Vec<Value> = snapshot
+        .plots
+        .first()
+        .filter(|_| !compare && snapshot.session.show_events)
+        .and_then(|plot| snapshot.traces.iter().find(|t| t.config.session_id == plot.session))
+        .map(|trace| period_events(&trace.events, from, to))
+        .unwrap_or_default();
+    let selected = selected.filter(|e| !compare && (from..=to).contains(&time_of(e)));
     let groups = if compare {
         1
     } else {
@@ -354,6 +404,8 @@ pub(super) fn show(
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
+        // One neutral step above the black page, as the chart's own surface.
+        ui.visuals_mut().extreme_bg_color = Color32::from_rgb(0x10, 0x10, 0x10);
         let jitter_response = if with_jitter {
             ui.vertical_centered(|ui| {
                 ui.small("Jitter (ms, running average)");
@@ -368,6 +420,7 @@ pub(super) fn show(
                 * 1.2;
             let response = Plot::new((&key, "jitter"))
                 .height(48.0)
+                .show_grid(false)
                 .min_size(egui::vec2(64.0, 32.0))
                 .default_x_bounds(from, to.max(from + 1.0))
                 .default_y_bounds(0.0, jitter_max)
@@ -383,7 +436,9 @@ pub(super) fn show(
                 .allow_scroll(false)
                 .allow_zoom(false)
                 .allow_boxed_zoom(false)
+            .allow_axis_zoom_drag(false)
                 .allow_double_click_reset(false)
+                .grid_color(palette().edge)
                 .link_axis(egui::Id::unique("trace-time"), [true, false])
                 .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
                 .custom_y_axes(axes(0.0, jitter_max, false))
@@ -395,17 +450,18 @@ pub(super) fn show(
                         for run in runs(&series.data.xs, &series.data.js) {
                             p.line(
                                 Line::new("Jitter", step_run(&run))
-                                    .color(COLORS[index % COLORS.len()])
+                                    .color(series_color(index))
                                     .allow_band(false)
                                     .fill(0.0),
                             );
                         }
                     }
                     if let Some(x) = *pinned {
-                        p.vline(VLine::new("Pinned", x).color(Color32::WHITE));
+                        p.vline(VLine::new("Pinned", x).color(palette().text));
                     }
                 });
             ui.add_space(8.0);
+            axis_titles(ui, response.response.rect, false);
             Some(response.response)
         } else {
             None
@@ -427,7 +483,9 @@ pub(super) fn show(
             .allow_scroll(false)
             .allow_zoom(false)
             .allow_boxed_zoom(false)
+            .allow_axis_zoom_drag(false)
             .allow_double_click_reset(false)
+                .grid_color(palette().edge)
             .link_axis(egui::Id::unique("trace-time"), [true, false])
             .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
             .custom_y_axes(axes(ymin, ymax, true))
@@ -451,9 +509,9 @@ pub(super) fn show(
                     ymax,
                 ];
                 let colors = [
-                    Color32::from_rgb(23, 92, 65),
-                    Color32::from_rgb(125, 92, 20),
-                    Color32::from_rgb(122, 39, 52),
+                    palette().good,
+                    palette().warn,
+                    palette().bad,
                 ];
                 for (from, to) in coverage(&series) {
                     for band in 0..3 {
@@ -465,7 +523,7 @@ pub(super) fn show(
                                     &[edges[band]; 2],
                                     &[edges[band + 1]; 2],
                                 )
-                                .fill_color(colors[band].gamma_multiply(0.12))
+                                .fill_color(colors[band].gamma_multiply([0.24, 0.24, 0.26][band]))
                                 .allow_hover(false),
                             );
                         }
@@ -479,52 +537,53 @@ pub(super) fn show(
                         p.hline(
                             egui_plot::HLine::new("Threshold", threshold)
                                 .color(if threshold == snapshot.session.settings.warn_ms as f64 {
-                                    Color32::from_rgb(123, 103, 42)
+                                    palette().warn.gamma_multiply(0.55)
                                 } else {
-                                    Color32::from_rgb(119, 56, 64)
+                                    palette().bad.gamma_multiply(0.55)
                                 })
+                                .style(egui_plot::LineStyle::dashed_loose())
                                 .allow_hover(false),
                         );
                     }
                 }
                 for (index, series) in series.iter().enumerate() {
                     let color = if compare {
-                        COLORS[index % COLORS.len()]
+                        series_color(index)
                     } else {
-                        Color32::from_rgb(248, 250, 252)
+                        palette().text
                     };
                     let d = &series.data;
                     let loss_color = if compare && snapshot.session.settings.loss_by_target {
                         color
                     } else {
-                        Color32::from_rgb(223, 78, 93)
+                        palette().bad
                     };
                     let width = if d.xs.len() > 1 {
                         (d.xs.last().unwrap() - d.xs[0]) / d.xs.len() as f64
                     } else {
                         1.0
                     };
-                    let bars =
-                        d.xs.iter()
-                            .zip(&d.ls)
-                            .filter_map(|(&x, y)| {
-                                y.filter(|v| *v > 0.0).map(|y| {
-                                    Bar::new(x, y / 100.0 * (ymax - ymin))
-                                        .base_offset(ymin)
-                                        .width(width.max(0.1))
-                                })
-                            })
-                            .collect::<Vec<_>>();
+                    let bars = loss_runs(&d.xs, &d.ls, width.max(0.1))
+                        .into_iter()
+                        .map(|(x, w, y)| {
+                            // Solid blocks; outlined bars read as hatching when dense.
+                            Bar::new(x, y / 100.0 * (ymax - ymin))
+                                .base_offset(ymin)
+                                .width(w)
+                                .fill(loss_color.gamma_multiply(0.7))
+                                .stroke(egui::Stroke::NONE)
+                        })
+                        .collect::<Vec<_>>();
                     p.bar_chart(
                         BarChart::new("Loss", bars)
-                            .color(loss_color.gamma_multiply(0.35))
+                            .color(loss_color)
                             .allow_hover(false),
                     );
                     points(
                         p,
                         d,
                         color,
-                        if index >= COLORS.len() {
+                        if index >= SERIES {
                             egui_plot::LineStyle::dashed_dense()
                         } else {
                             egui_plot::LineStyle::Solid
@@ -532,17 +591,48 @@ pub(super) fn show(
                     );
                 }
                 if let Some(x) = *pinned {
-                    p.vline(VLine::new("Pinned", x).color(Color32::WHITE));
+                    p.vline(VLine::new("Pinned", x).color(palette().text));
                 }
                 p.pointer_coordinate()
             });
+        axis_titles(ui, response.response.rect, true);
+        event_marks(ui, &response.transform, &events, selected);
+        // The thresholds are named where they meet the plot's right edge, so the zones do
+        // not rest on colour alone.
+        for (threshold, color) in [
+            (snapshot.session.settings.warn_ms as f64, palette().warn),
+            (snapshot.session.settings.bad_ms as f64, palette().bad),
+        ] {
+            if threshold > ymin && threshold < ymax {
+                let frame = response.transform.frame();
+                let y = response.transform.position_from_point(&PlotPoint::new(0.0, threshold)).y;
+                ui.painter_at(*frame).text(
+                    egui::pos2(frame.right() - 4.0, y - 2.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    format!("{threshold:.0} ms"),
+                    egui::FontId::proportional(12.0),
+                    color.gamma_multiply(0.85),
+                );
+            }
+        }
+        let near_event = |x: f32| {
+            events
+                .iter()
+                .map(|e| {
+                    let at = response.transform.position_from_point_x(time_of(e));
+                    (e, (at - x).abs())
+                })
+                .filter(|(_, d)| *d <= 8.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(e, _)| e)
+        };
         if !compare {
             ui.painter().text(
                 response.response.rect.left_top() + egui::vec2(76.0, 2.0),
                 egui::Align2::LEFT_TOP,
                 &series[0].label,
                 egui::FontId::proportional(12.0),
-                COLORS[0],
+                palette().text,
             );
         }
         actual_width = response.transform.frame().width();
@@ -555,7 +645,14 @@ pub(super) fn show(
         }
         let hover = response.inner;
         if response.response.clicked() {
-            *pinned = hover.map(|p| p.x);
+            match response
+                .response
+                .interact_pointer_pos()
+                .and_then(|pos| near_event(pos.x))
+            {
+                Some(event) => action = Some(Action::Event(event.clone())),
+                None => *pinned = hover.map(|p| p.x),
+            }
         }
         if response.response.double_clicked() {
             *end = None;
@@ -597,11 +694,11 @@ pub(super) fn show(
         }
         if compare {
             ui.horizontal_wrapped(|ui| {
+                // The swatch carries the series; the name stays in text ink.
                 for (index, p) in series.iter().enumerate() {
-                    ui.colored_label(
-                        COLORS[index % COLORS.len()],
-                        RichText::new(&p.label).strong(),
-                    );
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect.shrink(1.0), 3.0, series_color(index));
+                    ui.label(RichText::new(&p.label).strong());
                 }
             });
         }
@@ -646,18 +743,24 @@ pub(super) fn show(
             .gap(12.0);
             tooltip.popup = tooltip.popup.align(egui::RectAlign::BOTTOM_END).frame(
                 egui::Frame::popup(ui.style())
-                    .fill(Color32::from_rgb(15, 19, 25))
+                    .fill(palette().raised)
                     .inner_margin(6),
             );
             tooltip.show(|ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.visuals_mut().override_text_color = Some(Color32::from_rgb(230, 234, 240));
+                ui.visuals_mut().override_text_color = Some(palette().text);
                 for series in &series {
                     if compare {
                         ui.label(RichText::new(&series.label).small().strong());
                     }
                     readout(ui, &series.data, read_time, series.width, span_seconds);
+                }
+                let x = response.transform.position_from_point_x(read_time);
+                for event in events.iter().filter(|e| {
+                    (response.transform.position_from_point_x(time_of(e)) - x).abs() <= 8.0
+                }) {
+                    ui.label(RichText::new(logic::event_label(event)).small().color(event_color(event)));
                 }
             });
         }
@@ -665,6 +768,97 @@ pub(super) fn show(
     Output {
         width: actual_width,
         action,
+    }
+}
+/// Loss as (centre, width, percent) bars, neighbouring samples with the same loss joined
+/// into one: adjacent translucent bars leave thin seams where their edges blend.
+fn loss_runs(xs: &[f64], ls: &[Option<f64>], width: f64) -> Vec<(f64, f64, f64)> {
+    let mut runs: Vec<(f64, f64, f64)> = Vec::new();
+    for (&x, y) in xs.iter().zip(ls) {
+        let Some(y) = y.filter(|v| *v > 0.0) else {
+            continue;
+        };
+        let (start, end) = (x - width / 2.0, x + width / 2.0);
+        match runs.last_mut() {
+            Some(run) if run.2 == y && start - run.1 <= width * 0.01 => run.1 = end,
+            _ => runs.push((start, end, y)),
+        }
+    }
+    runs.into_iter()
+        .map(|(start, end, y)| ((start + end) / 2.0, end - start, y))
+        .collect()
+}
+const SERIES: usize = SERIES_COLORS.len();
+fn series_color(index: usize) -> Color32 {
+    SERIES_COLORS[index % SERIES]
+}
+fn time_of(event: &Value) -> f64 {
+    event["t"].as_f64().unwrap_or(0.0)
+}
+/// Grouped route changes, alerts and recoveries inside `from..=to`.
+pub(super) fn period_events(events: &[Value], from: f64, to: f64) -> Vec<Value> {
+    logic::group_events(events)
+        .into_iter()
+        .filter(|e| (from..=to).contains(&time_of(e)))
+        .collect()
+}
+pub(super) fn event_color(event: &Value) -> Color32 {
+    match event["kind"].as_str() {
+        Some("alert") => palette().bad,
+        Some("recover") => palette().good,
+        _ => palette().accent,
+    }
+}
+pub(super) fn same_event(a: &Value, b: &Value) -> bool {
+    a["t"] == b["t"] && a["kind"] == b["kind"]
+}
+/// Dashed marks with a tab at the top; the selected event is drawn last, solid, over a band.
+fn event_marks(
+    ui: &egui::Ui,
+    transform: &egui_plot::PlotTransform,
+    events: &[Value],
+    selected: Option<&Value>,
+) {
+    let frame = *transform.frame();
+    let painter = ui.painter_at(frame);
+    // Dense route changes share a mark rather than painting the whole graph solid.
+    let mut occupied = HashSet::new();
+    for event in events {
+        let x = transform.position_from_point_x(time_of(event));
+        if !occupied.insert((x / 3.0).round() as i64) {
+            continue;
+        }
+        let color = event_color(event);
+        painter.extend(egui::Shape::dashed_line(
+            &[egui::pos2(x, frame.top()), egui::pos2(x, frame.bottom())],
+            egui::Stroke::new(1.0, color),
+            3.0,
+            3.0,
+        ));
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x - 3.0, frame.top()), egui::vec2(6.0, 6.0)),
+            0.0,
+            color,
+        );
+    }
+    if let Some(event) = selected {
+        let x = transform.position_from_point_x(time_of(event));
+        let color = event_color(event);
+        painter.rect_filled(
+            egui::Rect::from_x_y_ranges(x - 7.0..=x + 7.0, frame.y_range()),
+            0.0,
+            color.gamma_multiply(0.16),
+        );
+        painter.vline(x, frame.y_range(), egui::Stroke::new(2.0, color));
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(x - 5.0, frame.top() + 1.0),
+                egui::pos2(x + 5.0, frame.top() + 1.0),
+                egui::pos2(x, frame.top() + 10.0),
+            ],
+            color,
+            egui::Stroke::new(1.0, palette().text),
+        ));
     }
 }
 pub(super) fn zoom(span: f64, out: bool, available: f64) -> f64 {
@@ -710,6 +904,15 @@ mod tests {
                 ],
                 vec![[5.0, 20.0]],
             ]
+        );
+    }
+    #[test]
+    fn equal_neighbouring_loss_joins_into_one_bar() {
+        let xs = [0.0, 1.0, 2.0, 3.0, 5.0, 6.0];
+        let ls = [Some(20.0), Some(20.0), Some(40.0), None, Some(40.0), Some(40.0)];
+        assert_eq!(
+            loss_runs(&xs, &ls, 1.0),
+            vec![(0.5, 2.0, 20.0), (2.0, 1.0, 40.0), (5.5, 2.0, 40.0)]
         );
     }
     #[test]

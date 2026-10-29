@@ -104,6 +104,8 @@ fn decode(values: &Value) -> Result<Session, String> {
             *out = serde_json::from_value(v).map_err(|e| format!("invalid legacy {key}: {e}"))?;
         }
     }
+    // A legacy profile from before 0.1.13 has not seen the detailed columns yet.
+    state.extra_columns_added = values["traceplotter.extraColumnsAdded"].as_str() == Some("yes");
     let widths = parsed("traceplotter.columnWidths")?;
     if !widths.is_null() {
         state.column_widths = serde_json::from_value(widths).map_err(|e| e.to_string())?;

@@ -67,9 +67,12 @@ fn fixture(active: &str) -> Snapshot {
                     addr: hop.addr.unwrap().to_string(),
                     name: format!("router{}.example", hop.ttl),
                     stats: hop.stats(1000.0, 1600.0),
+                    extras: None,
                 })
                 .collect(),
             total: stats,
+            total_extras: None,
+            details_period: None,
             spark: vec![Some(20.0), None, Some(30.0)],
             events: vec![],
             from: 1000.0,
@@ -119,7 +122,7 @@ fn trace_controls_emit_typed_commands() {
 fn settings_and_minimum_window_are_accessible() {
     let (mut h, _commands) = harness("settings", [640.0, 420.0]);
     h.run();
-    assert!(h.query_all_by_label("Packet type").next().is_some());
+    assert!(h.query_all_by_label("Wait for replies").next().is_some());
     h.get_by_label("All targets").click();
     h.run();
 }
@@ -157,23 +160,22 @@ fn legacy_layout_keeps_tabs_above_controls_and_history_below_plots() {
 }
 
 #[test]
-fn settings_cards_follow_the_legacy_columns() {
+fn settings_list_their_sections_and_show_one_page_at_a_time() {
     for size in [[1100.0, 720.0], [1440.0, 900.0]] {
         let (mut h, _commands) = harness("settings", size);
         h.run();
-        let new_targets = h.get_by_label("New targets").rect();
-        let ai = h.get_by_label("AI agents").rect();
+        let new_targets = h.get_by_role_and_label(egui::accesskit::Role::Tab, "New targets").rect();
+        let ai = h.get_by_role_and_label(egui::accesskit::Role::Tab, "AI agents").rect();
         assert!(
-            new_targets.left() < ai.left(),
-            "Settings cards should use multiple columns at {size:?}"
+            new_targets.top() < ai.top() && (new_targets.left() - ai.left()).abs() < 1.0,
+            "Sections are listed down one column at {size:?}"
         );
-        if size[0] > 1300.0 {
-            let display = h.get_by_label("Display").rect();
-            assert!(
-                new_targets.left() < display.left() && display.left() < ai.left(),
-                "Wide settings must have three columns"
-            );
-        }
+        assert!(h.query_all_by_label("Wait for replies").next().is_some());
+        assert!(h.query_all_by_label("Allow AI agents to connect").next().is_none());
+        h.get_by_role_and_label(egui::accesskit::Role::Tab, "AI agents").click();
+        h.run();
+        assert!(h.query_all_by_label("Allow AI agents to connect").next().is_some());
+        assert!(h.query_all_by_label("Wait for replies").next().is_none());
     }
 }
 
@@ -462,4 +464,158 @@ fn render_native_scenarios() {
             .save(output.join(format!("{name}.png")))
             .unwrap();
     }
+}
+
+#[test]
+fn closing_a_tab_asks_in_the_window_before_erasing() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    h.get_by_label("Close example.com").click();
+    h.run();
+    assert!(commands.try_iter().all(|c| !matches!(c, Command::Close(_))));
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(h.state().erasing.is_none());
+    h.get_by_label("Close example.com").click();
+    h.run();
+    h.get_by_label("Close and erase").click();
+    h.run();
+    assert!(commands.try_iter().any(|c| matches!(c, Command::Close(id) if id == "demo-one")));
+}
+
+#[test]
+fn event_list_jumps_to_an_event_and_the_menu_sets_graph_marks() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    let mut snapshot = fixture("demo-one");
+    snapshot.traces[0].events = vec![
+        serde_json::json!({"t": 1200.0, "kind": "alert", "text": "loss 40%"}),
+        serde_json::json!({"t": 1300.0, "kind": "recover", "text": "loss 0%"}),
+    ];
+    *h.state()
+        .runtime
+        .snapshot
+        .write()
+        .expect("fixture snapshot lock") = Arc::new(snapshot);
+    h.run();
+    h.get_by_label("Events (2)").click();
+    h.run();
+    h.get_by_label("Show events").click();
+    h.run();
+    assert!(commands.try_iter().any(|c| matches!(c, Command::Preferences(s) if s.show_events)));
+    h.get_by_label("Events (2)").click();
+    h.run();
+    h.get_by_label("Event list…").click();
+    h.run();
+    // The incident above the table quotes the same alert; the table row is the last.
+    h.query_all_by_label("loss 40%").last().expect("event row").click();
+    h.run();
+    let selected = h.state().selected_event.clone().expect("event selected");
+    assert_eq!(selected["kind"], "alert");
+    assert!(h.state().end.is_some(), "Selecting an event pins the period");
+    assert!(h.state().events_open, "The list stays open for the next event");
+    h.get_by_label("Clear event").click();
+    h.run();
+    assert!(h.state().selected_event.is_none());
+    assert!(h.state().end.is_some(), "Clearing keeps the period where it is");
+}
+
+#[test]
+fn detailed_columns_show_the_controller_values() {
+    let (mut h, _commands) = harness("demo-one", [1440.0, 900.0]);
+    let mut snapshot = fixture("demo-one");
+    snapshot.session.hidden_columns = vec!["mos".into()];
+    snapshot.traces[0].total_extras = Some(logic::Extras {
+        median: Some(12.3),
+        p95: Some(45.6),
+        p99: None,
+        longest_lost: 3,
+        longest_loss_seconds: 3.0,
+    });
+    *h.state()
+        .runtime
+        .snapshot
+        .write()
+        .expect("fixture snapshot lock") = Arc::new(snapshot);
+    h.run();
+    assert!(h.query_by_label("12.3").is_some());
+    assert!(h.query_by_label("45.6").is_some());
+    assert!(h.query_by_label("3 probes · 3.0 s").is_some());
+}
+
+#[test]
+fn splitter_gives_the_graphs_more_room_and_cannot_be_lost() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    let jitter = |h: &Harness<'static, Window>| h.get_by_label("Jitter (ms, running average)").rect().top();
+    // Returns where the graphs start while the splitter is still held.
+    let drag = |h: &mut Harness<'static, Window>, dy: f32| {
+        let at = h.get_by_label("Resize table and graphs").rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        for step in 1..=4 {
+            h.event(egui::Event::PointerMoved(at + egui::vec2(0.0, dy * step as f32 / 4.0)));
+            h.run();
+        }
+        let held = jitter(h);
+        h.event(egui::Event::PointerButton {
+            pos: at + egui::vec2(0.0, dy),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        held
+    };
+    let before = jitter(&h);
+    let during = drag(&mut h, -80.0);
+    assert!(during < before - 40.0, "Graphs start higher: {before} -> {during}");
+    assert!(commands.try_iter().any(|c| matches!(c, Command::Preferences(s) if s.table_height.is_some())));
+    drag(&mut h, -2000.0);
+    assert!(h.query_by_label("Resize table and graphs").is_some(), "The splitter stays reachable");
+}
+
+#[test]
+fn settings_tab_closes_back_to_the_tab_it_came_from() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    h.get_by_label("Settings").click();
+    h.run();
+    assert_eq!(h.state().before_settings.as_deref(), Some("demo-one"));
+    let tab = h.get_by_label("Settings").rect();
+    assert!(tab.right() <= 1100.0 - 8.0, "Settings tab clear of the edge: {tab:?}");
+    // The fixture runtime does not apply the selection itself, as the controller does.
+    let mut snapshot = fixture("settings");
+    snapshot.session.active = "settings".into();
+    *h.state()
+        .runtime
+        .snapshot
+        .write()
+        .expect("fixture snapshot lock") = Arc::new(snapshot);
+    h.run();
+    while commands.try_recv().is_ok() {}
+    h.get_by_label("Settings").click();
+    h.run();
+    assert!(h.state().before_settings.is_none());
+    assert!(commands.try_iter().any(|c| matches!(c, Command::Select(id) if id == "demo-one")));
+}
+
+#[test]
+fn clicking_into_a_preset_field_opens_its_list() {
+    let (mut h, _commands) = harness("demo-one", [1440.0, 900.0]);
+    h.run();
+    assert!(h.query_by_label("5 seconds").is_none());
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Interval").click();
+    h.run();
+    h.run();
+    h.get_by_label("5 seconds").click();
+    h.run();
+    assert_eq!(h.state().toolbar_interval, 5000);
+    h.run();
+    assert!(h.query_by_label("5 seconds").is_none(), "A pick closes the list");
 }

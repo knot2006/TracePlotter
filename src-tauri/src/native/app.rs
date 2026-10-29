@@ -1,7 +1,8 @@
 //! A controller that keeps probing, alerts and MCP independent of render frames.
 
 use super::*;
-use crate::logic::{self, GraphData, Stats};
+use crate::insights::{Detail, read_details};
+use crate::logic::{self, Extras, GraphData, Stats};
 use model::{Config, Hop, Session, Trace};
 use serde_json::{Value, json};
 use std::sync::RwLock;
@@ -20,6 +21,9 @@ pub(super) struct Row {
     pub addr: String,
     pub name: String,
     pub stats: Stats,
+    /// Median, percentiles and loss bursts, when a detailed column is shown; `None` while
+    /// older history is still being read.
+    pub extras: Option<Extras>,
 }
 #[derive(Clone)]
 pub(super) struct TraceView {
@@ -31,6 +35,10 @@ pub(super) struct TraceView {
     pub alerting: bool,
     pub rows: Vec<Row>,
     pub total: Stats,
+    pub total_extras: Option<Extras>,
+    /// The period the detailed columns were read for, when it reaches past the samples in
+    /// memory; `None` while that read is pending.
+    pub details_period: Option<Option<(f64, f64)>>,
     pub spark: Vec<Option<f64>>,
     pub events: Vec<Value>,
     pub from: f64,
@@ -72,13 +80,12 @@ impl Loaded {
                 .flatten()
                 .or(trace.disk_start);
             let first = trace.target.times.first().copied().unwrap_or(f64::INFINITY);
-            let mut events = read_events(config.session_id.clone())
+            let saved = read_events(config.session_id.clone())
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|s| serde_json::from_str::<Value>(s).ok())
-                .filter(|e| e["t"].as_f64().is_some_and(|t| t < first))
                 .collect::<Vec<_>>();
-            events.append(&mut trace.events);
+            let mut events = logic::restore_events(&saved, &trace.events, first);
             if events.len() > 500 {
                 events.drain(..events.len() - 500);
             }
@@ -90,6 +97,8 @@ impl Loaded {
     }
 }
 
+/// Exact statistics for a period older than memory: its scope, the period and its hops.
+type Details = (String, (f64, f64), Vec<Detail>);
 #[derive(Clone, PartialEq)]
 pub(super) struct RangeKey {
     id: String,
@@ -127,6 +136,7 @@ pub(super) enum Command {
     Sample(String, u64, TraceEvent),
     Name(IpAddr, Option<String>),
     Range(RangeKey, Result<Range, String>),
+    Details(String, String, (f64, f64), Result<Vec<Detail>, String>),
     Failure(String),
     Save,
     ClearError,
@@ -184,6 +194,8 @@ impl Runtime {
                 stopped: HashMap::new(),
                 ranges: HashMap::new(),
                 range_pending: HashSet::new(),
+                details: HashMap::new(),
+                details_pending: HashSet::new(),
             }
             .run()
         }));
@@ -244,6 +256,8 @@ struct Controller {
     stopped: HashMap<String, std::thread::JoinHandle<()>>,
     ranges: HashMap<String, (RangeKey, Range)>,
     range_pending: HashSet<String>,
+    details: HashMap<String, Details>,
+    details_pending: HashSet<String>,
 }
 impl Controller {
     fn run(mut self) {
@@ -346,6 +360,7 @@ impl Controller {
                     self.session.span = s.span;
 
                     self.session.check_updates = s.check_updates;
+                    self.session.show_events = s.show_events;
                     if self.session.mcp != s.mcp {
                         self.mcp_choice = s.mcp;
                     }
@@ -411,6 +426,15 @@ impl Controller {
                             self.failed_ranges.insert(key.id.clone(), key);
                             self.error = Some(e);
                         }
+                    }
+                }
+                Command::Details(id, scope, period, result) => {
+                    self.details_pending.remove(&id);
+                    match result {
+                        Ok(hops) => {
+                            self.details.insert(id, (scope, period, hops));
+                        }
+                        Err(e) => self.error = Some(format!("Detailed statistics could not be read: {e}")),
                     }
                 }
                 Command::Failure(e) => self.error = Some(e),
@@ -808,6 +832,72 @@ impl Controller {
                 });
             }
             snapshot.history_loading |= old && disk.is_none();
+            // Detailed columns cost a pass over every reply, so they are only worked out for
+            // a shown tab with one of those columns visible.
+            let extras_shown = active
+                && !summary
+                && model::EXTRA_COLUMNS
+                    .iter()
+                    .any(|c| !self.session.hidden_columns.iter().any(|h| h == c));
+            let scope = format!(
+                "{} {} {} {:?}",
+                key.id,
+                key.generation,
+                self.session.span,
+                view.as_ref().and_then(|v| v.end)
+            );
+            if extras_shown && old {
+                // Live periods refresh at most twice a minute; another period asks at once.
+                let stale = self
+                    .details
+                    .get(&key.id)
+                    .is_none_or(|(s, (_, to), _)| *s != scope || (live && end - to > 30.0));
+                if stale && self.details_pending.insert(key.id.clone()) {
+                    let send = self.send.clone();
+                    let (id, scope, interval_ms) =
+                        (key.id.clone(), scope.clone(), trace.config.interval_ms);
+                    std::thread::spawn(move || {
+                        let result = read_details(
+                            &id,
+                            (start.max(0.0) * 1000.0) as u64,
+                            (end.max(0.0) * 1000.0) as u64 + 1,
+                            interval_ms,
+                        );
+                        let _ = send.send(Command::Details(id, scope, (start, end), result));
+                    });
+                }
+            }
+            let details = (extras_shown && old).then(|| {
+                self.details
+                    .get(&key.id)
+                    .filter(|(s, ..)| *s == scope)
+                    .map(|(_, period, hops)| (*period, hops))
+            });
+            let extras = |ttl: u8, hop: &Hop| -> Option<Extras> {
+                if !extras_shown {
+                    return None;
+                }
+                match details {
+                    Some(found) => found.and_then(|(_, hops)| {
+                        hops.iter().find(|d| d.ttl == ttl).map(|d| Extras {
+                            median: d.median,
+                            p95: d.p95,
+                            p99: d.p99,
+                            longest_lost: d.longest_lost,
+                            longest_loss_seconds: d.longest_loss_seconds,
+                        })
+                    }),
+                    None => {
+                        let (b, r) = (hop.bounds(start, end), trace.target.bounds(start, end));
+                        Some(logic::sample_extras(
+                            &hop.times[b.clone()],
+                            &hop.rtts[b],
+                            trace.config.interval_ms as f64,
+                            &trace.target.times[r],
+                        ))
+                    }
+                }
+            };
             let total = |ttl: u8, hop: &Hop| {
                 disk.map_or_else(
                     || hop.stats(start, end),
@@ -832,6 +922,7 @@ impl Controller {
                     addr: hop.addr.map_or_else(|| "*".into(), |a| a.to_string()),
                     name: hop.name.clone().unwrap_or_default(),
                     stats: total(hop.ttl, hop),
+                    extras: extras(hop.ttl, hop),
                 })
                 .collect();
             snapshot.traces.push(TraceView {
@@ -844,6 +935,8 @@ impl Controller {
                 alerting: trace.alerting,
                 rows,
                 total: total(0, &trace.target),
+                total_extras: extras(0, &trace.target),
+                details_period: details.map(|found| found.map(|(period, _)| period)),
                 spark: if let Some(disk) = disk {
                     let values = disk
                         .hops
@@ -905,15 +998,29 @@ impl Controller {
                         };
                         let label = if view.as_ref().is_some_and(|v| v.session == "summary") {
                             trace.config.host.clone()
-                        } else if ttl == 0 {
-                            "Round trip".into()
                         } else {
-                            format!(
-                                "Hop {ttl}: {}",
-                                hop.name.clone().unwrap_or_else(|| hop
-                                    .addr
-                                    .map_or_else(|| "*".into(), |a| a.to_string()))
-                            )
+                            // Worded as the legacy graph heading: the name, its address,
+                            // and whether this is the round trip.
+                            // The target row carries no name or address of its own.
+                            let (name, addr) = if ttl == 0 {
+                                (
+                                    hop.name.clone().or_else(|| Some(trace.config.host.clone())),
+                                    hop.addr.or(trace.addr),
+                                )
+                            } else {
+                                (hop.name.clone(), hop.addr)
+                            };
+                            let who = match (&name, addr) {
+                                (Some(name), Some(addr)) => format!("{name} ({addr})"),
+                                (Some(name), None) => name.clone(),
+                                (None, Some(addr)) => addr.to_string(),
+                                (None, None) => "no reply".into(),
+                            };
+                            match (ttl, hop.ttl) {
+                                (0, 0) => format!("{who} round trip"),
+                                (0, last) => format!("{who} round trip, hop {last}"),
+                                _ => format!("{who} hop {ttl}"),
+                            }
                         };
                         snapshot.plots.push(PlotView {
                             session: trace.config.session_id.clone(),
@@ -1146,6 +1253,8 @@ mod tests {
             stopped: HashMap::new(),
             ranges: HashMap::new(),
             range_pending: HashSet::new(),
+            details: HashMap::new(),
+            details_pending: HashSet::new(),
         }
     }
     fn sample(t: u64) -> TraceEvent {
