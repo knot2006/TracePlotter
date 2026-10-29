@@ -19,6 +19,7 @@ use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tr
 
 #[cfg(any(windows, target_os = "linux"))]
 mod echo;
+mod gui;
 #[cfg(any(feature = "egui-ui", test))]
 mod logic;
 mod mcp;
@@ -1455,7 +1456,7 @@ fn restart_args() -> Vec<String> {
     let mut original = std::env::args().skip(1);
     while let Some(arg) = original.next() {
         match arg.as_str() {
-            "--demo" | "--mcp" | "--egui" => args.push(arg),
+            "--demo" | "--mcp" | "--egui" | "--classic" => args.push(arg),
             "--demo-days" => {
                 args.push(arg);
                 if let Some(days) = original.next() {
@@ -1645,7 +1646,8 @@ fn run_legacy() {
             fs::create_dir_all(data_dir())?;
             #[cfg(windows)]
             app.handle().plugin(tauri_plugin_autostart::init(
-                tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--background"]),
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                Some(vec!["--background"]),
             ))?;
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // Made-up data must not pass for a real trace, in the window or a screenshot of it.
@@ -1657,6 +1659,7 @@ fn run_legacy() {
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(640.0, 420.0)
                 .data_directory(data_dir().join("webview"))
+                .initialization_script(gui::legacy_script()?)
                 // Tauri's own file-drop handling swallows drag and drop inside the page
                 // on Windows, which the hop table uses to reorder its columns.
                 .disable_drag_drop_handler()
@@ -1689,6 +1692,9 @@ fn run_legacy() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            gui::gui_status,
+            gui::switch_gui,
+            gui::finish_gui_import,
             start_trace,
             stop_trace,
             read_history,
@@ -1727,7 +1733,7 @@ fn run_legacy() {
         .expect("error while running tauri application");
 }
 
-/// Starts the desktop interface selected at build time.
+/// Starts the saved interface, with command-line overrides for one run.
 pub fn run() {
     #[cfg(feature = "legacy-migration")]
     if std::env::args().any(|a| a == "--migrate-legacy-state") {
@@ -1735,8 +1741,9 @@ pub fn run() {
         return;
     }
     #[cfg(feature = "egui-ui")]
-    if !cfg!(feature = "legacy-ui") || std::env::args().any(|a| a == "--egui") {
+    if gui::selected() == gui::Interface::Native {
         native::run();
+        return;
     }
     #[cfg(feature = "legacy-ui")]
     run_legacy();

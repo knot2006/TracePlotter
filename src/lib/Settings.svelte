@@ -66,10 +66,31 @@
   let background = $state<BackgroundStatus>();
   let backgroundBusy = $state(false);
   let backgroundError = $state("");
+  let nativeAvailable = $state(false);
+  let interfaceReady = $state(false);
+  let interfaceBusy = $state(false);
+  let interfaceError = $state("");
   onMount(() => {
     invoke<BackgroundStatus>("background_status").then((status) => background = status)
       .catch((e) => backgroundError = String(e));
+    invoke<{ nativeAvailable: boolean }>("gui_status").then((status) => nativeAvailable = status.nativeAvailable)
+      .catch((e) => interfaceError = String(e)).finally(() => interfaceReady = true);
   });
+
+  async function switchInterface() {
+    interfaceBusy = true;
+    interfaceError = "";
+    try {
+      const values = Object.fromEntries(Object.keys(localStorage)
+        .filter((key) => key.startsWith("traceplotter."))
+        .map((key) => [key, localStorage.getItem(key)]));
+      await invoke("switch_gui", { values });
+    } catch (e) {
+      interfaceError = `The interface was not switched: ${e}`;
+      interfaceBusy = false;
+      showToast(interfaceError, true);
+    }
+  }
 
   async function setBackground(key: "closeToTray" | "minimizeToTray" | "startup", field: HTMLInputElement) {
     if (!background) return;
@@ -104,6 +125,16 @@
      on the right. -->
 <div class="settings">
 <div class="cards">
+  <section>
+    <h2>Interface</h2>
+    <p>Try the native GUI preview. Switching restarts the app and keeps your tabs, settings and history.</p>
+    {#if interfaceReady && !nativeAvailable && !interfaceError}<p>This build includes only the classic interface.</p>{/if}
+    {#if interfaceError}<p role="alert">{interfaceError}</p>{/if}
+    <div class="row"><span>Classic</span>
+      <button disabled={!nativeAvailable || interfaceBusy} onclick={switchInterface}>{interfaceBusy ? "Restarting…" : "Switch to native GUI and restart"}</button>
+    </div>
+    <p>You can switch back in the native interface's Settings.</p>
+  </section>
   <section>
     <h2>Background monitoring</h2>
     <p>Monitoring and alerts continue while the window is hidden. Reopen it from the tray icon. File > Exit or the tray's Exit and stop monitoring ends the app.</p>
@@ -420,5 +451,9 @@
     border-radius: 6px;
     padding: 2px 10px;
     cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 </style>

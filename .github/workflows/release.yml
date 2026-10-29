@@ -137,7 +137,7 @@ jobs:
         with:
           toolchain: stable
       # linuxdeploy, which makes the AppImage, is an AppImage itself and runs through FUSE 2.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libfuse2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libwayland-dev libxkbcommon-dev libfuse2
       - run: npm ci
       - run: npm run tauri build -- --bundles deb,rpm,appimage
       - name: Add the packages to the release

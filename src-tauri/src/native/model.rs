@@ -101,6 +101,7 @@ pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct Session {
     pub version: u32,
+    pub theme: Theme,
     pub settings: Settings,
     pub targets: Vec<Config>,
     pub active: String,
@@ -126,6 +127,7 @@ impl Default for Session {
         }
         Self {
             version: 1,
+            theme: Theme::default(),
             settings,
             targets: Vec::new(),
             active: "summary".into(),
@@ -211,37 +213,7 @@ impl Session {
     }
 }
 
-pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temp = path.with_extension("json.new");
-    let mut file = fs::File::create(&temp).map_err(|e| e.to_string())?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    drop(file);
-    #[cfg(not(windows))]
-    fs::rename(&temp, path).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        };
-        let from: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
-        let to: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-        // SAFETY: both paths are valid, zero-terminated UTF-16 buffers for this call.
-        if unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-    }
-    Ok(())
-}
+pub(super) use crate::gui::atomic_write;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Hop {

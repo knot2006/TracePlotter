@@ -8,7 +8,9 @@ code is kept portable.
 
 ## Native egui preview
 
-The Rust interface is available behind `egui-ui`; the legacy interface remains the default.
+Normal builds include both interfaces and start with the classic one. Click **Switch to native GUI
+and restart** under **Settings > Interface** to use the Rust interface. The native
+interface offers the return switch under **Settings > Display > Interface**.
 From the repository root, `cargo native -- --demo` runs it without npm or WebKit, and
 `cargo native-test` runs its unit and widget checks. [PORTING.md](PORTING.md) covers saved
 session migration, exports, the optional Blaze hook and platform acceptance still needed.

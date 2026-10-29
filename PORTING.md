@@ -1,7 +1,8 @@
 # Native GUI port
 
-The egui interface is an opt-in preview. The Svelte/Tauri interface remains the default
-and the published release workflow is unchanged. This is the implementation record for
+The egui interface is an opt-in preview. Normal builds include both interfaces and start
+with the classic Svelte/Tauri interface unless a different choice has been saved in Settings.
+This is the implementation record for
 [the migration plan](docs/egui-port-plan.md). Platform acceptance and cutover are still open.
 
 ## Run and verify
@@ -19,6 +20,15 @@ cargo clippy --lib --tests --no-default-features --features egui-ui,ui-tests --m
 Add `--mcp` for agent tools and `--demo-days 2` for a longer synthetic history. Keep
 `--demo` when using either interface for QA; data then goes into the separate demo folder.
 Agent requests still use intervals of at least 1000 ms. Manual intervals remain separate.
+
+In a normal build, **Settings > Interface > Switch to native GUI and restart** transfers
+the current browser session directly and remembers the choice in `interface.json` in the data
+folder. The native GUI offers the return switch under **Settings > Display > Interface**.
+Returning restores the native session to browser storage before the page loads, keeping a
+`traceplotter.classicBeforeNative` browser-storage backup. Session IDs and history files stay
+unchanged. Restart arguments preserve demo and MCP flags and wait for the old process to exit.
+`--classic` and `--egui` override the saved choice for one run; changing the setting persists it.
+Single-interface builds disable the unavailable choice and keep their existing startup path.
 
 To import a released Tauri installation's browser state, build the transition feature:
 

@@ -93,7 +93,7 @@ fn fixture(active: &str) -> Snapshot {
 fn harness(active: &str, size: [f32; 2]) -> (Harness<'static, Window>, mpsc::Receiver<Command>) {
     let (runtime, commands) = Runtime::fixture(fixture(active));
     let h = Harness::builder().with_size(size).build_eframe(|cc| {
-        apply_theme(&cc.egui_ctx);
+        apply_theme(&cc.egui_ctx, Theme::Ink);
         let mut window = Window::with_runtime(runtime);
         window.placed = true;
         window.window_state = None;
@@ -118,6 +118,86 @@ fn trace_controls_emit_typed_commands() {
     h.run();
     assert!(h.state().end.is_none());
 }
+#[test]
+fn window_corners_resize_from_either_edge_without_covering_controls() {
+    use egui::{CursorIcon as C, ResizeDirection as D};
+    let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    for (pos, direction, cursor) in [
+        ([7.0, 24.0], D::NorthWest, C::ResizeNorthWest),
+        ([24.0, 7.0], D::NorthWest, C::ResizeNorthWest),
+        ([1093.0, 24.0], D::NorthEast, C::ResizeNorthEast),
+        ([1076.0, 7.0], D::NorthEast, C::ResizeNorthEast),
+        ([7.0, 696.0], D::SouthWest, C::ResizeSouthWest),
+        ([24.0, 713.0], D::SouthWest, C::ResizeSouthWest),
+        ([1093.0, 696.0], D::SouthEast, C::ResizeSouthEast),
+        ([1076.0, 713.0], D::SouthEast, C::ResizeSouthEast),
+    ] {
+        let pos = egui::pos2(pos[0], pos[1]);
+        h.hover_at(pos);
+        h.run();
+        assert_eq!(
+            h.output().platform_output.cursor_icon,
+            cursor,
+            "Corner cursor at {pos:?}"
+        );
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert!(h.output().viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::BeginResize(actual) if *actual == direction))), "Start corner resize at {pos:?}");
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+    }
+    for pos in [
+        h.get_by_label("Close window").rect().center(),
+        egui::pos2(1084.0, 705.0),
+    ] {
+        h.hover_at(pos);
+        h.run();
+        assert!(
+            !matches!(
+                h.output().platform_output.cursor_icon,
+                C::ResizeNorthWest | C::ResizeNorthEast | C::ResizeSouthWest | C::ResizeSouthEast
+            ),
+            "Nearby controls must remain usable at {pos:?}"
+        );
+    }
+}
+
+#[test]
+fn settings_offers_the_interface_choice_without_restarting_on_selection() {
+    let (mut h, _commands) = harness("settings", [1100.0, 720.0]);
+    h.state_mut().settings_page = 1;
+    h.run();
+    assert!(h.query_all_by_label("User interface").next().is_some());
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "User interface").click();
+    h.run();
+    h.get_by_label("Classic").click();
+    h.run();
+    assert_eq!(
+        h.state().interface_choice,
+        if cfg!(feature = "legacy-ui") {
+            crate::gui::Interface::Classic
+        } else {
+            crate::gui::Interface::Native
+        }
+    );
+    assert!(
+        !h.state().busy && !h.state().needs_exit,
+        "Choosing an interface must wait for Apply and restart"
+    );
+    assert!(h.query_by_label("Apply and restart").is_some());
+}
+
 #[test]
 fn settings_and_minimum_window_are_accessible() {
     let (mut h, _commands) = harness("settings", [640.0, 420.0]);
@@ -434,10 +514,14 @@ fn render_native_scenarios() {
         ("demo-one", "trace-small", [640.0, 420.0]),
         ("summary", "summary", [1100.0, 720.0]),
         ("settings", "settings", [1100.0, 720.0]),
+        ("settings", "settings-interface", [1100.0, 720.0]),
         ("settings", "settings-wide", [1440.0, 900.0]),
         ("demo-one", "probe-dialog", [1100.0, 720.0]),
     ] {
         let (mut h, _commands) = harness(active, size);
+        if name == "settings-interface" {
+            h.state_mut().settings_page = 1;
+        }
         if name == "probe-dialog" {
             h.state_mut().editing = Some((fixture(active).session.targets[0].clone(), false));
         }

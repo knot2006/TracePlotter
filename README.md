@@ -113,6 +113,10 @@ target starts with, the latency limits of the green, yellow and red colours, the
 history, the columns of the hop table, the port of the MCP server, the update check and
 a switch for desktop notifications.
 
+To try the new GUI, open **Settings > Interface** and click **Switch to native GUI and restart**.
+Tabs, settings and history carry over. To switch back, use
+**Settings > Display > Interface** in the native GUI. The choice is remembered between launches.
+
 ## Asking AI agents about your connection
 
 TracePlotter can let AI agents such as Claude read its traces, so you can ask them things like "why

@@ -14,7 +14,7 @@ name = "traceplotter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["legacy-ui"]
+default = ["legacy-ui", "egui-ui"]
 dev-live = ["egui-ui", "dep:blaze-live"]
 ui-tests = ["egui-ui", "dep:egui_kittest"]
 legacy-migration = ["legacy-ui", "egui-ui", "tauri/custom-protocol"]

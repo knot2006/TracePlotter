@@ -1,6 +1,6 @@
 //! Reads legacy storage through its original webview origin, in a separate process.
 use super::*;
-#[cfg(any(feature = "legacy-migration", test))]
+#[cfg(any(feature = "legacy-ui", test))]
 use serde_json::Value;
 
 pub(super) fn prepare() -> Result<(), String> {
@@ -62,7 +62,7 @@ fn migration_failed(app: tauri::AppHandle, error: String) {
     app.exit(1);
 }
 
-#[cfg(any(feature = "legacy-migration", test))]
+#[cfg(any(feature = "legacy-ui", test))]
 fn decode(values: &Value) -> Result<Session, String> {
     let parsed = |key: &str| -> Result<Value, String> {
         match values[key].as_str() {
@@ -128,6 +128,61 @@ fn decode(values: &Value) -> Result<Session, String> {
     Session::decode(&serde_json::to_string(&state).map_err(|e| e.to_string())?)
 }
 
+#[cfg(feature = "legacy-ui")]
+pub(crate) fn import_values(values: &Value) -> Result<(), String> {
+    decode(values)?.save()
+}
+
+#[cfg(feature = "legacy-ui")]
+pub(crate) fn export_values() -> Result<Value, String> {
+    legacy_values(&Session::load()?)
+}
+
+#[cfg(any(feature = "legacy-ui", test))]
+fn legacy_values(state: &Session) -> Result<Value, String> {
+    let mut values = serde_json::Map::new();
+    for (key, value) in [
+        ("session", serde_json::to_value(&state.targets)),
+        ("settings", serde_json::to_value(&state.settings)),
+        ("hiddenColumns", serde_json::to_value(&state.hidden_columns)),
+        ("columnOrder", serde_json::to_value(&state.column_order)),
+        ("columnWidths", serde_json::to_value(&state.column_widths)),
+        ("compare", serde_json::to_value(&state.compare)),
+    ] {
+        values.insert(
+            format!("traceplotter.{key}"),
+            Value::String(value.map_err(|e| e.to_string())?.to_string()),
+        );
+    }
+    for (key, value) in [
+        ("activeTab", state.active.clone()),
+        ("timeSpan", state.span.to_string()),
+        (
+            "checkUpdatesAtStart",
+            if state.check_updates { "yes" } else { "no" }.into(),
+        ),
+        ("mcpServer", if state.mcp { "on" } else { "off" }.into()),
+        (
+            "extraColumnsAdded",
+            if state.extra_columns_added {
+                "yes"
+            } else {
+                "no"
+            }
+            .into(),
+        ),
+    ] {
+        values.insert(format!("traceplotter.{key}"), Value::String(value));
+    }
+    values.insert(
+        "traceplotter.tableHeight".into(),
+        state
+            .table_height
+            .map_or(Value::Null, |height| Value::String(height.to_string())),
+    );
+    Ok(Value::Object(values))
+}
+
 #[cfg(feature = "legacy-migration")]
 pub(crate) fn run() {
     let result = tauri::Builder::default()
@@ -166,5 +221,17 @@ mod tests {
     #[test]
     fn corrupt_legacy_session_is_reported_instead_of_overwritten() {
         assert!(decode(&json!({"traceplotter.session":"broken"})).is_err());
+    }
+    #[test]
+    fn switching_interfaces_keeps_sessions_settings_and_layout() {
+        let source = json!({"traceplotter.session":r#"[{"sessionId":"kept-id","host":"example.com","paused":true}]"#,"traceplotter.activeTab":"kept-id","traceplotter.settings":r#"{"warnMs":150,"historyDays":14}"#,"traceplotter.timeSpan":"3600","traceplotter.tableHeight":"200","traceplotter.hiddenColumns":"[\"mos\"]","traceplotter.columnOrder":"[\"name\",\"ip\"]","traceplotter.columnWidths":"{\"ip\":220}","traceplotter.compare":"[\"kept-id\"]","traceplotter.mcpServer":"on","traceplotter.checkUpdatesAtStart":"no"});
+        let original = decode(&source).unwrap();
+        let values = legacy_values(&original).unwrap();
+        let restored = decode(&values).unwrap();
+        assert_eq!(
+            serde_json::to_value(&original).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
+        assert_eq!(values["traceplotter.extraColumnsAdded"], "yes");
     }
 }
