@@ -5,9 +5,11 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 mod agent;
 mod app;
+mod context;
 mod export;
 mod graphs;
 mod import;
+mod layout;
 pub(super) mod migration;
 mod model;
 mod time;
@@ -58,18 +60,18 @@ pub(super) fn run() {
     }
 }
 const COLUMNS: [(&str, &str); 12] = [
-    ("ip", "IP address"),
+    ("ip", "IP"),
     ("name", "Name"),
-    ("loss", "Loss %"),
+    ("loss", "Loss"),
     ("sent", "Sent"),
-    ("recv", "Received"),
+    ("recv", "Recv"),
     ("last", "Last"),
-    ("avg", "Average"),
+    ("avg", "Avg"),
     ("min", "Min"),
     ("max", "Max"),
     ("jitter", "Jitter"),
     ("mos", "MOS"),
-    ("bar", "Latency"),
+    ("bar", "Latency bar"),
 ];
 enum Job {
     Message(Result<Option<String>, String>),
@@ -81,6 +83,9 @@ enum Job {
 struct Window {
     runtime: Runtime,
     host: String,
+    toolbar_protocol: String,
+    toolbar_port: u16,
+    toolbar_interval: u64,
     selected: Vec<u8>,
     last_view: Option<View>,
     error: Option<String>,
@@ -89,6 +94,7 @@ struct Window {
     pinned: Option<f64>,
     editing: Option<(Config, bool)>,
     columns_open: bool,
+    reset_columns: bool,
     events_open: bool,
     whois: Option<(IpAddr, String)>,
     jobs: mpsc::Receiver<Job>,
@@ -136,18 +142,23 @@ impl Window {
     }
     fn with_runtime(runtime: Runtime) -> Self {
         let (send, jobs) = mpsc::channel();
-        let host = {
+        let config = {
             let snapshot = runtime.read();
             snapshot
                 .session
                 .targets
                 .iter()
-                .find(|t| t.session_id == snapshot.session.active)
-                .map_or_else(String::new, |t| t.host.clone())
+                .find(|target| target.session_id == snapshot.session.active)
+                .cloned()
+                .unwrap_or_else(|| Config::new(String::new(), &snapshot.session.settings))
         };
+        let host = config.host.clone();
         Self {
             runtime,
             host,
+            toolbar_protocol: config.protocol,
+            toolbar_port: config.port,
+            toolbar_interval: config.interval_ms,
             selected: vec![0],
             last_view: None,
             error: None,
@@ -156,6 +167,7 @@ impl Window {
             pinned: None,
             editing: None,
             columns_open: false,
+            reset_columns: false,
             events_open: false,
             whois: None,
             jobs,
@@ -223,7 +235,10 @@ impl Window {
             .iter()
             .find(|t| t.config.session_id == session.active)
         {
-            self.host = trace.config.host.clone();
+            self.sync_toolbar(&trace.config);
+        }
+        if matches!(session.active.as_str(), "summary" | "settings") {
+            self.sync_toolbar(&Config::new(String::new(), &session.settings));
         }
         self.end = None;
         self.pinned = None;
@@ -384,6 +399,8 @@ impl Window {
             .traces
             .iter()
             .find(|t| t.config.session_id == session.active);
+        let control_height = ui.spacing().interact_size.y;
+        ui.spacing_mut().interact_size.y = 24.0;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New target       Ctrl+T").clicked() {
@@ -495,6 +512,22 @@ impl Window {
                 if ui.button("Columns…").clicked() {
                     self.columns_open = true;
                     ui.close();
+                }
+                let (first, last) = graphs::navigation(snapshot);
+                for (label, direction) in [("Earlier", -1.0), ("Later", 1.0)] {
+                    if ui
+                        .add_enabled(session.span > 0.0, egui::Button::new(label))
+                        .clicked()
+                    {
+                        self.end = graphs::pan(
+                            self.end.unwrap_or(last),
+                            direction * session.span / 2.0,
+                            session.span,
+                            first,
+                            last,
+                        );
+                        ui.close();
+                    }
                 }
                 if ui.button("Return to live   Ctrl+L").clicked() {
                     self.end = None;
@@ -618,38 +651,16 @@ impl Window {
                 ui.colored_label(Color32::from_rgb(255, 195, 75), "DEMO");
             }
         });
+        ui.spacing_mut().interact_size.y = control_height;
         changed
     }
-    fn settings(&mut self, ui: &mut egui::Ui, session: &mut Session) -> bool {
-        let mut changed = false;
-        ui.heading("Settings");
-        ui.label(
-            "Defaults apply to new targets. Each open target keeps its probe and alert settings.",
-        );
-        egui::ScrollArea::vertical().show(ui,|ui|{
-            let s=&mut session.settings;
-            egui::Grid::new("defaults").num_columns(2).spacing([30.0,10.0]).show(ui,|ui|{
-                ui.label("Packet type");changed|=protocol(ui,&mut s.protocol);ui.end_row();
-                let label=ui.label("Interval");
-                egui::ComboBox::from_id_salt("default-interval").selected_text(format!("{} seconds",s.interval_ms as f64/1000.0)).show_ui(ui,|ui|{
-                    for ms in [500,1000,2500,5000,10000]{changed|=ui.selectable_value(&mut s.interval_ms,ms,format!("{} seconds",ms as f64/1000.0)).changed();}
-                }).response.labelled_by(label.id);ui.end_row();
-                for(label,value,min,max,suffix)in[("Timeout",&mut s.timeout_ms,100,10000," ms"),("Alert latency (0 = off)",&mut s.alert_latency_ms,0,60000," ms"),("Alert loss (0 = off)",&mut s.alert_loss_pct,0,100," %"),("Alert window",&mut s.alert_seconds,1,3600," s"),("Warning latency",&mut s.warn_ms,1,10000," ms"),("Bad latency",&mut s.bad_ms,2,60000," ms"),("Keep history",&mut s.history_days,1,365," days")]{
-                    let label=ui.label(label);changed|=ui.add(egui::DragValue::new(value).range(min..=max).suffix(suffix)).labelled_by(label.id).changed();ui.end_row();
-                }
-                let label=ui.label("Packet size");changed|=ui.add(egui::DragValue::new(&mut s.packet_size).range(48..=1024).suffix(" bytes")).labelled_by(label.id).changed();ui.end_row();
-                let label=ui.label("MCP port");changed|=ui.add(egui::DragValue::new(&mut s.mcp_port).range(1024..=65535)).labelled_by(label.id).changed();ui.end_row();
-            });
-            s.bad_ms=s.bad_ms.max(s.warn_ms+1);
-            changed|=ui.checkbox(&mut s.notifications,"Desktop notifications for alerts and route changes").changed();
-            changed|=ui.checkbox(&mut s.loss_by_target,"Colour comparison loss bars by target").changed();
-            changed|=ui.checkbox(&mut session.mcp,"Allow AI agents to connect to the loopback MCP server").changed();
-            ui.label("Agent probes never run faster than once a second. Stop sharing by clearing the checkbox.");
-            if ui.button("Restore default settings").clicked(){s.clone_from(&Session::default().settings);changed=true;}
-        });
-        changed
-    }
-    fn table(&mut self, ui: &mut egui::Ui, trace: &TraceView, session: &mut Session) -> bool {
+    fn table(
+        &mut self,
+        ui: &mut egui::Ui,
+        trace: &TraceView,
+        session: &mut Session,
+        snapshot: &Snapshot,
+    ) -> bool {
         let mut changed = false;
         let columns = ordered_columns(session)
             .into_iter()
@@ -658,52 +669,94 @@ impl Window {
         let height = self
             .table_height
             .or(session.table_height)
-            .unwrap_or(242.0)
-            .clamp(65.0, (ui.available_height() - 250.0).max(65.0));
+            .unwrap_or((trace.rows.len() + 1) as f32 * 32.0)
+            .clamp(0.0, (ui.available_height() - 287.0).max(0.0));
+        if height < 1.0 {
+            return false;
+        }
         egui::ScrollArea::horizontal()
             .id_salt("table-horizontal")
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 let released = ui.input(|i| i.pointer.any_released());
                 let multiple = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
                 let mut table = egui_extras::TableBuilder::new(ui)
                     .id_salt(("hops", columns.join(",")))
-                    .striped(true)
+                    .striped(false)
                     .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .sense(egui::Sense::click())
                     .max_scroll_height(height)
                     .min_scrolled_height(height)
                     .auto_shrink([false, false])
-                    .column(egui_extras::Column::initial(38.0).at_least(32.0));
+                    .column(egui_extras::Column::initial(52.0).at_least(32.0));
                 for id in &columns {
-                    table =
-                        table.column(
+                    let column =
+                        if id == "bar" {
+                            egui_extras::Column::remainder().at_least(152.0)
+                        } else {
                             egui_extras::Column::initial(
                                 session.column_widths.get(id).copied().unwrap_or(
                                     match id.as_str() {
-                                        "ip" => 120.0,
-                                        "name" => 160.0,
-                                        "bar" => 130.0,
-                                        _ => 67.0,
+                                        "ip" => 140.0,
+                                        "name" => 240.0,
+                                        "loss" => 68.0,
+                                        _ => 64.0,
                                     },
                                 ),
                             )
-                            .at_least(40.0),
-                        );
+                            .at_least(40.0)
+                        };
+                    table = table.column(column);
+                }
+                if self.reset_columns {
+                    table.reset();
+                    self.reset_columns = false;
                 }
                 table
-                    .header(23.0, |mut row| {
+                    .header(27.0, |mut row| {
                         row.col(|ui| {
-                            ui.strong("Hop");
+                            ui.add_sized(
+                                [52.0, 27.0],
+                                egui::Label::new(RichText::new("Hop").small()),
+                            );
+                            let response = ui.interact(
+                                ui.max_rect(),
+                                ui.scope_id().with("column-menu"),
+                                egui::Sense::click(),
+                            );
+                            response
+                                .context_menu(|ui| changed |= self.column_menu(ui, session, None));
                         });
                         for id in &columns {
                             row.col(|ui| {
-                                ui.strong(COLUMNS.iter().find(|c| c.0 == id).map_or("", |c| c.1));
+                                let direction = if ["ip", "name", "bar"].contains(&id.as_str()) {
+                                    egui::Layout::left_to_right(egui::Align::Center)
+                                } else {
+                                    egui::Layout::right_to_left(egui::Align::Center)
+                                };
+                                ui.with_layout(direction, |ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new(
+                                            COLUMNS.iter().find(|c| c.0 == id).map_or("", |c| c.1),
+                                        )
+                                        .small(),
+                                    );
+                                });
+                                let response = ui.interact(
+                                    ui.max_rect(),
+                                    ui.scope_id().with("column-menu"),
+                                    egui::Sense::click(),
+                                );
+                                response.context_menu(|ui| {
+                                    changed |= self.column_menu(ui, session, Some(id))
+                                });
                             });
                         }
                     })
                     .body(|body| {
-                        if released {
+                        if released && !changed {
                             for (id, &width) in columns.iter().zip(body.widths().iter().skip(1)) {
                                 if session
                                     .column_widths
@@ -715,16 +768,35 @@ impl Window {
                                 }
                             }
                         }
-                        body.rows(22.0, trace.rows.len() + 1, |mut row| {
+                        body.rows(32.0, trace.rows.len() + 1, |mut row| {
                             let hop = trace.rows.get(row.index());
                             let ttl = hop.map_or(0, |h| h.ttl);
                             let stats = hop.map_or(trace.total, |h| h.stats);
                             row.set_selected(self.selected.contains(&ttl));
                             row.col(|ui| {
-                                ui.label(if ttl == 0 {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(52.0, 32.0),
+                                    egui::Sense::hover(),
+                                );
+                                let text = if ttl == 0 {
                                     "RT".into()
                                 } else {
                                     ttl.to_string()
+                                };
+                                ui.painter().circle_filled(
+                                    rect.center(),
+                                    10.0,
+                                    latency_color(stats.avg, &session.settings),
+                                );
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    &text,
+                                    egui::FontId::proportional(12.0),
+                                    ui.visuals().extreme_bg_color,
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::Role::Label, true, &text)
                                 });
                             });
                             for id in &columns {
@@ -743,32 +815,8 @@ impl Window {
                                             &session.settings,
                                             &mut self.bar_zoom,
                                         );
-                                    } else if id == "ip" {
-                                        let response = ui.add(egui::Label::new(text).truncate());
-                                        response.context_menu(|ui| {
-                                            if ui.button("Copy address").clicked() {
-                                                ui.ctx().copy_text(hop.map_or_else(
-                                                    || trace.addr.clone(),
-                                                    |h| h.addr.clone(),
-                                                ));
-                                                ui.close();
-                                            }
-                                            if let Some(addr) =
-                                                hop.and_then(|h| h.addr.parse::<IpAddr>().ok())
-                                                && ui
-                                                    .add_enabled(
-                                                        !self.busy,
-                                                        egui::Button::new("WHOIS…"),
-                                                    )
-                                                    .clicked()
-                                            {
-                                                self.job(ui.ctx(), move || {
-                                                    Job::Whois(addr, whois(addr))
-                                                });
-                                                ui.close();
-                                            }
-                                        });
-                                    } else if id == "name" {
+                                    } else if id == "ip" || id == "name" {
+                                        ui.add_space(10.0);
                                         ui.add(egui::Label::new(text).truncate());
                                     } else {
                                         let color = if ["last", "avg", "min", "max"]
@@ -791,6 +839,7 @@ impl Window {
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
+                                                ui.add_space(10.0);
                                                 ui.add(
                                                     egui::Label::new(
                                                         RichText::new(text)
@@ -804,6 +853,9 @@ impl Window {
                                     }
                                 });
                             }
+                            row.response().container_context_menu(|ui| {
+                                self.hop_menu(ui, trace, hop, snapshot)
+                            });
                             if row.response().clicked() {
                                 if multiple {
                                     if self.selected.contains(&ttl) {
@@ -819,14 +871,14 @@ impl Window {
                     });
             });
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::drag());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::drag());
         ui.painter().hline(
             rect.x_range(),
             rect.center().y,
             egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
         );
         if response.dragged() {
-            self.table_height = Some((height + response.drag_delta().y).max(65.0));
+            self.table_height = Some((height + response.drag_delta().y).max(0.0));
         }
         if response.drag_stopped() {
             session.table_height = self.table_height.take();
@@ -881,87 +933,110 @@ impl Window {
         if let Some((config, new)) = &mut self.editing {
             let mut open = true;
             let mut apply = false;
-            egui::Window::new(if *new {
-                "New target"
-            } else {
-                "Probe and alerts"
-            })
-            .collapsible(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                egui::Grid::new("probe-form")
-                    .num_columns(2)
-                    .spacing([24.0, 8.0])
-                    .show(ui, |ui| {
-                        let label = ui.label("Host");
-                        ui.add_enabled(*new, egui::TextEdit::singleline(&mut config.host))
-                            .labelled_by(label.id);
-                        ui.end_row();
-                        ui.label("Packet type");
-                        if protocol(ui, &mut config.protocol) {
-                            config.port = match config.protocol.as_str() {
-                                "tcp" => 443,
-                                "udp" => 33434,
-                                _ => 0,
-                            };
-                        }
-                        ui.end_row();
-                        if ["udp", "tcp"].contains(&config.protocol.as_str()) {
-                            let label = ui.label("Port");
-                            ui.add(egui::DragValue::new(&mut config.port).range(1..=65535))
-                                .labelled_by(label.id);
-                            ui.end_row();
-                        }
-                        for (label, value, min, max, suffix) in [
-                            ("Interval", &mut config.interval_ms, 100, 60000, " ms"),
-                            ("Timeout", &mut config.timeout_ms, 100, 10000, " ms"),
-                            (
-                                "Alert latency (0 = off)",
-                                &mut config.alert_latency_ms,
-                                0,
-                                60000,
-                                " ms",
-                            ),
-                            (
-                                "Alert loss (0 = off)",
-                                &mut config.alert_loss_pct,
-                                0,
-                                100,
-                                " %",
-                            ),
-                            ("Alert window", &mut config.alert_seconds, 1, 3600, " s"),
-                        ] {
-                            let label = ui.label(label);
-                            ui.add(egui::DragValue::new(value).range(min..=max).suffix(suffix))
-                                .labelled_by(label.id);
-                            ui.end_row();
-                        }
-                        let packet_label = ui.label("Packet size");
-                        ui.add(
-                            egui::DragValue::new(&mut config.packet_size)
-                                .range(48..=1024)
-                                .suffix(" bytes"),
-                        )
-                        .labelled_by(packet_label.id);
-                        ui.end_row();
+            let modal = egui::Modal::new(egui::Id::unique("probe-and-alerts"))
+                .frame(egui::Frame::popup(&ctx.style_of(egui::Theme::Dark)).inner_margin(14))
+                .show(ctx, |ui| {
+                    ui.set_width((ctx.content_rect().width() - 64.0).clamp(280.0, 530.0));
+                    ui.strong(if *new {
+                        "New target"
+                    } else {
+                        "Probe and alerts"
                     });
-                ui.horizontal(|ui| {
-                    ui.label("Typed interval");
-                    let input = ui
-                        .text_edit_singleline(&mut self.interval_text)
-                        .on_hover_text("Interval such as 750ms or 1.5s");
-                    if input.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        && let Some(ms) = logic::parse_interval(&self.interval_text)
-                    {
-                        config.interval_ms = ms;
-                    }
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical()
+                        .max_height((ctx.content_rect().height() - 130.0).max(180.0))
+                        .show(ui, |ui| {
+                            egui::Grid::new("probe-form")
+                                .num_columns(2)
+                                .spacing([24.0, 8.0])
+                                .show(ui, |ui| {
+                                    let label = ui.label("Host");
+                                    ui.add_enabled(
+                                        *new,
+                                        egui::TextEdit::singleline(&mut config.host),
+                                    )
+                                    .labelled_by(label.id);
+                                    ui.end_row();
+                                    ui.label("Packet type");
+                                    if protocol(ui, &mut config.protocol) {
+                                        config.port = match config.protocol.as_str() {
+                                            "tcp" => 443,
+                                            "udp" => 33434,
+                                            _ => 0,
+                                        };
+                                    }
+                                    ui.end_row();
+                                    if ["udp", "tcp"].contains(&config.protocol.as_str()) {
+                                        let label = ui.label("Port");
+                                        ui.add(
+                                            egui::DragValue::new(&mut config.port).range(1..=65535),
+                                        )
+                                        .labelled_by(label.id);
+                                        ui.end_row();
+                                    }
+                                    for (label, value, min, max, suffix) in [
+                                        ("Interval", &mut config.interval_ms, 100, 60000, " ms"),
+                                        ("Timeout", &mut config.timeout_ms, 100, 10000, " ms"),
+                                        (
+                                            "Alert latency (0 = off)",
+                                            &mut config.alert_latency_ms,
+                                            0,
+                                            60000,
+                                            " ms",
+                                        ),
+                                        (
+                                            "Alert loss (0 = off)",
+                                            &mut config.alert_loss_pct,
+                                            0,
+                                            100,
+                                            " %",
+                                        ),
+                                        ("Alert window", &mut config.alert_seconds, 1, 3600, " s"),
+                                    ] {
+                                        let label = ui.label(label);
+                                        ui.add(
+                                            egui::DragValue::new(value)
+                                                .range(min..=max)
+                                                .suffix(suffix),
+                                        )
+                                        .labelled_by(label.id);
+                                        ui.end_row();
+                                    }
+                                    let packet_label = ui.label("Packet size");
+                                    ui.add(
+                                        egui::DragValue::new(&mut config.packet_size)
+                                            .range(48..=1024)
+                                            .suffix(" bytes"),
+                                    )
+                                    .labelled_by(packet_label.id);
+                                    ui.end_row();
+                                });
+                            ui.horizontal(|ui| {
+                                ui.label("Typed interval");
+                                let input = ui
+                                    .text_edit_singleline(&mut self.interval_text)
+                                    .on_hover_text("Interval such as 750ms or 1.5s");
+                                if input.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                    && let Some(ms) = logic::parse_interval(&self.interval_text)
+                                {
+                                    config.interval_ms = ms;
+                                }
+                            });
+                            ui.label(
+                                "Fast probing can look like loss when routers throttle replies.",
+                            );
+                        });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            open = false;
+                        }
+                        apply = ui
+                            .add_enabled(!config.host.trim().is_empty(), egui::Button::new("Apply"))
+                            .clicked();
+                    });
                 });
-                ui.label("Fast probing can look like loss when routers throttle replies.");
-                apply = ui
-                    .add_enabled(!config.host.trim().is_empty(), egui::Button::new("Apply"))
-                    .clicked();
-            });
+            open &= !modal.should_close();
             if apply {
                 let (mut config, new) = self.editing.take().expect("edit dialog exists");
                 match config.validate() {
@@ -1058,7 +1133,7 @@ impl eframe::App for Window {
                 .iter()
                 .find(|t| t.config.session_id == session.active)
             {
-                self.host = trace.config.host.clone();
+                self.sync_toolbar(&trace.config);
             }
         }
         let shortcut = |key, modifiers| ui.input_mut(|i| i.consume_key(modifiers, key));
@@ -1127,109 +1202,41 @@ impl eframe::App for Window {
             self.editing = None;
             self.pinned = None;
         }
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            changed |= self.menus(ui, &snapshot, &mut session);
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("TracePlotter").strong().size(18.0));
-                let host_label = ui.label("Host");
-                let input = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.host)
-                            .hint_text("Address or host name")
-                            .desired_width((ui.available_width() - 210.0).max(100.0)),
-                    )
-                    .labelled_by(host_label.id);
-                if self.focus_host {
-                    input.request_focus();
-                    self.focus_host = false;
-                }
-                if (ui.button("Start trace").clicked()
-                    || (input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))))
-                    && !self.host.trim().is_empty()
-                {
-                    let config = Config::new(self.host.clone(), &session.settings);
-                    self.select(&mut session, config.session_id.clone());
-                    changed = true;
-                    self.runtime.command(Command::Open(config));
-                }
-                if ui.button("Advanced…").clicked() {
-                    self.editing = Some((Config::new(self.host.clone(), &session.settings), true));
-                }
+        egui::Panel::top("toolbar")
+            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                changed |= self.menus(ui, &snapshot, &mut session);
+                changed |= self.tabs(ui, &snapshot, &mut session);
+                changed |= self.toolbar(ui, &snapshot, &mut session);
             });
-            egui::ScrollArea::horizontal()
-                .id_salt("tabs")
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(session.active == "summary", "All targets")
-                            .clicked()
-                        {
-                            self.select(&mut session, "summary".into());
-                            changed = true;
+        if self.error.is_some()
+            || snapshot.error.is_some()
+            || self.message.is_some()
+            || snapshot.history_loading
+        {
+            egui::Panel::bottom("status").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(error) = self.error.as_ref().or(snapshot.error.as_ref()) {
+                        ui.colored_label(Color32::LIGHT_RED, error);
+                        if ui.button("Dismiss").clicked() {
+                            self.error = None;
+                            self.runtime.command(Command::ClearError);
                         }
-                        for trace in &snapshot.traces {
-                            let label = if trace.paused {
-                                format!("{} (paused)", trace.config.host)
-                            } else if trace.alerting {
-                                format!("{} (alert)", trace.config.host)
-                            } else {
-                                trace.config.host.clone()
-                            };
-                            let response = ui
-                                .selectable_label(session.active == trace.config.session_id, label);
-                            if response.clicked() {
-                                self.select(&mut session, trace.config.session_id.clone());
-                                changed = true;
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("Edit…").clicked() {
-                                    self.editing = Some((trace.config.clone(), false));
-                                    ui.close();
-                                }
-                                if ui.button("Close and erase history…").clicked() {
-                                    self.erase(trace, false);
-                                    ui.close();
-                                }
-                            });
+                    } else if let Some(message) = &self.message {
+                        ui.label(message);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.message = None;
                         }
-                        if ui
-                            .selectable_label(session.active == "settings", "Settings")
-                            .clicked()
-                        {
-                            self.select(&mut session, "settings".into());
-                            changed = true;
-                        }
-                    });
+                    }
+                    if snapshot.history_loading {
+                        ui.spinner();
+                        ui.label("Reading history…");
+                    }
                 });
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(error) = self.error.as_ref().or(snapshot.error.as_ref()) {
-                    ui.colored_label(Color32::LIGHT_RED, error);
-                    if ui.button("Dismiss").clicked() {
-                        self.error = None;
-                        self.runtime.command(Command::ClearError);
-                    }
-                } else if let Some(message) = &self.message {
-                    ui.label(message);
-                    if ui.small_button("Dismiss").clicked() {
-                        self.message = None;
-                    }
-                } else {
-                    ui.weak(if self.end.is_some() {
-                        "History view — return to live to follow new probes"
-                    } else {
-                        "Live — Ctrl+click table rows to compare hops"
-                    });
-                }
-                if snapshot.history_loading {
-                    ui.spinner();
-                    ui.label("Reading history…");
-                }
             });
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
+        }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             if session.active == "settings" {
                 changed |= self.settings(ui, &mut session);
             } else {
@@ -1238,260 +1245,54 @@ impl eframe::App for Window {
                     .iter()
                     .find(|t| t.config.session_id == session.active);
                 if let Some(trace) = active {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(&trace.config.host);
-                        ui.weak(&trace.addr);
-                        ui.label(format!(
-                            "{} · {} ms",
-                            trace.config.protocol, trace.config.interval_ms
-                        ));
-                        if ui
-                            .button(if trace.paused { "Resume" } else { "Pause" })
-                            .clicked()
-                        {
-                            self.runtime
-                                .command(Command::Pause(trace.config.session_id.clone()));
-                        }
-                        if ui.button("Edit…").clicked() {
-                            self.editing = Some((trace.config.clone(), false));
-                        }
-                        if ui.button("Events").clicked() {
-                            self.events_open = !self.events_open;
-                        }
-                        if trace.loading {
-                            ui.spinner();
-                        }
-                    });
                     if let Some(error) = &trace.error {
                         ui.colored_label(Color32::LIGHT_RED, error);
                     }
-                    changed |= self.table(ui, trace, &mut session);
+                    changed |= self.table(ui, trace, &mut session, &snapshot);
                 } else {
-                    ui.heading("All targets");
-                    egui::ScrollArea::both().max_height(170.0).show(ui, |ui| {
-                        egui::Grid::new("summary")
-                            .striped(true)
-                            .spacing([18.0, 7.0])
-                            .show(ui, |ui| {
-                                for label in [
-                                    "Compare", "Target", "State", "Average", "Loss", "Jitter",
-                                    "MOS", "Trend",
-                                ] {
-                                    ui.strong(label);
-                                }
-                                ui.end_row();
-                                for trace in &snapshot.traces {
-                                    let id = &trace.config.session_id;
-                                    let mut checked = session.compare.contains(id);
-                                    if ui
-                                        .checkbox(&mut checked, "")
-                                        .on_hover_text(format!("Compare {}", trace.config.host))
-                                        .changed()
-                                    {
-                                        session.compare.retain(|s| s != id);
-                                        if checked {
-                                            session.compare.push(id.clone());
-                                        }
-                                        self.runtime
-                                            .command(Command::Compare(session.compare.clone()));
-                                        changed = true;
-                                    }
-                                    if ui.link(&trace.config.host).clicked() {
-                                        self.select(&mut session, id.clone());
-                                        changed = true;
-                                    }
-                                    ui.label(if trace.paused {
-                                        "Paused"
-                                    } else if trace.alerting {
-                                        "Alert"
-                                    } else if trace.loading {
-                                        "Starting…"
-                                    } else {
-                                        "Running"
-                                    });
-                                    ui.colored_label(
-                                        latency_color(trace.total.avg, &session.settings),
-                                        ms(trace.total.avg),
-                                    );
-                                    ui.monospace(format!("{:.1}%", trace.total.loss_pct));
-                                    ui.monospace(ms(trace.total.jitter));
-                                    ui.monospace(
-                                        logic::mos(trace.total)
-                                            .map_or_else(|| "–".into(), |v| format!("{v:.2}")),
-                                    );
-                                    spark(ui, &trace.spark);
-                                    ui.end_row();
-                                }
-                            });
-                    });
+                    changed |= self.summary(ui, &snapshot, &mut session);
                     if snapshot.traces.is_empty() {
-                        ui.label("Enter a host above to start, or import a saved samples CSV.");
+                        ui.add_space(16.0);
+                        ui.label("Type a host above and press Enter or Start. Each target opens in its own tab.");
                     }
                 }
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Time span");
-                    egui::ComboBox::from_id_salt("span")
-                        .selected_text(span_label(session.span))
-                        .show_ui(ui, |ui| {
-                            for span in [
-                                30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 21600.0, 86400.0,
-                                604800.0, 2592000.0, 0.0,
-                            ] {
-                                changed |= ui
-                                    .selectable_value(&mut session.span, span, span_label(span))
-                                    .changed();
-                            }
-                        })
-                        .response
-                        .on_hover_text("Time span");
-                    let typed = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.span_text)
-                                .hint_text("e.g. 1.5h")
-                                .desired_width(70.0),
-                        )
-                        .on_hover_text("Custom time span");
-                    if typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if let Some(span) = logic::parse_span(&self.span_text) {
-                            session.span = span;
-                            changed = true;
-                        } else {
-                            self.error =
-                                Some("Enter a time span such as 30s, 5m, 1.5h, 2d or all.".into());
-                        }
-                    }
-                    let available = snapshot
-                        .traces
-                        .iter()
-                        .map(|t| t.to - t.from)
-                        .reduce(f64::max)
-                        .unwrap_or(600.0);
-                    if ui.button("Zoom in").clicked() {
-                        session.span = graphs::zoom(session.span, false, available);
-                        changed = true;
-                    }
-                    if ui.button("Zoom out").clicked() {
-                        session.span = graphs::zoom(session.span, true, available);
-                        changed = true;
-                    }
-                    let (first, last) = graphs::navigation(&snapshot);
-                    if ui
-                        .add_enabled(session.span > 0.0, egui::Button::new("Earlier"))
-                        .clicked()
-                    {
-                        self.end = graphs::pan(
-                            self.end.unwrap_or(last),
-                            -session.span / 2.0,
-                            session.span,
-                            first,
-                            last,
-                        );
-                    }
-                    if ui
-                        .add_enabled(
-                            session.span > 0.0 && self.end.is_some(),
-                            egui::Button::new("Later"),
-                        )
-                        .clicked()
-                    {
-                        self.end = graphs::pan(
-                            self.end.unwrap_or(last),
-                            session.span / 2.0,
-                            session.span,
-                            first,
-                            last,
-                        );
-                    }
-                    if ui.button("Live").clicked() {
-                        self.end = None;
-                        self.pinned = None;
-                    }
-                    if self.pinned.is_some() && ui.button("Unpin").clicked() {
-                        self.pinned = None;
-                    }
-                });
-                let relevant = snapshot
-                    .traces
-                    .iter()
-                    .filter(|t| {
-                        t.config.session_id == session.active
-                            || (session.active == "summary"
-                                && session.compare.contains(&t.config.session_id))
-                    })
-                    .collect::<Vec<_>>();
-                let first = relevant
-                    .iter()
-                    .map(|t| t.from)
-                    .reduce(f64::min)
-                    .unwrap_or(0.0);
-                let last = relevant
-                    .iter()
-                    .map(|t| t.to)
-                    .reduce(f64::max)
-                    .unwrap_or(0.0);
-                if last > first {
-                    ui.horizontal(|ui| {
-                        ui.small(time::date_time(first));
-                        let mut end = self.end.unwrap_or(last);
-                        if ui
-                            .add_enabled(
-                                session.span > 0.0,
-                                egui::Slider::new(
-                                    &mut end,
-                                    (first + session.span).min(last)..=last,
-                                )
-                                .show_value(false)
-                                .text("History position"),
-                            )
-                            .changed()
-                        {
-                            self.end = (end < last).then_some(end);
-                        }
-                        ui.small(time::date_time(last));
-                    });
-                }
-                if self.selected.len() > 1 && session.active != "summary" {
-                    ui.horizontal_wrapped(|ui| {
-                        for ttl in self.selected.clone() {
-                            if ui
-                                .small_button(if ttl == 0 {
-                                    "Remove round trip".into()
-                                } else {
-                                    format!("Remove hop {ttl}")
-                                })
-                                .clicked()
-                            {
-                                self.selected.retain(|h| *h != ttl);
-                            }
-                        }
-                    });
-                }
+                self.period_bar(ui, &snapshot, active);
                 let old_span = session.span;
-                let graph_budget = ui.available_height().max(210.0);
-                self.plot_width = Some(
-                    egui::ScrollArea::vertical()
-                        .id_salt("graphs-scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.set_max_height(graph_budget);
-                            if snapshot.session.active != session.active
-                                || snapshot.session.span != session.span
-                            {
-                                ui.label("Updating view…");
-                                return (ui.available_width() - 120.0).max(1.0);
+                let graph_budget = (ui.available_height() - 35.0).max(0.0);
+                let graph = egui::ScrollArea::vertical()
+                    .id_salt("graphs-scroll")
+                    .max_height(graph_budget)
+                    .min_scrolled_height(graph_budget)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_max_height(graph_budget);
+                        if snapshot.session.active != session.active || snapshot.session.span != session.span {
+                            ui.label("Updating view…");
+                            return graphs::Output { width: (ui.available_width() - 120.0).max(1.0), action: None };
+                        }
+                        graphs::show(ui, &snapshot, &mut self.end, &mut self.pinned, &mut session.span, session.active == "summary")
+                    }).inner;
+                self.plot_width = Some(graph.width);
+                if let Some(action) = graph.action {
+                    match action {
+                        graphs::Action::Live => { self.end = None; self.pinned = None; }
+                        graphs::Action::Close(ttl) => {
+                            if self.selected.len() > 1 { self.selected.retain(|hop| *hop != ttl); }
+                        }
+                        graphs::Action::LossColors(value) => {
+                            session.settings.loss_by_target = value;
+                            changed = true;
+                        }
+                        graphs::Action::Export(kind, scope) => {
+                            let mut image = (*snapshot).clone();
+                            if let Some((id, ttl)) = scope {
+                                image.plots.retain(|plot| plot.session == id && plot.ttl == ttl);
                             }
-                            graphs::show(
-                                ui,
-                                &snapshot,
-                                &mut self.end,
-                                &mut self.pinned,
-                                &mut session.span,
-                                session.active == "summary",
-                            )
-                        })
-                        .inner,
-                );
+                            self.export(ui, &image, kind);
+                        }
+                    }
+                }
+                self.history_slider(ui, &snapshot, &session);
                 changed |= session.span != old_span;
                 let view = View {
                     session: if active.is_some() {
@@ -1816,6 +1617,14 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
-        s.spacing.interact_size.y = 24.0;
+        s.spacing.interact_size.y = 32.0;
+        s.text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+        s.text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+        s.text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+        s.text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
     });
 }

@@ -4,6 +4,81 @@ use crate::logic::{GraphData, latency_axis};
 use app::Snapshot;
 use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Line, Plot, PlotPoint, VLine};
 
+pub(super) enum Action {
+    Live,
+    Export(export::Kind, Option<(String, u8)>),
+    Close(u8),
+    LossColors(bool),
+}
+fn menu(
+    ui: &mut egui::Ui,
+    compare: bool,
+    series: &app::PlotView,
+    closeable: bool,
+    mut loss_by_target: bool,
+    action: &mut Option<Action>,
+) {
+    ui.set_min_width(220.0);
+    if !compare {
+        if ui.button("Back to live").clicked() {
+            *action = Some(Action::Live);
+            ui.close();
+        }
+        ui.separator();
+    }
+    for (label, kind) in [
+        (
+            if compare {
+                "Save graph as PNG…"
+            } else {
+                "Save this graph as PNG…"
+            },
+            export::Kind::Png,
+        ),
+        (
+            if compare {
+                "Copy graph as PNG"
+            } else {
+                "Copy this graph as PNG"
+            },
+            export::Kind::CopyImage,
+        ),
+    ] {
+        if ui.button(label).clicked() {
+            *action = Some(Action::Export(
+                kind,
+                (!compare).then(|| (series.session.clone(), series.ttl)),
+            ));
+            ui.close();
+        }
+    }
+    ui.separator();
+    if compare {
+        if ui.button("Save stretches as CSV…").clicked() {
+            *action = Some(Action::Export(export::Kind::Stretches, None));
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .checkbox(&mut loss_by_target, "Loss bars in each target's colour")
+            .changed()
+        {
+            *action = Some(Action::LossColors(loss_by_target));
+            ui.close();
+        }
+    } else if ui
+        .add_enabled(closeable, egui::Button::new("Close this graph"))
+        .clicked()
+    {
+        *action = Some(Action::Close(series.ttl));
+        ui.close();
+    }
+}
+pub(super) struct Output {
+    pub width: f32,
+    pub action: Option<Action>,
+}
+
 const COLORS: [Color32; 6] = [
     Color32::from_rgb(84, 186, 244),
     Color32::from_rgb(169, 139, 250),
@@ -28,28 +103,44 @@ fn runs(xs: &[f64], ys: &[Option<f64>]) -> Vec<Vec<[f64; 2]>> {
     }
     runs
 }
+
+/// Holds each probe until the next timestamp, matching uPlot's stepped path.
+fn step_run(run: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut points = Vec::with_capacity(run.len().saturating_mul(2));
+    for (index, point) in run.iter().enumerate() {
+        if index > 0 {
+            points.push([point[0], run[index - 1][1]]);
+        }
+        points.push(*point);
+    }
+    points
+}
+
 fn points(
     plot: &mut egui_plot::PlotUi<'_>,
     data: &GraphData,
     color: Color32,
     style: egui_plot::LineStyle,
-    stepped: bool,
 ) {
     let mut band = vec![];
     let flush = |plot: &mut egui_plot::PlotUi<'_>, band: &mut Vec<usize>| {
         if band.len() > 1 {
-            let xs = band.iter().map(|&i| data.xs[i]).collect::<Vec<_>>();
-            let lo = band
+            let lower = band
                 .iter()
-                .map(|&i| data.lo[i].unwrap_or_default())
+                .map(|&i| [data.xs[i], data.lo[i].unwrap_or_default()])
                 .collect::<Vec<_>>();
-            let hi = band
+            let upper = band
                 .iter()
-                .map(|&i| data.hi[i].unwrap_or_default())
+                .map(|&i| [data.xs[i], data.hi[i].unwrap_or_default()])
                 .collect::<Vec<_>>();
+            let lower = step_run(&lower);
+            let upper = step_run(&upper);
+            let xs = lower.iter().map(|point| point[0]).collect::<Vec<_>>();
+            let lo = lower.iter().map(|point| point[1]).collect::<Vec<_>>();
+            let hi = upper.iter().map(|point| point[1]).collect::<Vec<_>>();
             plot.add(
                 egui_plot::FilledArea::new("Range", &xs, &lo, &hi)
-                    .fill_color(color.gamma_multiply(0.12))
+                    .fill_color(color.gamma_multiply(0.22))
                     .allow_hover(false),
             );
         }
@@ -66,18 +157,7 @@ fn points(
     }
     flush(plot, &mut band);
     for run in runs(&data.xs, &data.ys) {
-        let run = if stepped {
-            let mut points = Vec::new();
-            for (i, point) in run.iter().enumerate() {
-                if i > 0 {
-                    points.push([point[0], run[i - 1][1]]);
-                }
-                points.push(*point);
-            }
-            points
-        } else {
-            run
-        };
+        let run = step_run(&run);
         if run.len() == 1 {
             plot.points(
                 egui_plot::Points::new("Latency", run)
@@ -85,7 +165,14 @@ fn points(
                     .radius(2.0),
             );
         } else {
-            plot.line(Line::new("Latency", run).color(color).style(style));
+            plot.line(
+                Line::new("Latency", run)
+                    .color(color)
+                    .width(1.5)
+                    // Equal-x step edges must remain strokes, not opaque line bands.
+                    .allow_band(false)
+                    .style(style),
+            );
         }
     }
 }
@@ -122,6 +209,7 @@ fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
         AxisHints::new_y()
             .label("ms")
             .min_thickness(58.0)
+            .tick_label_font(egui::FontId::proportional(12.0))
             .formatter(|mark, _| {
                 if mark.value.abs() >= 1e6 {
                     format!("{:.1e}", mark.value)
@@ -135,6 +223,7 @@ fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
             .placement(HPlacement::Right)
             .label(if loss { "Loss" } else { " " })
             .min_thickness(46.0)
+            .tick_label_font(egui::FontId::proportional(12.0))
             .formatter(move |mark, _| {
                 if loss {
                     format!("{:.0}%", (mark.value - min) / (max - min) * 100.0)
@@ -144,18 +233,46 @@ fn axes(min: f64, max: f64, loss: bool) -> Vec<AxisHints<'static>> {
             }),
     ]
 }
-fn value(data: &GraphData, time: f64, width: f64) -> String {
+fn readout(ui: &mut egui::Ui, data: &GraphData, time: f64, width: f64, span: f64) {
     let i = data.xs.partition_point(|x| *x <= time).saturating_sub(1);
     if data.xs.is_empty() || time < data.xs[0] || time > *data.xs.last().unwrap_or(&time) + width {
-        return "No probes in this period".into();
+        ui.small("No probes in this period");
+        return;
     }
-    format!(
-        "{}    RTT {}    Jitter {}    Loss {}",
-        time::date_time(data.xs[i]),
-        ms(data.ys[i]),
-        ms(data.js[i]),
-        data.ls[i].map_or_else(|| "–".into(), |v| format!("{v:.1}%"))
-    )
+    ui.label(
+        RichText::new(if span > 86400.0 {
+            time::date_time(data.xs[i])
+        } else {
+            time::time_of_day(data.xs[i])
+        })
+        .small()
+        .color(Color32::from_rgb(156, 163, 175)),
+    );
+    if data.ls[i].is_none() {
+        ui.small("not probing");
+        return;
+    }
+    let latency = match data.ys[i] {
+        None => "lost".into(),
+        Some(rtt) => match (
+            data.lo.get(i).copied().flatten(),
+            data.hi.get(i).copied().flatten(),
+        ) {
+            (Some(lo), Some(hi)) if lo != hi => format!("{rtt:.1} ms average ({lo:.1}–{hi:.1})"),
+            _ => ms(Some(rtt)),
+        },
+    };
+    ui.label(RichText::new(latency).small().strong());
+    if let Some(jitter) = data.js[i] {
+        ui.label(
+            RichText::new(format!("jitter {jitter:.1} ms"))
+                .small()
+                .strong(),
+        );
+    }
+    if let Some(loss) = data.ls[i].filter(|loss| *loss > 0.0) {
+        ui.small(format!("loss {loss:.0}%"));
+    }
 }
 pub(super) fn navigation(snapshot: &Snapshot) -> (f64, f64) {
     let traces = snapshot
@@ -190,7 +307,11 @@ pub(super) fn show(
     pinned: &mut Option<f64>,
     span: &mut f64,
     compare: bool,
-) -> f32 {
+) -> Output {
+    let mut action = None;
+    if compare {
+        ui.add_space(8.0);
+    }
     let mut actual_width = ui.available_width();
     let [from, to] = snapshot.plot_range;
     let span_seconds = (to - from).max(1.0);
@@ -200,13 +321,9 @@ pub(super) fn show(
     } else {
         snapshot.plots.len().max(1)
     };
-    let readouts = if compare {
-        snapshot.plots.len().max(1)
-    } else {
-        1
-    };
+    let with_jitter = !compare && groups == 1;
     let height =
-        (ui.available_height() / groups as f32 - 112.0 - (readouts - 1) as f32 * 18.0).max(85.0);
+        (ui.available_height() / groups as f32 - if with_jitter { 94.0 } else { 40.0 }).max(64.0);
     let all = snapshot.plots.iter().collect::<Vec<_>>();
     if all.is_empty() {
         ui.label(if snapshot.history_loading {
@@ -232,29 +349,77 @@ pub(super) fn show(
             .copied()
             .reduce(f64::max);
         let [ymin, ymax] = latency_axis(lo, hi);
-        ui.horizontal_wrapped(|ui| {
-            for (index, p) in series.iter().enumerate() {
-                ui.colored_label(
-                    COLORS[index % COLORS.len()],
-                    RichText::new(&p.label).strong(),
-                );
-            }
-            ui.weak("Loss 0–100%");
-        });
         let key = if compare {
             "comparison".to_owned()
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
+        let jitter_response = if with_jitter {
+            ui.vertical_centered(|ui| {
+                ui.small("Jitter (ms, running average)");
+            });
+            let jitter_max = series
+                .iter()
+                .flat_map(|p| p.data.js.iter().flatten())
+                .copied()
+                .reduce(f64::max)
+                .unwrap_or(1.0)
+                .max(1.0)
+                * 1.2;
+            let response = Plot::new((&key, "jitter"))
+                .height(48.0)
+                .min_size(egui::vec2(64.0, 32.0))
+                .default_x_bounds(from, to.max(from + 1.0))
+                .default_y_bounds(0.0, jitter_max)
+                .y_grid_spacer(move |_| {
+                    (0..=2)
+                        .map(|n| egui_plot::GridMark {
+                            value: jitter_max * f64::from(n) / 2.0,
+                            step_size: jitter_max / 2.0,
+                        })
+                        .collect()
+                })
+                .allow_drag(false)
+                .allow_scroll(false)
+                .allow_zoom(false)
+                .allow_boxed_zoom(false)
+                .allow_double_click_reset(false)
+                .link_axis(egui::Id::unique("trace-time"), [true, false])
+                .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
+                .custom_y_axes(axes(0.0, jitter_max, false))
+                .show_axes([false, true])
+                .show(ui, |p| {
+                    p.set_plot_bounds_x(from..=to.max(from + 1.0));
+                    p.set_plot_bounds_y(0.0..=jitter_max);
+                    for (index, series) in series.iter().enumerate() {
+                        for run in runs(&series.data.xs, &series.data.js) {
+                            p.line(
+                                Line::new("Jitter", step_run(&run))
+                                    .color(COLORS[index % COLORS.len()])
+                                    .allow_band(false)
+                                    .fill(0.0),
+                            );
+                        }
+                    }
+                    if let Some(x) = *pinned {
+                        p.vline(VLine::new("Pinned", x).color(Color32::WHITE));
+                    }
+                });
+            ui.add_space(8.0);
+            Some(response.response)
+        } else {
+            None
+        };
+        let y_ticks = ((height - 24.0) / 28.0).floor().clamp(1.0, 4.0) as u32;
         let response = Plot::new((&key, "latency"))
             .height(height)
             .default_x_bounds(from, to.max(from + 1.0))
             .default_y_bounds(ymin, ymax)
             .y_grid_spacer(move |_| {
-                (0..=4)
+                (0..=y_ticks)
                     .map(|n| egui_plot::GridMark {
-                        value: ymin + (ymax - ymin) * f64::from(n) / 4.0,
-                        step_size: (ymax - ymin) / 4.0,
+                        value: ymin + (ymax - ymin) * f64::from(n) / f64::from(y_ticks),
+                        step_size: (ymax - ymin) / f64::from(y_ticks),
                     })
                     .collect()
             })
@@ -266,6 +431,12 @@ pub(super) fn show(
             .link_axis(egui::Id::unique("trace-time"), [true, false])
             .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
             .custom_y_axes(axes(ymin, ymax, true))
+            .custom_x_axes(vec![
+                AxisHints::new_x()
+                    .min_thickness(24.0)
+                    .tick_label_font(egui::FontId::proportional(12.0)),
+            ])
+            .grid_spacing(egui::Rangef::new(95.0, 180.0))
             .x_grid_spacer(time::grid)
             .x_axis_formatter(|mark, range| {
                 time::tick(mark.value, mark.step_size, *range.start(), *range.end())
@@ -317,7 +488,11 @@ pub(super) fn show(
                     }
                 }
                 for (index, series) in series.iter().enumerate() {
-                    let color = COLORS[index % COLORS.len()];
+                    let color = if compare {
+                        COLORS[index % COLORS.len()]
+                    } else {
+                        Color32::from_rgb(248, 250, 252)
+                    };
                     let d = &series.data;
                     let loss_color = if compare && snapshot.session.settings.loss_by_target {
                         color
@@ -354,7 +529,6 @@ pub(super) fn show(
                         } else {
                             egui_plot::LineStyle::Solid
                         },
-                        compare,
                     );
                 }
                 if let Some(x) = *pinned {
@@ -362,7 +536,23 @@ pub(super) fn show(
                 }
                 p.pointer_coordinate()
             });
+        if !compare {
+            ui.painter().text(
+                response.response.rect.left_top() + egui::vec2(76.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                &series[0].label,
+                egui::FontId::proportional(12.0),
+                COLORS[0],
+            );
+        }
         actual_width = response.transform.frame().width();
+        if response.response.hovered() || response.response.dragged() {
+            ui.ctx().set_cursor_icon(if response.response.dragged() {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
         let hover = response.inner;
         if response.response.clicked() {
             *pinned = hover.map(|p| p.x);
@@ -405,61 +595,77 @@ pub(super) fn show(
                 ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             }
         }
-        let jitter_max = series
-            .iter()
-            .flat_map(|p| p.data.js.iter().flatten())
-            .copied()
-            .reduce(f64::max)
-            .unwrap_or(1.0)
-            .max(1.0)
-            * 1.2;
-        Plot::new((&key, "jitter"))
-            .height(53.0)
-            .default_x_bounds(from, to.max(from + 1.0))
-            .default_y_bounds(0.0, jitter_max)
-            .y_grid_spacer(move |_| {
-                (0..=2)
-                    .map(|n| egui_plot::GridMark {
-                        value: jitter_max * f64::from(n) / 2.0,
-                        step_size: jitter_max / 2.0,
-                    })
-                    .collect()
-            })
-            .allow_drag(false)
-            .allow_scroll(false)
-            .allow_zoom(false)
-            .allow_boxed_zoom(false)
-            .allow_double_click_reset(false)
-            .link_axis(egui::Id::unique("trace-time"), [true, false])
-            .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
-            .custom_y_axes(axes(0.0, jitter_max, false))
-            .show_axes([false, true])
-            .show(ui, |p| {
-                p.set_plot_bounds_x(from..=to.max(from + 1.0));
-                p.set_plot_bounds_y(0.0..=jitter_max);
-                for (index, series) in series.iter().enumerate() {
-                    for run in runs(&series.data.xs, &series.data.js) {
-                        p.line(
-                            Line::new("Jitter", run)
-                                .color(COLORS[index % COLORS.len()])
-                                .fill(0.0),
-                        );
-                    }
-                }
-                if let Some(x) = *pinned {
-                    p.vline(VLine::new("Pinned", x).color(Color32::WHITE));
+        if compare {
+            ui.horizontal_wrapped(|ui| {
+                for (index, p) in series.iter().enumerate() {
+                    ui.colored_label(
+                        COLORS[index % COLORS.len()],
+                        RichText::new(&p.label).strong(),
+                    );
                 }
             });
-        let read_time = pinned.or(hover.map(|p: PlotPoint| p.x)).unwrap_or(to);
-        for series in &series {
-            ui.small(format!(
-                "{}: {}",
-                series.label,
-                value(&series.data, read_time, series.width)
-            ));
+        }
+        for plot_response in std::iter::once(&response.response).chain(jitter_response.as_ref()) {
+            plot_response.context_menu(|ui| {
+                menu(
+                    ui,
+                    compare,
+                    series[0],
+                    groups > 1,
+                    snapshot.session.settings.loss_by_target,
+                    &mut action,
+                )
+            });
+        }
+        let menu_open = response.response.context_menu_opened()
+            || jitter_response
+                .as_ref()
+                .is_some_and(egui::Response::context_menu_opened);
+        if !menu_open
+            && !egui::Popup::is_any_open(ui.ctx())
+            && !response.response.dragged()
+            && (pinned.is_some() || response.response.hovered())
+        {
+            let read_time = pinned.or(hover.map(|p: PlotPoint| p.x)).unwrap_or(to);
+            let anchor = if response.response.hovered() {
+                egui::PopupAnchor::Pointer
+            } else {
+                egui::PopupAnchor::Position(egui::pos2(
+                    response.transform.position_from_point_x(read_time),
+                    response.transform.frame().top(),
+                ))
+            };
+            let mut tooltip = egui::Tooltip::always_open(
+                ui.ctx().clone(),
+                response.response.layer_id,
+                response.response.id,
+                anchor,
+            )
+            .accessible_name("Latency readout")
+            .width(0.0)
+            .gap(12.0);
+            tooltip.popup = tooltip.popup.align(egui::RectAlign::BOTTOM_END).frame(
+                egui::Frame::popup(ui.style())
+                    .fill(Color32::from_rgb(15, 19, 25))
+                    .inner_margin(6),
+            );
+            tooltip.show(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.visuals_mut().override_text_color = Some(Color32::from_rgb(230, 234, 240));
+                for series in &series {
+                    if compare {
+                        ui.label(RichText::new(&series.label).small().strong());
+                    }
+                    readout(ui, &series.data, read_time, series.width, span_seconds);
+                }
+            });
         }
     }
-    actual_width
+    Output {
+        width: actual_width,
+        action,
+    }
 }
 pub(super) fn zoom(span: f64, out: bool, available: f64) -> f64 {
     let current = if span == 0.0 { available } else { span };
@@ -483,6 +689,29 @@ pub(super) fn zoom(span: f64, out: bool, available: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_single_probe_spike_has_vertical_edges_and_keeps_its_full_height() {
+        let paths = runs(
+            &[1.0, 2.0, 3.0, 4.0, 5.0],
+            &[Some(10.0), Some(200.0), Some(10.0), None, Some(20.0)],
+        )
+        .iter()
+        .map(|run| step_run(run))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                vec![
+                    [1.0, 10.0],
+                    [2.0, 10.0],
+                    [2.0, 200.0],
+                    [3.0, 200.0],
+                    [3.0, 10.0]
+                ],
+                vec![[5.0, 20.0]],
+            ]
+        );
+    }
     #[test]
     fn gaps_are_separate_paths() {
         assert_eq!(

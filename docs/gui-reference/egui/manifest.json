@@ -1,0 +1,73 @@
+{
+  "captured": "2026-10-29",
+  "source": "Working tree after 146b1b2: layout, thin stepped paths, tab close fixes, floating hover tooltip, and context menus",
+  "platform": "Linux X11, scale 1",
+  "captures": [
+    {
+      "file": "columns-menu.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "2c905128825bd390b7fec2410b6052c8778cce4883b75442f6c22bdd66420992"
+    },
+    {
+      "file": "probe-dialog.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "965af28b32dfbf945cd9098301fc75ce58494512e6b75147bb00425b0f884848"
+    },
+    {
+      "file": "settings-wide.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "902d8aca2d8c95dbfaa8f00ba65f28a8e0a4675fa96dd045906baec7066db7f2"
+    },
+    {
+      "file": "settings.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "e4cc8d8bbfb53e881526efec801e43ea4ce2b2acfa111a158302315eff902784"
+    },
+    {
+      "file": "summary.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "b59cfd30965a0bdb2d3da9f16e1f88712d376c0f32cc0f8f9c9d40a862debd68"
+    },
+    {
+      "file": "trace-demo-1100x720.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "caefa913ed1a9bd19fa820b6d9997e79467a8d9e92040e4b647c3dd86828fbc6"
+    },
+    {
+      "file": "trace-hover.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "676a3c853e477d19f17c2fb5fe21990beaf159b876c683c907620231d6933491"
+    },
+    {
+      "file": "trace-menu.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "5b1f011fcb9e6892f31d87445f34b21640a4c6d88d1c5d67a8c33440138aefaf"
+    },
+    {
+      "file": "trace-small.png",
+      "width": 640,
+      "height": 420,
+      "sha256": "24af607a9fe511cedac49720812e50903dbc336ef421b146c101961ff4391a1c"
+    },
+    {
+      "file": "trace-wide.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "47ce3fd94bb9007590d35f3726907bab0ba0125d3c445ff6bb40b20216734121"
+    },
+    {
+      "file": "trace.png",
+      "width": 1100,
+      "height": 720,
+      "sha256": "91de73cac1f360bf802933f386bda78906d98e5004027ff805e021221b405ba5"
+    }
+  ]
+}

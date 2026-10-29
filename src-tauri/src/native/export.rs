@@ -330,7 +330,7 @@ fn graph_image(
             time::date_time(snapshot.plot_range[1])
         ));
         let (mut end, mut pin, mut span) = (None, None, snapshot.session.span);
-        graphs::show(ui, snapshot, &mut end, &mut pin, &mut span, false);
+        graphs::show(ui, snapshot, &mut end, &mut pin, &mut span, compare);
     })
 }
 fn report_row_height(hop: Option<&app::Row>) -> usize {

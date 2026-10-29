@@ -71,7 +71,7 @@ It needs a working GPU or software Vulkan adapter.
 | Controller and prepared views | `native/app.rs` | Typed commands, bounded probe queue, background startup/replay, DNS and range queries |
 | Statistics and event/WHOIS parsing | `logic.rs` | Golden comparisons against the original TypeScript |
 | MCP answers and transport | `native/agent.rs`, shared `mcp.rs` | Same six tools and loopback restrictions; tools work without UI paints |
-| Toolbar, tabs, columns, settings and dialogs | `native/mod.rs` | Native egui controls, confirmations, notifications, WHOIS and update/elevation actions |
+| Toolbar, tabs, columns, settings and dialogs | `native/mod.rs`, `native/layout.rs` | Native egui controls, confirmations, notifications, WHOIS and update/elevation actions |
 | Plots, comparison and navigation | `native/graphs.rs` | Owned time bounds, linked cursors/axes, split gaps, min/max areas, jitter and mapped loss |
 | Import, time and exports | `native/import.rs`, `time.rs`, `export.rs` | CSV import, streaming raw samples, visible-column text, actual tally CSV, PNG/clipboard and paginated PDF |
 
@@ -116,7 +116,7 @@ Native text uses installed Segoe UI or DejaVu Sans, with an installed CJK fallba
 available, and egui defaults elsewhere.
 
 Keyboard actions include Ctrl+T (also Ctrl+N), Ctrl+W, Ctrl+P, Ctrl+Shift+P, Ctrl+comma,
-Ctrl+O, Ctrl+L and Ctrl+Tab/Shift+Ctrl+Tab. Buttons provide zoom and return to live. Graph
+Ctrl+O, Ctrl+L and Ctrl+Tab/Shift+Ctrl+Tab. The View menu provides zoom and return to live; the history view also has a Live button. Graph
 panning uses drag; Ctrl+wheel zooms while ordinary scrolling reaches stacked graphs in
 small windows. Table Ctrl+click selects several hops. Escape closes the probe dialog or
 clears a pinned graph time. Standard egui editing handles copy/paste and text input.
@@ -258,3 +258,45 @@ Do not switch the default feature or publish the native port until these are che
   tests have been run in this environment.
 
 Blaze compatibility is an independent optional experiment and is not a release gate.
+
+## Layout pass on 29 October 2026
+
+The native layout now follows the [legacy screenshots](docs/gui-reference/README.md):
+tabs above the target toolbar; protocol, pause/restart, interval and time span together;
+legacy column widths and row spacing; a period/actions strip; jitter above the latency
+plot; and the history slider below the plots. Settings use two or three independent
+card columns, falling back to one column in a narrow window. Probe editing is centred
+with a modal backdrop and scrolls at the minimum size. Colours and further visual
+polish remain for a later pass.
+
+Native widget tests check this ordering at 640×420, 1100×720 and 1440×900, keep the
+history slider and modal Close button visible, exercise toolbar start/pause, and verify
+the settings columns. The native suite passes 58 tests; the separate synthetic GPU
+render/export check also passes. [Updated captures](docs/gui-reference/egui/README.md)
+include a real native demo window and renders of the settings, comparison and dialog.
+The default frontend checks and legacy backend checks still pass. Windows and Wayland
+acceptance remain open.
+
+Native latency graphs use held steps for individual probes and the min/max envelope,
+matching the original uPlot paths. A white latency line and a clearer stepped range
+band keep short spikes visible; dense views still use the original averages and
+preserve each bucket's real maximum. Regression tests cover a single-probe spike,
+missing replies and maxima after thinning. Tab close controls use an unfilled X.
+
+The stepped latency and jitter lines explicitly disable egui_plot's automatic band
+aggregation. Equal-x vertical edges otherwise become opaque ribbons, even at ordinary
+probe density. A widget regression checks the emitted drawing shapes for both hop and
+comparison views; it fails with automatic bands enabled and passes with thin paths.
+
+Hover readouts float beside the pointer, with time, latency and jitter on separate
+lines and loss when present. Longer periods include the date; dense points include
+their min/max range. Tooltips flip at window edges, hide during dragging or context
+menus, and retain a pinned value. They consume no space below the graphs. Widget checks
+cover four window sizes and the synthetic GPU captures include a hover view.
+
+Right-click menus cover latency/jitter graphs, comparison graphs, full hop rows,
+column headers and target tabs. They reuse the existing export, clipboard, WHOIS,
+column preferences and trace commands. A graph export from its context menu includes
+only that graph; closing a graph keeps the other selections. Comparison exports retain
+their overlaid view. Tests exercise menu hit areas, copy, column move/reset, pause,
+return to live, closing one graph and the comparison loss-colour preference.

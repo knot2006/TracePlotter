@@ -46,6 +46,9 @@ pub(super) fn date_time(seconds: f64) -> String {
     let (date, time) = format_at(at(seconds), locale());
     format!("{date} {time}")
 }
+pub(super) fn time_of_day(seconds: f64) -> String {
+    clock(seconds, true, locale())
+}
 fn locale() -> &'static str {
     static LOCALE: OnceLock<String> = OnceLock::new();
     LOCALE.get_or_init(|| host_locale().unwrap_or_else(|| "en-US".into()))

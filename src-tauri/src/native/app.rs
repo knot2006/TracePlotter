@@ -1214,4 +1214,33 @@ mod tests {
         assert_eq!(data.ys, vec![Some(5.0), Some(15.0)]);
         assert_eq!(data.js, vec![None, Some(10.0)]);
     }
+
+    #[test]
+    fn isolated_spikes_survive_raw_views_and_dense_range_bands() {
+        let hop = Hop {
+            ttl: 1,
+            times: (0..1000).map(f64::from).collect(),
+            rtts: (0..1000)
+                .map(|i| Some(if i == 500 { 200.0 } else { 10.0 }))
+                .collect(),
+            ..Hop::default()
+        };
+        let raw = graph(&hop, 0.0, 999.0, 1.0, 1.0, 2000);
+        assert_eq!(
+            raw.ys[500],
+            Some(200.0),
+            "A single probe's peak must not be averaged in a raw view"
+        );
+        let dense = graph(&hop, 0.0, 999.0, 10.0, 1.0, 100);
+        assert!(dense.xs.len() <= 100);
+        assert_eq!(
+            dense.hi.iter().flatten().copied().reduce(f64::max),
+            Some(200.0),
+            "The range band must reach the real peak even when the average is smoothed"
+        );
+        assert_eq!(
+            dense.lo.iter().flatten().copied().reduce(f64::min),
+            Some(10.0)
+        );
+    }
 }
