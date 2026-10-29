@@ -16,8 +16,6 @@ mod model;
 mod report;
 mod time;
 mod tray;
-mod theme;
-use theme::{Theme, apply_theme, palette};
 use app::{Command, Runtime, Snapshot, TraceView, View};
 use model::{Config, Session};
 
@@ -157,7 +155,7 @@ impl Window {
     fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
         migration::prepare()?;
         let session = Session::load()?;
-        apply_theme(&cc.egui_ctx, session.theme);
+        apply_theme(&cc.egui_ctx);
         let runtime = Runtime::start(session.clone(), cc.egui_ctx.clone());
         let mut result = Self::with_runtime(runtime);
         result.gpu = cc.wgpu_render_state.clone();
@@ -668,7 +666,7 @@ impl Window {
                     .checkbox(&mut session.mcp, "Allow AI agents to connect (MCP)")
                     .changed();
                 if let Some(url) = &snapshot.mcp_url {
-                    ui.label(RichText::new(url).monospace().small().color(palette(ui.ctx()).soft));
+                    ui.label(RichText::new(url).monospace().small().color(palette().soft));
                     if ui.button("Copy MCP address").clicked() {
                         ui.ctx().copy_text(url.clone());
                         ui.close();
@@ -763,7 +761,7 @@ impl Window {
                 ui.weak("Working…");
             }
             if demo() {
-                ui.colored_label(palette(ui.ctx()).warn, "DEMO");
+                ui.colored_label(palette().warn, "DEMO");
             }
             window_controls(ui);
         }));
@@ -926,7 +924,7 @@ impl Window {
                                 ui.painter().circle_filled(
                                     rect.center(),
                                     10.0,
-                                    latency_color(ui.ctx(), stats.avg, &session.settings),
+                                    latency_color(stats.avg, &session.settings),
                                 );
                                 ui.painter().text(
                                     rect.center(),
@@ -957,8 +955,8 @@ impl Window {
                                         // Only loss is coloured; the latency columns stay plain, as in
                                         // the legacy table, and the hop badge carries their grade.
                                         let color = match id.as_str() {
-                                            "loss" if stats.loss_pct >= 10.0 => palette(ui.ctx()).bad,
-                                            "loss" if stats.loss_pct > 0.0 => palette(ui.ctx()).warn,
+                                            "loss" if stats.loss_pct >= 10.0 => palette().bad,
+                                            "loss" if stats.loss_pct > 0.0 => palette().warn,
                                             _ => ui.visuals().text_color(),
                                         };
                                         let tip = match id.as_str() {
@@ -1033,7 +1031,7 @@ impl Window {
             rect.x_range(),
             rect.center().y,
             if active {
-                egui::Stroke::new(2.0, palette(ui.ctx()).accent)
+                egui::Stroke::new(2.0, palette().accent)
             } else {
                 egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
             },
@@ -1042,7 +1040,7 @@ impl Window {
             ui.painter().hline(
                 rect.center().x - 16.0..=rect.center().x + 16.0,
                 rect.center().y,
-                egui::Stroke::new(3.0, palette(ui.ctx()).muted),
+                egui::Stroke::new(3.0, palette().muted),
             );
         }
         if response.double_clicked() {
@@ -1131,8 +1129,8 @@ impl Window {
                         let action = if restart { "Restart and erase" } else { "Close and erase" };
                         confirmed = ui
                             .add(
-                                egui::Button::new(RichText::new(action).color(palette(ui.ctx()).surface))
-                                    .fill(palette(ui.ctx()).bad),
+                                egui::Button::new(RichText::new(action).color(palette().surface))
+                                    .fill(palette().bad),
                             )
                             .clicked();
                         if ui.button("Cancel").clicked() {
@@ -1379,8 +1377,6 @@ impl eframe::App for Window {
         self.restore_window(ui.ctx());
         let snapshot = self.runtime.read();
         let mut session = snapshot.session.clone();
-        apply_theme(ui.ctx(), session.theme);
-        ui.set_style(ui.ctx().style());
         let mut changed = self.poll(&mut session);
         if self
             .last_view
@@ -1481,7 +1477,7 @@ impl eframe::App for Window {
             egui::Panel::bottom("status").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(error) = self.error.as_ref().or(snapshot.error.as_ref()) {
-                        ui.colored_label(palette(ui.ctx()).bad, error);
+                        ui.colored_label(palette().bad, error);
                         if ui.button("Dismiss").clicked() {
                             self.error = None;
                             self.runtime.command(Command::ClearError);
@@ -1499,8 +1495,7 @@ impl eframe::App for Window {
                 });
             });
         }
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(palette(ui.ctx()).inset)).show(ui, |ui| {
-            theme::glass_surface(ui);
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(palette().inset)).show(ui, |ui| {
             if session.active == "settings" {
                 changed |= self.settings(ui, &mut session);
             } else {
@@ -1510,7 +1505,7 @@ impl eframe::App for Window {
                     .find(|t| t.config.session_id == session.active);
                 if let Some(trace) = active {
                     if let Some(error) = &trace.error {
-                        ui.colored_label(palette(ui.ctx()).bad, error);
+                        ui.colored_label(palette().bad, error);
                     }
                     changed |= self.table(ui, trace, &mut session, &snapshot);
                 } else {
@@ -1672,7 +1667,7 @@ fn focus_ring(ctx: &egui::Context) {
     }
     if let Some(response) = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)) {
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("focus-ring")))
-            .rect_stroke(response.rect.expand(1.0), 4.0, egui::Stroke::new(2.0, palette(ctx).accent), egui::StrokeKind::Outside);
+            .rect_stroke(response.rect.expand(1.0), 4.0, egui::Stroke::new(2.0, palette().accent), egui::StrokeKind::Outside);
     }
 }
 /// Menu rows sized for reading down a list; the toolbar's 32 px controls would leave them
@@ -1687,7 +1682,7 @@ fn menu_rows(ui: &mut egui::Ui) {
 /// A group's name inside a menu: small and muted, so it reads as a label, not a command.
 fn menu_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
-    ui.label(RichText::new(text).small().color(palette(ui.ctx()).muted));
+    ui.label(RichText::new(text).small().color(palette().muted));
 }
 /// A compact button that still meets the 24 px minimum target size.
 fn small_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
@@ -1717,11 +1712,11 @@ fn window_controls(ui: &mut egui::Ui) {
                 ui.painter().rect_filled(
                     rect,
                     0.0,
-                    if close { palette(ui.ctx()).bad.gamma_multiply(0.8) } else { palette(ui.ctx()).text.gamma_multiply(0.1) },
+                    if close { palette().bad.gamma_multiply(0.8) } else { palette().text.gamma_multiply(0.1) },
                 );
             }
             let c = rect.center();
-            let stroke = egui::Stroke::new(1.2, if response.hovered() { palette(ui.ctx()).text } else { palette(ui.ctx()).soft });
+            let stroke = egui::Stroke::new(1.2, if response.hovered() { palette().text } else { palette().soft });
             let square = |c: egui::Pos2| egui::Rect::from_center_size(c, egui::vec2(9.0, 9.0));
             match label {
                 "Close window" => {
@@ -1786,7 +1781,7 @@ fn window_edges(ctx: &egui::Context) {
     }
     let rect = ctx.content_rect();
     ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("window-border")))
-        .rect_stroke(rect, 0.0, egui::Stroke::new(1.0, palette(ctx).line), egui::StrokeKind::Inside);
+        .rect_stroke(rect, 0.0, egui::Stroke::new(1.0, palette().line), egui::StrokeKind::Inside);
     let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
     };
@@ -1879,12 +1874,12 @@ fn span_label(span: f64) -> String {
         format!("{span} seconds")
     }
 }
-fn latency_color(ctx: &egui::Context, value: Option<f64>, settings: &logic::Settings) -> Color32 {
+fn latency_color(value: Option<f64>, settings: &logic::Settings) -> Color32 {
     match value {
-        None => palette(ctx).muted,
-        Some(v) if v >= settings.bad_ms as f64 => palette(ctx).bad,
-        Some(v) if v >= settings.warn_ms as f64 => palette(ctx).warn,
-        _ => palette(ctx).good,
+        None => palette().muted,
+        Some(v) if v >= settings.bad_ms as f64 => palette().bad,
+        Some(v) if v >= settings.warn_ms as f64 => palette().warn,
+        _ => palette().good,
     }
 }
 /// What a column header explains on hover, as the legacy table's titles do.
@@ -1973,7 +1968,7 @@ fn spark(ui: &mut egui::Ui, values: &[Option<f64>]) {
         });
         if let (Some(a), Some(b)) = (previous, next) {
             ui.painter()
-                .line_segment([a, b], egui::Stroke::new(1.5, palette(ui.ctx()).accent));
+                .line_segment([a, b], egui::Stroke::new(1.5, palette().accent));
         }
         previous = next;
     }
@@ -2029,7 +2024,7 @@ fn latency_bar(
     let painter = ui.painter_at(rect);
     // Good, slow and bad latency zones behind the marks, on the same scale as the marks.
     let edges = [0.0, settings.warn_ms as f64, settings.bad_ms as f64, f64::INFINITY];
-    for (band, (color, strength)) in [(palette(ui.ctx()).good, 0.32), (palette(ui.ctx()).warn, 0.32), (palette(ui.ctx()).bad, 0.34)]
+    for (band, (color, strength)) in [(palette().good, 0.32), (palette().warn, 0.32), (palette().bad, 0.34)]
         .into_iter()
         .enumerate()
     {
@@ -2045,21 +2040,21 @@ fn latency_bar(
                 egui::vec2(width.max(2.0), rect.height() - 12.0),
             ),
             0.0,
-            palette(ui.ctx()).bad.gamma_multiply(0.75),
+            palette().bad.gamma_multiply(0.75),
         );
     }
     if let (Some(min), Some(maximum), Some(avg)) = (stats.min, stats.max, stats.avg) {
         let y = rect.center().y;
         painter.line_segment(
             [egui::pos2(x(min), y), egui::pos2(x(maximum), y)],
-            egui::Stroke::new(2.0, palette(ui.ctx()).soft),
+            egui::Stroke::new(2.0, palette().soft),
         );
         let center = egui::pos2(x(avg), y);
         painter.circle(
             center,
             3.5,
-            palette(ui.ctx()).inset,
-            egui::Stroke::new(2.0, latency_color(ui.ctx(), Some(avg), settings)),
+            palette().inset,
+            egui::Stroke::new(2.0, latency_color(Some(avg), settings)),
         );
         if let Some(last) = stats.last {
             painter.text(
@@ -2067,7 +2062,7 @@ fn latency_bar(
                 egui::Align2::CENTER_CENTER,
                 "×",
                 egui::FontId::proportional(13.0),
-                palette(ui.ctx()).accent,
+                palette().accent,
             );
         }
         if maximum > scale {
@@ -2076,7 +2071,7 @@ fn latency_bar(
                 egui::Align2::RIGHT_CENTER,
                 "›",
                 egui::FontId::proportional(14.0),
-                palette(ui.ctx()).text,
+                palette().text,
             );
         }
     }
@@ -2146,4 +2141,100 @@ fn fonts() -> &'static egui::FontDefinitions {
         }
         fonts
     })
+}
+/// The interface's colours, after MonoCode: near-black surfaces, grey text and one blue
+/// accent, with colour kept for state so that a hop that is fine stays quiet.
+#[derive(Clone, Copy)]
+pub(super) struct Palette {
+    /// Black, for marks and glyphs drawn on a filled colour.
+    pub surface: Color32,
+    /// MonoCode's shell: the title bar, tabs, toolbar and settings navigation.
+    pub shell: Color32,
+    /// MonoCode's inset pane, a step darker: the table, graphs and settings pages.
+    pub inset: Color32,
+    pub raised: Color32,
+    pub input: Color32,
+    pub line: Color32,
+    /// The edge of a control: 3:1 against the shell, as WCAG asks of control boundaries.
+    pub edge: Color32,
+    pub text: Color32,
+    pub soft: Color32,
+    pub muted: Color32,
+    pub accent: Color32,
+    pub accent_light: Color32,
+    pub good: Color32,
+    pub warn: Color32,
+    pub bad: Color32,
+}
+const fn rgb(hex: u32) -> Color32 {
+    Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+/// MonoCode's Ink theme.
+// Ink's greys come from MonoCode's default neutral shell, hsl(240, 0%, 9%), and its inset
+// pane at 45% of that lightness.
+const INK: Palette = Palette {
+    surface: rgb(0x000000),
+    shell: rgb(0x171717),
+    inset: rgb(0x0a0a0a),
+    raised: rgb(0x1f1f1f),
+    input: rgb(0x0f0f0f),
+    line: rgb(0x2a2a2a),
+    edge: rgb(0x646464),
+    text: rgb(0xf5f5f5),
+    soft: rgb(0xd6d6d6),
+    muted: rgb(0x8f8f8f),
+    accent: rgb(0x7aa7ff),
+    accent_light: rgb(0x9cc0ff),
+    good: rgb(0x8fd6a8),
+    warn: rgb(0xf2c46d),
+    bad: rgb(0xff6b6b),
+};
+/// The colours the interface paints with.
+pub(super) fn palette() -> &'static Palette {
+    &INK
+}
+fn apply_theme(ctx: &egui::Context) {
+    ctx.set_fonts(fonts().clone());
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = palette().shell;
+    visuals.window_fill = palette().raised;
+    visuals.extreme_bg_color = palette().input;
+    visuals.faint_bg_color = palette().raised;
+    visuals.window_stroke = egui::Stroke::new(1.0, palette().line);
+    visuals.hyperlink_color = palette().accent_light;
+    visuals.warn_fg_color = palette().warn;
+    visuals.error_fg_color = palette().bad;
+    visuals.selection.bg_fill = palette().accent.gamma_multiply(0.3);
+    visuals.selection.stroke = egui::Stroke::new(1.0, palette().text);
+    let w = &mut visuals.widgets;
+    w.noninteractive.bg_fill = palette().shell;
+    w.noninteractive.weak_bg_fill = palette().shell;
+    w.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette().line);
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0, palette().soft);
+    // Controls are lifted by translucent ink, not by a tint of their own.
+    for (state, fill, text) in [
+        (&mut w.inactive, 0.08, palette().soft),
+        (&mut w.hovered, 0.14, palette().text),
+        (&mut w.active, 0.2, palette().text),
+        (&mut w.open, 0.14, palette().text),
+    ] {
+        state.bg_fill = palette().text.gamma_multiply(fill);
+        state.weak_bg_fill = state.bg_fill;
+        state.fg_stroke = egui::Stroke::new(1.0, text);
+    }
+    w.inactive.bg_stroke = egui::Stroke::new(1.0, palette().edge);
+    w.hovered.bg_stroke = egui::Stroke::new(1.0, palette().muted);
+    ctx.set_visuals(visuals);
+    ctx.style_mut_of(egui::Theme::Dark, |s| {
+        s.spacing.item_spacing = egui::vec2(8.0, 5.0);
+        s.spacing.interact_size.y = 32.0;
+        s.text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+        s.text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+        s.text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+        s.text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
+    });
 }

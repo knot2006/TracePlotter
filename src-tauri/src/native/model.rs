@@ -101,7 +101,6 @@ pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct Session {
     pub version: u32,
-    pub theme: Theme,
     pub settings: Settings,
     pub targets: Vec<Config>,
     pub active: String,
@@ -127,7 +126,6 @@ impl Default for Session {
         }
         Self {
             version: 1,
-            theme: Theme::default(),
             settings,
             targets: Vec::new(),
             active: "summary".into(),

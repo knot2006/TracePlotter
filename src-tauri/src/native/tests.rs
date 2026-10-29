@@ -93,7 +93,7 @@ fn fixture(active: &str) -> Snapshot {
 fn harness(active: &str, size: [f32; 2]) -> (Harness<'static, Window>, mpsc::Receiver<Command>) {
     let (runtime, commands) = Runtime::fixture(fixture(active));
     let h = Harness::builder().with_size(size).build_eframe(|cc| {
-        apply_theme(&cc.egui_ctx, Theme::Ink);
+        apply_theme(&cc.egui_ctx);
         let mut window = Window::with_runtime(runtime);
         window.placed = true;
         window.window_state = None;
