@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sendNotification } from "@tauri-apps/plugin-notification";
-import { describe, type TraceEvent } from "./events";
+import { describe, restoreEvents, type TraceEvent } from "./events";
 import { DEFAULTS, WINDOWS, WINDOW_HOURS, historyRounds, settings } from "./settings";
 import { alertProbes, breaches, stats, type Tally } from "./stats";
 
@@ -158,21 +158,21 @@ function addEvent(trace: Trace, event: TraceEvent, live: boolean) {
 }
 
 /**
- * Puts the saved events from before the window's oldest round in front of those its
- * replayed rounds brought back, so the list reaches as far back as the history files.
+ * Restores saved alerts and recoveries as well as route changes older than the replayed
+ * rounds. Alert decisions cannot be reconstructed from samples after settings change.
  */
 async function loadEvents(trace: Trace) {
   const lines = await invoke<string[]>("read_events", { session: trace.config.sessionId }).catch(() => []);
   const held = trace.target.times[0] ?? Infinity;
-  const older = lines.flatMap((line) => {
+  const saved = lines.flatMap((line) => {
     try {
       const event = JSON.parse(line) as TraceEvent;
-      return event.t < held ? [event] : [];
+      return [event];
     } catch {
       return [];
     }
   });
-  trace.events = [...older, ...trace.events].slice(-MAX_EVENTS);
+  trace.events = restoreEvents(saved, trace.events, held).slice(-MAX_EVENTS);
 }
 
 /** Adds a probe to the hop, which keeps its newest `max` and at most a batch more. */

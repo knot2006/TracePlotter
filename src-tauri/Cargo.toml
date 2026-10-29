@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.1.12"
+version = "0.1.13"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
@@ -19,14 +19,14 @@ dev-live = ["egui-ui", "dep:blaze-live"]
 ui-tests = ["egui-ui", "dep:egui_kittest"]
 legacy-migration = ["legacy-ui", "egui-ui", "tauri/custom-protocol"]
 egui-ui = ["dep:uuid","dep:eframe", "dep:egui_extras", "dep:egui_plot", "dep:rfd", "dep:arboard", "dep:chrono", "dep:image", "dep:pdf-writer", "dep:notify-rust", "dep:miniz_oxide", "dep:tauri-winres"]
-legacy-ui = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-notification", "dep:tauri-plugin-dialog"]
+legacy-ui = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-notification", "dep:tauri-plugin-dialog", "dep:tauri-plugin-autostart"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
 tauri-winres = { version = "0.3", optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["tray-icon"], optional = true }
 serde = { version = "1", features = ["derive"] }
 # Not capped: new releases, breaking ones included, are taken and our code is fixed when
 # the API changes. Cargo.lock keeps builds on the tested version until then.
@@ -64,6 +64,7 @@ libc = "0.2"
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
 # reverse DNS without NetBIOS. Also the check for Administrator rights and the restart with them.
 [target.'cfg(windows)'.dependencies]
+tauri-plugin-autostart = { version = "2", optional = true }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

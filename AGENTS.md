@@ -35,7 +35,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
 On Linux the Rust build needs the WebKitGTK development packages (`libwebkit2gtk-4.1-dev`,
-`libgtk-3-dev`, `librsvg2-dev`).
+`libgtk-3-dev`, `librsvg2-dev`) and `libayatana-appindicator3-dev` for the system tray.
 
 Do not run the full `npm run tauri build`, nor the ignored `live_trace` test, in a sandbox or cloud
 machine: they need Windows and a real network, and the test Administrator rights as well. Leave

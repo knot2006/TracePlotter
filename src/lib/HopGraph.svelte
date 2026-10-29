@@ -5,12 +5,14 @@
 
 <script lang="ts">
   import uPlot from "uplot";
+  import { untrack } from "svelte";
   import "uplot/dist/uPlot.min.css";
   import { popupMenu } from "./ContextMenu.svelte";
   import { settings } from "./settings";
   import { BLEND_RADIUS, jitterSeries, latencyAxis, lossSeries, stretchWidth, thin, type ThinData } from "./stats";
   import { dateTime, timeOfDay, timeTicks } from "./time";
   import type { Hop } from "./trace";
+  import { eventLabel, type EventGroup } from "./events";
 
   type Props = {
     /** The hop's samples for the period shown. */
@@ -41,8 +43,11 @@
     onsave: () => void;
     /** Copies just this graph to the clipboard as a PNG. */
     oncopy: () => void;
+    events?: EventGroup[];
+    selectedEvent?: EventGroup | null;
+    onevent?: (event: EventGroup) => void;
   };
-  let { hop, heading, from, to, intervalMs, range, syncKey, withJitter, onpan, onzoom, onreset, onclose, onsave, oncopy }: Props =
+  let { hop, heading, from, to, intervalMs, range, syncKey, withJitter, onpan, onzoom, onreset, onclose, onsave, oncopy, events = [], selectedEvent = null, onevent }: Props =
     $props();
 
   /** Right-click menu of the graph. */
@@ -150,6 +155,57 @@
     }
   }
 
+  function drawEvents(u: uPlot) {
+    const { ctx, bbox } = u;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+    ctx.clip();
+    const occupied = new Set<number>();
+    const color = (event: EventGroup) => event.kind === "alert" ? "#f87171" : event.kind === "recover" ? "#4ade80" : "#60a5fa";
+    for (const event of events) {
+      if (event.t < from || event.t > to) continue;
+      const x = u.valToPos(event.t, "x", true);
+      // Dense route changes share a mark rather than painting the whole graph solid.
+      const key = Math.round(x / (3 * devicePixelRatio));
+      if (occupied.has(key)) continue;
+      occupied.add(key);
+      ctx.strokeStyle = ctx.fillStyle = color(event);
+      ctx.lineWidth = devicePixelRatio;
+      ctx.setLineDash([3 * devicePixelRatio, 3 * devicePixelRatio]);
+      ctx.beginPath();
+      ctx.moveTo(x, bbox.top);
+      ctx.lineTo(x, bbox.top + bbox.height);
+      ctx.stroke();
+      ctx.fillRect(x - 3 * devicePixelRatio, bbox.top, 6 * devicePixelRatio, 6 * devicePixelRatio);
+    }
+    // Draw the selected moment last so dense changes cannot cover its marker.
+    if (selectedEvent && selectedEvent.t >= from && selectedEvent.t <= to) {
+      const x = u.valToPos(selectedEvent.t, "x", true);
+      const px = devicePixelRatio;
+      ctx.fillStyle = `${color(selectedEvent)}28`;
+      ctx.fillRect(x - 7 * px, bbox.top, 14 * px, bbox.height);
+      ctx.strokeStyle = color(selectedEvent);
+      ctx.lineWidth = 2 * px;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x, bbox.top);
+      ctx.lineTo(x, bbox.top + bbox.height);
+      ctx.stroke();
+      ctx.fillStyle = color(selectedEvent);
+      ctx.strokeStyle = "#e6eaf0";
+      ctx.lineWidth = px;
+      ctx.beginPath();
+      ctx.moveTo(x - 5 * px, bbox.top + px);
+      ctx.lineTo(x + 5 * px, bbox.top + px);
+      ctx.lineTo(x, bbox.top + 10 * px);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function readout(u: uPlot) {
     const { idx, left, top } = u.cursor;
     if (dragging || idx == null || left == null || top == null || left < 0) {
@@ -184,6 +240,9 @@
           // The loss is that of the stretch of time the probe falls in, not of the whole graph.
           ...(loss ? [`loss ${loss.toFixed(0)} % in these ${Math.round(shown.bucket)} s`] : []),
         ];
+    for (const event of events) {
+      if (Math.abs(u.valToPos(event.t, "x") - left) <= 8) lines.push(eventLabel(event));
+    }
     // Every stacked graph gets a readout for the same moment, because their cursors move
     // together. They must not land on each other: the graph under the pointer shows its
     // readout next to the pointer and keeps it inside its own area (above the pointer in
@@ -210,6 +269,14 @@
   function startDrag(event: PointerEvent) {
     // Left button only; the right button opens the graph's menu.
     if (event.button !== 0 || !plot) return;
+    const left = event.clientX - plot.over.getBoundingClientRect().left;
+    const nearest = events.filter((e) => e.t >= from && e.t <= to)
+      .map((e) => ({ event: e, distance: Math.abs(plot!.valToPos(e.t, "x") - left) }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    if (nearest && nearest.distance <= 8 && onevent) {
+      onevent(nearest.event);
+      return;
+    }
     const width = plot.over.clientWidth;
     let lastX = event.clientX;
     chartEl.setPointerCapture(event.pointerId);
@@ -275,7 +342,7 @@
           { ...line, stroke: "#f8fafc" },
         ],
         bands: [{ series: [3, 2], fill: "rgba(248, 250, 252, 0.22)" }],
-        hooks: { drawClear: [drawBands], setCursor: [readout] },
+        hooks: { drawClear: [drawBands], draw: [(u) => untrack(() => drawEvents(u))], setCursor: [readout] },
       },
       [[], [], [], [], []],
       chartEl,
@@ -319,6 +386,7 @@
   $effect(() => {
     // Read so that this runs again, on the new plots, after a rebuild.
     lossy;
+    events;
     jitterEl;
     if (!plot) return;
     if (range) {
@@ -338,6 +406,12 @@
     const thinned = thin(all, breaks, width, BLEND_RADIUS);
     shown = { js: thinned.js, breaks, bucket };
     show(thinned);
+  });
+
+  $effect(() => {
+    selectedEvent;
+    lossy;
+    plot?.redraw(false);
   });
 
   function show({ xs, ys, js, ls, lo, hi }: ThinData) {
@@ -396,6 +470,7 @@
 </div>
 
 <style>
+  .tip { max-width: min(480px, 80vw); white-space: normal; overflow-wrap: anywhere; }
   .hop-graph {
     flex: 1 1 0;
     min-height: 130px;

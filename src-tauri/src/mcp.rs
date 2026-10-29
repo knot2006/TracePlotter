@@ -321,6 +321,35 @@ fn serve(call: &ToolCall, mut request: tiny_http::Request, port: u16) {
     }
 }
 
+/// A repeated start on the same port keeps its listener. A webview reload can ask for
+/// this before the old listener's thread would have released its socket after a stop.
+fn change_listener(
+    running: &mut Option<Arc<tiny_http::Server>>,
+    port: Option<u16>,
+) -> Result<Option<Arc<tiny_http::Server>>, String> {
+    if let Some(port) = port
+        && running.as_ref().is_some_and(|server| {
+            server
+                .server_addr()
+                .to_ip()
+                .is_some_and(|addr| addr.port() == port)
+        })
+    {
+        return Ok(None);
+    }
+    if let Some(server) = running.take() {
+        server.unblock();
+    }
+    let Some(port) = port else {
+        return Ok(None);
+    };
+    let server = tiny_http::Server::http(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+        .map(Arc::new)
+        .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
+    *running = Some(server.clone());
+    Ok(Some(server))
+}
+
 /// Starts the MCP server on `port` of the loopback interface, or stops it when `port` is
 /// `None`. Returns the address clients connect to.
 #[cfg(feature = "legacy-ui")]
@@ -343,24 +372,17 @@ impl Mcp {
         call: Arc<ToolCall>,
     ) -> Result<Option<String>, String> {
         let mut running = self.server.lock().unwrap();
-        if let Some(server) = running.take() {
-            server.unblock();
+        if let Some(server) = change_listener(&mut running, port)? {
+            let port = server.server_addr().to_ip().unwrap().port();
+            std::thread::spawn(move || {
+                for request in server.incoming_requests() {
+                    let call = call.clone();
+                    // Each in its own thread: a tool call waits for the webview.
+                    std::thread::spawn(move || serve(call.as_ref(), request, port));
+                }
+            });
         }
-        let Some(port) = port else {
-            return Ok(None);
-        };
-        let server = tiny_http::Server::http(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-            .map(Arc::new)
-            .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
-        *running = Some(server.clone());
-        std::thread::spawn(move || {
-            for request in server.incoming_requests() {
-                let call = call.clone();
-                // Each in its own thread: a tool call waits for the webview.
-                std::thread::spawn(move || serve(call.as_ref(), request, port));
-            }
-        });
-        Ok(Some(format!("http://127.0.0.1:{port}/mcp")))
+        Ok(port.map(|port| format!("http://127.0.0.1:{port}/mcp")))
     }
 }
 
@@ -396,6 +418,22 @@ impl Drop for Mcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_start_keeps_the_listener_and_does_not_unblock_its_worker() {
+        let mut running = None;
+        let server = change_listener(&mut running, Some(0)).unwrap().unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        assert!(change_listener(&mut running, Some(port)).unwrap().is_none());
+        assert!(Arc::ptr_eq(running.as_ref().unwrap(), &server));
+        let retained = server.clone();
+        let worker = std::thread::spawn(move || retained.incoming_requests().next().is_none());
+        assert!(change_listener(&mut running, Some(port)).unwrap().is_none());
+        assert!(!worker.is_finished());
+        change_listener(&mut running, None).unwrap();
+        assert!(worker.join().unwrap());
+        assert!(running.is_none());
+    }
 
     fn request(method: &str, params: Value) -> Value {
         json!({ "jsonrpc": "2.0", "id": 7, "method": method, "params": params })

@@ -24,7 +24,7 @@
     type Settings as AppSettings,
   } from "../lib/settings";
   import Summary from "../lib/Summary.svelte";
-  import TraceTab, { COLUMNS, DEFAULT_HIDDEN } from "../lib/TraceTab.svelte";
+  import TraceTab, { COLUMNS, DEFAULT_HIDDEN, EXTRA_COLUMNS } from "../lib/TraceTab.svelte";
   import { parseSpan, spanLabel, spanShort } from "../lib/stats";
   import { setLocale } from "../lib/time";
   import {
@@ -371,6 +371,7 @@
               text: "Export",
               items: [
                 { id: "txt", text: "MTR report (.txt)…", action: onTab((t) => t.exportTxt()) },
+                { id: "support-report", text: "Support report (.html)…", action: onTab((t) => t.openSupportReport()) },
                 {
                   id: "csv",
                   text: "Samples (.csv)…",
@@ -394,7 +395,7 @@
             { item: "Separator" },
             { id: "settings", text: "Settings…", accelerator: "CmdOrCtrl+,", action: openSettings },
             { item: "Separator" },
-            { item: "CloseWindow", text: "Exit" },
+            { id: "exit-app", text: "Exit and stop monitoring", action: () => invoke("exit_app").catch((e) => showToast(String(e), true)) },
           ],
         },
         // Only macOS needs these: there, copy and paste in the page go through the menu.
@@ -417,6 +418,7 @@
         {
           text: "View",
           items: [
+            { id: "tray", text: "Hide to tray", action: () => invoke("hide_to_tray").catch((e) => showToast(String(e), true)) },
             {
               text: "Columns",
               items: COLUMNS.map((column) => ({
@@ -638,6 +640,12 @@
       if (Array.isArray(stored)) hidden = stored;
     } catch {
       // Keep the defaults.
+    }
+    // Existing column preferences predate these optional metrics.
+    if (localStorage.getItem("traceplotter.extraColumnsAdded") !== "yes") {
+      hidden = [...new Set([...hidden, ...EXTRA_COLUMNS])];
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify(hidden));
+      localStorage.setItem("traceplotter.extraColumnsAdded", "yes");
     }
     buildMenu().catch((e) => showToast(`Menu failed: ${e}`, true));
     // Before any tab shows a date: the host's own date and time format.

@@ -1,5 +1,7 @@
 <script lang="ts">
   import CompareGraph from "./CompareGraph.svelte";
+  import { correlateIncidents, incidents } from "./events";
+  import { dateTime } from "./time";
   import { onFrame } from "./frame";
   import { settings } from "./settings";
   import { type HopStats, lowerBound, period, stats, stretchWidth, tallyStats } from "./stats";
@@ -129,6 +131,15 @@
       return { trace, s: disk?.s ?? stats(recent), spark: disk?.spark ?? sparkline(recent), state };
     });
   });
+  const recentIncidents = $derived.by(() => {
+    rev;
+    const latest = Math.max(0, ...traces.map((trace) => trace.target.times.at(-1) ?? 0));
+    const from = focusSeconds ? latest - focusSeconds : 0;
+    return correlateIncidents(traces.flatMap((trace) => incidents(trace.events)
+      .map((incident) => ({ ...incident, target: trace.config.sessionId, observedUntil: trace.target.times.at(-1) ?? incident.from }))
+      .filter((incident) => (incident.to ?? incident.observedUntil) >= from)))
+      .slice(-10).reverse();
+  });
 </script>
 
 <div class="summary">
@@ -197,6 +208,22 @@
       </tbody>
     </table>
   </div>
+  {#if recentIncidents.length}
+    <details class="incidents">
+      <summary>Recent alert incidents ({recentIncidents.length})</summary>
+      <p>Overlapping alert windows across targets. Timing alone does not establish a shared cause.</p>
+      {#each recentIncidents as incident}
+        <div class="incident">
+          <span>{dateTime(incident.from)} · {Math.round(incident.to - incident.from)} s observed · </span>
+          {#each [...new Set(incident.entries.map((e) => e.target))] as id}
+            {@const trace = traces.find((t) => t.config.sessionId === id)}
+            {#if trace}<button onclick={() => onopen(trace)}>{trace.config.host}</button>{/if}
+          {/each}
+          {#if incident.entries.some((e) => e.to === null)}<span> · recovery not recorded for every target</span>{/if}
+        </div>
+      {/each}
+    </details>
+  {/if}
   {#if comparing.length}
     <CompareGraph bind:this={compare} traces={comparing} {focusSeconds} {onspan} />
   {:else}
@@ -205,6 +232,10 @@
 </div>
 
 <style>
+  .incidents { flex: 0 0 auto; max-height: 180px; overflow: auto; padding: 8px 10px; border-top: 1px solid var(--line); }
+  .incidents p { color: var(--muted); margin: 6px 0; }
+  .incident { margin: 6px 0; }
+  .incident button { margin-right: 6px; }
   .summary {
     display: flex;
     flex-direction: column;

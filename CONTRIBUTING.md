@@ -56,6 +56,9 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 
 The CI workflow runs these on every push and pull request.
 
+On Linux, install `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev` and
+`libayatana-appindicator3-dev` before building (Debian and Ubuntu package names).
+
 A live probe check against a real host needs an elevated terminal and a network:
 
 ```bash
