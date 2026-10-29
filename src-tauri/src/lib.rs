@@ -9,14 +9,23 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "legacy-ui")]
 use tauri::ipc::{Channel, InvokeBody, Request};
+#[cfg(feature = "legacy-ui")]
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+#[cfg(feature = "legacy-ui")]
 use tauri_plugin_dialog::DialogExt;
 use trippy_core::{Builder, Port, PortDirection, ProbeStatus, Protocol, Round, Tracer};
 
 #[cfg(any(windows, target_os = "linux"))]
 mod echo;
+#[cfg(any(feature = "egui-ui", test))]
+mod logic;
 mod mcp;
+#[cfg(feature = "egui-ui")]
+mod native;
+mod probe;
+use probe::*;
 #[cfg(target_os = "linux")]
 mod pingsock;
 #[cfg(windows)]
@@ -46,7 +55,7 @@ fn history_rounds(interval_ms: u64) -> usize {
 
 /// Sets how many days of history tabs keep. Older days go when a trace starts a new day
 /// and when a history is next read.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn set_history_days(days: u64) {
     HISTORY_DAYS.store(days.clamp(1, 365), Ordering::Relaxed);
 }
@@ -80,10 +89,11 @@ struct Started {
     history: Vec<Sample>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Traces {
-    next_id: AtomicU32,
-    stops: Mutex<HashMap<u32, Arc<AtomicBool>>>,
+    next_id: Arc<AtomicU32>,
+    stops: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
+    workers: Arc<Mutex<HashMap<u32, std::thread::JoinHandle<()>>>>,
 }
 
 /// Rounds in a row without a single reply before the tracer is rebuilt, for rounds that
@@ -200,8 +210,17 @@ fn trim_days(dir: &Path) {
 /// parsing the rest. Lines written another way are parsed; lines without one are `None`.
 fn line_time(line: &str) -> Option<u64> {
     line.strip_prefix(r#"{"t":"#)
-        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
-        .or_else(|| serde_json::from_str::<Sample>(line).ok().map(|sample| sample.t))
+        .and_then(|rest| {
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()
+        })
+        .or_else(|| {
+            serde_json::from_str::<Sample>(line)
+                .ok()
+                .map(|sample| sample.t)
+        })
 }
 
 /// Appends rounds to a tab's history, each to the file of its day. Starting a new day
@@ -269,7 +288,7 @@ fn load_history(dir: &Path, max: usize) -> Vec<Sample> {
 
 /// The probes of one hop over a stretch of time. Stretches add up, so a long period is
 /// counted from the tallies of its minutes instead of from every round.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Tally {
     sent: u32,
     received: u32,
@@ -335,16 +354,37 @@ fn tally_rounds(text: &str, width: u64, from: u64, to: u64) -> Tallies {
 
 /// `tally_rounds` into existing tallies. `previous` holds each hop's latest reply, for
 /// jitter, and carries it over to the next piece of the same file.
-fn tally_into(tallies: &mut Tallies, previous: &mut HashMap<u8, f64>, text: &str, width: u64, from: u64, to: u64) {
+fn tally_into(
+    tallies: &mut Tallies,
+    previous: &mut HashMap<u8, f64>,
+    text: &str,
+    width: u64,
+    from: u64,
+    to: u64,
+) {
     // A round's time is read before the rest of its line, so rounds outside the period
     // cost next to nothing: a short period is often read from a whole day's file.
     let inside = |line: &&str| line_time(line).is_some_and(|t| (from..to).contains(&t));
-    for sample in text.lines().filter(inside).filter_map(|line| serde_json::from_str::<Sample>(line).ok()) {
+    for sample in text
+        .lines()
+        .filter(inside)
+        .filter_map(|line| serde_json::from_str::<Sample>(line).ok())
+    {
         let start = sample.t / width * width;
         let reply = sample.hops.last().and_then(|hop| hop.rtt);
-        for (ttl, rtt) in sample.hops.iter().map(|hop| (hop.ttl, hop.rtt)).chain([(0, reply)]) {
+        for (ttl, rtt) in sample
+            .hops
+            .iter()
+            .map(|hop| (hop.ttl, hop.rtt))
+            .chain([(0, reply)])
+        {
             let before = previous.get(&ttl).copied();
-            tallies.entry(ttl).or_default().entry(start).or_default().add(rtt, before);
+            tallies
+                .entry(ttl)
+                .or_default()
+                .entry(start)
+                .or_default()
+                .add(rtt, before);
             if let Some(rtt) = rtt {
                 previous.insert(ttl, rtt);
             }
@@ -386,9 +426,19 @@ impl DayTally {
             return;
         }
         // The last line may still be being written; it waits for the next call.
-        let whole = bytes.iter().rposition(|&byte| byte == b'\n').map_or(0, |i| i + 1);
+        let whole = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |i| i + 1);
         let text = String::from_utf8_lossy(&bytes[..whole]);
-        tally_into(&mut self.tallies, &mut self.previous, &text, MINUTE_MS, 0, u64::MAX);
+        tally_into(
+            &mut self.tallies,
+            &mut self.previous,
+            &text,
+            MINUTE_MS,
+            0,
+            u64::MAX,
+        );
         self.read += whole as u64;
     }
 }
@@ -410,7 +460,7 @@ fn rebucket(into: &mut Tallies, tallies: &Tallies, step: u64, width: u64, from: 
 }
 
 /// One stretch of a hop's graph: its start in Unix ms and its tally.
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Stretch {
     t: u64,
     #[serde(flatten)]
@@ -419,7 +469,7 @@ struct Stretch {
 
 /// A hop over a period of its history: its tally over the whole period, and for a hop
 /// with a graph, its stretches.
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct RangeHop {
     ttl: u8,
     total: Tally,
@@ -427,7 +477,7 @@ struct RangeHop {
 }
 
 /// A period of a tab's history, and where the history begins (Unix ms, `None` when empty).
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Range {
     start: Option<u64>,
     hops: Vec<RangeHop>,
@@ -438,8 +488,14 @@ struct Range {
 /// `width` ms. The day files the period touches are read by as many threads as there are
 /// cores. With a width of whole minutes they are tallied by the minute and kept (see
 /// `DayTally`); such stretches can reach up to a minute past the period's ends.
-#[tauri::command(async)]
-fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u8>) -> Result<Range, String> {
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+fn history_range(
+    session: String,
+    from: u64,
+    to: u64,
+    width: u64,
+    graphed: Vec<u8>,
+) -> Result<Range, String> {
     let dir = history_dir(&session)?;
     let width = width.max(1);
     let by_minute = width.is_multiple_of(MINUTE_MS);
@@ -455,9 +511,19 @@ fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u
 
     let tally_day = |path: &Path| -> Tallies {
         if !by_minute {
-            return tally_rounds(&fs::read_to_string(path).unwrap_or_default(), width, from, to);
+            return tally_rounds(
+                &fs::read_to_string(path).unwrap_or_default(),
+                width,
+                from,
+                to,
+            );
         }
-        let day = cache.lock().unwrap().entry(path.to_path_buf()).or_default().clone();
+        let day = cache
+            .lock()
+            .unwrap()
+            .entry(path.to_path_buf())
+            .or_default()
+            .clone();
         let mut day = day.lock().unwrap();
         day.catch_up(path);
         let mut tallies = Tallies::new();
@@ -467,7 +533,9 @@ fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u
     // A pool rather than a thread per day: each thread holds a whole day file in memory.
     let next = AtomicUsize::new(0);
     let parts: Mutex<Vec<Option<Tallies>>> = Mutex::new(vec![None; days.len()]);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(days.len());
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(days.len());
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
@@ -501,7 +569,10 @@ fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u
                 }
                 match hop.stretches.last_mut() {
                     Some(stretch) if stretch.t == *t => stretch.tally.merge(tally),
-                    _ => hop.stretches.push(Stretch { t: *t, tally: *tally }),
+                    _ => hop.stretches.push(Stretch {
+                        t: *t,
+                        tally: *tally,
+                    }),
                 }
             }
         }
@@ -515,15 +586,20 @@ fn history_range(session: String, from: u64, to: u64, width: u64, graphed: Vec<u
 /// The time of the first round in a history file.
 fn first_time(path: &Path) -> Option<u64> {
     let file = fs::File::open(path).ok()?;
-    BufReader::new(file).lines().map_while(Result::ok).find_map(|line| line_time(&line))
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .find_map(|line| line_time(&line))
 }
 
 /// When a tab's history begins, in Unix ms: the first round of its oldest day file.
 /// `None` for a tab without history.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn history_start(session: String) -> Result<Option<u64>, String> {
     let dir = history_dir(&session)?;
-    Ok(day_files(&dir).first().and_then(|(_, path)| first_time(path)))
+    Ok(day_files(&dir)
+        .first()
+        .and_then(|(_, path)| first_time(path)))
 }
 
 /// The events file of a tab: its route changes, alerts and recoveries, one JSON object
@@ -534,7 +610,7 @@ fn events_path(session: &str) -> Result<PathBuf, String> {
 }
 
 /// Adds an event, one line of JSON, to a tab's events file.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn append_event(session: String, event: String) -> Result<(), String> {
     if event.contains('\n') {
         return Err("an event is one line".into());
@@ -550,7 +626,7 @@ fn append_event(session: String, event: String) -> Result<(), String> {
 
 /// A tab's saved events, oldest first. Those from before the oldest day its history keeps
 /// are dropped from the file on the way.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn read_events(session: String) -> Result<Vec<String>, String> {
     let path = events_path(&session)?;
     let Ok(text) = fs::read_to_string(&path) else {
@@ -564,7 +640,12 @@ fn read_events(session: String) -> Result<Vec<String>, String> {
         .map(str::to_owned)
         .collect();
     if kept.len() < text.lines().count() {
-        let _ = fs::write(&path, kept.iter().map(|line| format!("{line}\n")).collect::<String>());
+        let _ = fs::write(
+            &path,
+            kept.iter()
+                .map(|line| format!("{line}\n"))
+                .collect::<String>(),
+        );
     }
     Ok(kept)
 }
@@ -595,7 +676,8 @@ fn iso_time(ms: u64) -> String {
 /// Saves a tab's whole history as a samples export, one line per probe with the address
 /// it answered from, where the user picks; `None` when the dialog was cancelled. It is
 /// written while the day files are read, so a long history is never held whole.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+#[cfg(feature = "legacy-ui")]
 fn export_samples(app: AppHandle, session: String, name: String) -> Result<Option<String>, String> {
     let dir = history_dir(&session)?;
     let Some(path) = save_dialog(&app, &name)? else {
@@ -608,7 +690,10 @@ fn export_samples(app: AppHandle, session: String, name: String) -> Result<Optio
         let Ok(text) = fs::read_to_string(&day) else {
             continue;
         };
-        for sample in text.lines().filter_map(|line| serde_json::from_str::<Sample>(line).ok()) {
+        for sample in text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Sample>(line).ok())
+        {
             let time = iso_time(sample.t);
             for hop in &sample.hops {
                 let addr = hop.addr.map(|addr| addr.to_string()).unwrap_or_default();
@@ -629,310 +714,11 @@ fn demo() -> bool {
     *DEMO.get_or_init(|| std::env::args().any(|arg| arg == "--demo"))
 }
 
-/// The demo route: address, name, usual latency in ms and share of probes lost per hop.
-/// It crosses three oceans so that its hops show every latency colour, and the swell in
-/// `demo_sample` moves the far ones across the limits. The addresses between the home
-/// router and the target are from the ranges reserved for documentation (RFC 5737), so
-/// they belong to nobody.
-const DEMO_ROUTE: [(&str, &str, f64, f64); 9] = [
-    ("192.168.1.1", "router.home.arpa", 0.4, 0.0),
-    ("10.20.0.1", "gw.access.example.net", 1.3, 0.0),
-    ("198.51.100.17", "core1.waw.example.net", 4.1, 0.0),
-    ("203.0.113.9", "ix1.fra.example.org", 18.0, 0.0),
-    ("203.0.113.77", "edge1.nyc.example.org", 92.0, 0.0),
-    ("192.0.2.33", "", 128.0, 0.35),
-    ("192.0.2.120", "core1.lax.example.com", 165.0, 0.0),
-    ("192.0.2.150", "", 172.0, 0.01),
-    ("192.0.2.200", "www.syd.example.com", 245.0, 0.004),
-];
-
-/// Pseudo-random numbers in 0..1 for the demo (xorshift); no need for a crate.
-struct DemoRng(u64);
-
-impl DemoRng {
-    fn next(&mut self) -> f64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
-
-/// How one demo target's route differs from the others': the long-haul latency, the size,
-/// length and timing of its swell, its rise in the busy hours of the day, and extra loss
-/// at the target. Picked from the host name, so that tabs can be told apart and a host
-/// always looks the same.
-struct DemoLook {
-    scale: f64,
-    swell: f64,
-    period_ms: f64,
-    phase: f64,
-    busy: f64,
-    busy_phase: f64,
-    loss: f64,
-}
-
-fn demo_look(host: &str) -> DemoLook {
-    // FNV-1a, so that names that differ in one letter still look different.
-    let seed = host.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
-    let mut rng = DemoRng(seed | 1);
-    rng.next();
-    DemoLook {
-        scale: 0.6 + 0.8 * rng.next(),
-        swell: 0.05 + 0.25 * rng.next(),
-        period_ms: 60_000.0 + 180_000.0 * rng.next(),
-        phase: std::f64::consts::TAU * rng.next(),
-        busy: 0.1 + 0.4 * rng.next(),
-        busy_phase: std::f64::consts::TAU * rng.next(),
-        loss: 0.02 * rng.next(),
-    }
-}
-
-/// One made-up round at Unix time `t` in ms: steady near hops, a slow swell and the odd
-/// spike shared by the hops beyond the provider's edge, and one hop that often stays silent.
-fn demo_sample(rng: &mut DemoRng, look: &DemoLook, t: u64) -> Sample {
-    // Keep each random route for 30 seconds so that a change stays visible in Events.
-    let mut route_rng = DemoRng((t / 30_000).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ look.phase.to_bits());
-    let edge = ["203.0.113.77", "203.0.113.78", "203.0.113.79"][(route_rng.next() * 3.0) as usize];
-    let day = std::f64::consts::TAU * (t % DAY_MS) as f64 / DAY_MS as f64;
-    let swell = 1.0
-        + look.swell * (t as f64 / look.period_ms + look.phase).sin().max(0.0)
-        + look.busy * (day + look.busy_phase).sin().max(0.0);
-    let spike = if rng.next() < 0.02 {
-        15.0 + 45.0 * rng.next()
-    } else {
-        0.0
-    };
-    let hops = DEMO_ROUTE
-        .iter()
-        .enumerate()
-        .map(|(i, (addr, _, usual, loss))| {
-            let addr = if i == 4 { edge } else { addr };
-            let far = i >= 2;
-            // Beyond the first ocean the route is the target's own.
-            let usual = if i >= 4 { usual * look.scale } else { *usual };
-            let rtt = usual * if far { swell } else { 1.0 }
-                + usual * 0.2 * rng.next()
-                + if far { spike } else { 0.0 };
-            let target = i == DEMO_ROUTE.len() - 1;
-            let lost = rng.next() < loss + if target { look.loss } else { 0.0 };
-            HopSample {
-                ttl: i as u8 + 1,
-                addr: (!lost).then(|| addr.parse().unwrap()),
-                rtt: (!lost).then(|| (rtt * 100.0).round() / 100.0),
-            }
-        })
-        .collect();
-    Sample { t, hops }
-}
-
-/// How much made-up history a new demo tab starts with, in ms: `--demo-days N` days, to
-/// try long periods, or else a quarter of an hour.
-fn demo_history_ms() -> u64 {
-    let args: Vec<String> = std::env::args().collect();
-    args.iter()
-        .position(|arg| arg == "--demo-days")
-        .and_then(|i| args.get(i + 1)?.parse::<u64>().ok())
-        .map_or(900_000, |days| days.clamp(1, 365) * DAY_MS)
-}
-
-/// `start_trace` in demo mode: a tab with made-up history (see `demo_history_ms`) that
-/// keeps getting made-up rounds. Nothing is sent on the network.
-fn start_demo(
-    host: &str,
-    session: &str,
-    interval_ms: u64,
-    with_history: bool,
-    channel: Channel<TraceEvent>,
-    traces: &Traces,
-) -> Result<Started, String> {
-    let interval_ms = interval_ms.clamp(100, 60_000);
-    let now = || {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64)
-    };
-    let mut rng = DemoRng(now() | 1);
-    let look = demo_look(host);
-    let dir = history_dir(session)?;
-    if with_history && day_files(&dir).is_empty() {
-        let start = now();
-        let mut writer = HistoryWriter::new(dir.clone());
-        for ago in (1..=demo_history_ms() / interval_ms).rev() {
-            let sample = demo_sample(&mut rng, &look, start - ago * interval_ms);
-            if let Ok(line) = serde_json::to_string(&sample) {
-                writer.append(sample.t, &line).map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    let history = if with_history {
-        load_history(&dir, history_rounds(interval_ms))
-    } else {
-        Vec::new()
-    };
-    let mut writer = HistoryWriter::new(dir);
-    let id = traces.next_id.fetch_add(1, Ordering::Relaxed);
-    let stop = Arc::new(AtomicBool::new(false));
-    traces.stops.lock().unwrap().insert(id, stop.clone());
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(interval_ms));
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            let sample = demo_sample(&mut rng, &look, now());
-            if let Ok(line) = serde_json::to_string(&sample) {
-                let _ = writer.append(sample.t, &line);
-            }
-            if channel.send(TraceEvent::Sample(sample)).is_err() {
-                return;
-            }
-        }
-    });
-    let (target, ..) = DEMO_ROUTE[DEMO_ROUTE.len() - 1];
-    Ok(Started {
-        id,
-        addr: target.parse().unwrap(),
-        history,
-    })
-}
-
-/// Where the rounds of a running trace go: its history files and the frontend.
-struct Recorder {
-    channel: Channel<TraceEvent>,
-    history: Mutex<HistoryWriter>,
-    /// The tab shows an error; the next recorded round clears it.
-    failing: AtomicBool,
-}
-
-impl Recorder {
-    /// Shows an error in the tab until a round is recorded.
-    fn error(&self, message: String) {
-        self.failing.store(true, Ordering::Relaxed);
-        let _ = self.channel.send(TraceEvent::Error { message });
-    }
-
-    /// Saves one round and sends it to the frontend. `false` when the webview is gone,
-    /// so the trace should stop.
-    fn record(&self, hops: Vec<HopSample>) -> bool {
-        let t = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        let sample = Sample { t, hops };
-        // An empty message clears the error shown for an earlier failure.
-        if self.failing.swap(false, Ordering::Relaxed) {
-            let _ = self.channel.send(TraceEvent::Error {
-                message: String::new(),
-            });
-        }
-        let saved = serde_json::to_string(&sample)
-            .map_err(std::io::Error::other)
-            .and_then(|line| self.history.lock().unwrap().append(t, &line));
-        if let Err(e) = saved {
-            self.error(format!("History is not being saved: {e}"));
-        }
-        self.channel.send(TraceEvent::Sample(sample)).is_ok()
-    }
-}
-
-/// Runs a raw-socket trace until `stop` is set. `tracer` is the one built to check the
-/// settings; later ones come from `build`.
-///
-/// A tracer keeps the source address and sockets it started with. After the machine
-/// changes network (VPN, Wi-Fi, new default route) those are dead: every probe is lost or
-/// sending fails. So the tracer is rebuilt as soon as the source address for the target
-/// changes, and as a fallback after DEAD_ROUNDS silent rounds or any error. Rebuilding
-/// rediscovers the source address and the path.
-fn trace_raw(
-    build: impl Fn() -> Result<Tracer, trippy_core::Error>,
-    mut tracer: Option<Tracer>,
-    // Silent rounds in a row after which the tracer is rebuilt.
-    dead_rounds: usize,
-    addr: IpAddr,
-    stop: &AtomicBool,
-    recorder: &Recorder,
-) {
-    let silent_rounds = AtomicUsize::new(0);
-    while !stop.load(Ordering::Relaxed) {
-        let source = local_source(addr);
-        let current = match tracer.take().map_or_else(&build, Ok) {
-            Ok(tracer) => tracer,
-            Err(e) => {
-                recorder.error(format!("Probing failed, retrying: {e}"));
-                std::thread::sleep(RETRY_DELAY);
-                continue;
-            }
-        };
-        // ponytail: trippy-core 0.13 has no way to cancel an endless trace, so the round
-        // callback unwinds out of it; stop and restart take effect at the next round.
-        // Replace with a real cancel if upstream adds one.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            current.run_with(|round| {
-                // Stopped (paused, closed, restarted): this round is not recorded.
-                if stop.load(Ordering::Relaxed) {
-                    resume_unwind(Box::new(Stopped));
-                }
-                // The machine now sends from another address: this round went out on
-                // the old route, so it is dropped and the tracer rebuilt right away.
-                if local_source(addr) != source {
-                    resume_unwind(Box::new(Restart));
-                }
-                let hops = round_to_hops(round);
-                let silent = hops.iter().all(|hop| hop.rtt.is_none());
-                if !recorder.record(hops) {
-                    resume_unwind(Box::new(Stopped));
-                }
-                if !silent {
-                    silent_rounds.store(0, Ordering::Relaxed);
-                } else if silent_rounds.fetch_add(1, Ordering::Relaxed) + 1 >= dead_rounds {
-                    silent_rounds.store(0, Ordering::Relaxed);
-                    resume_unwind(Box::new(Restart));
-                }
-            })
-        }));
-        match result {
-            Ok(Ok(())) => return,
-            Err(payload) if payload.is::<Stopped>() => return,
-            Err(payload) if payload.is::<Restart>() => continue,
-            Ok(Err(e)) => recorder.error(format!("Probing failed, retrying: {e}")),
-            Err(_) => {
-                recorder.error("Trace stopped: probe thread panicked".into());
-                return;
-            }
-        }
-        std::thread::sleep(RETRY_DELAY);
-    }
-}
-
-/// Runs a trace by ICMP echo through the system (`Pinger`) until `stop` is set. It holds no
-/// source address, so a change of network needs no rebuilding.
-#[cfg(any(windows, target_os = "linux"))]
-fn trace_echo(
-    addr: IpAddr,
-    packet_size: u16,
-    timeout: Duration,
-    interval: Duration,
-    stop: &AtomicBool,
-    recorder: &Recorder,
-) {
-    let mut pinger = match Pinger::new(addr, packet_size, timeout) {
-        Ok(pinger) => pinger,
-        Err(e) => return recorder.error(format!("Trace stopped: {e}")),
-    };
-    loop {
-        let hops = pinger.round(interval);
-        // Stopped (paused, closed, restarted): this round is not recorded.
-        if stop.load(Ordering::Relaxed) || !recorder.record(hops) {
-            return;
-        }
-    }
-}
-
 // One argument per probe setting: the webview passes them by name.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command(async)]
+#[cfg(feature = "legacy-ui")]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+#[cfg(feature = "legacy-ui")]
 fn start_trace(
     // Id of the tab; names its history file, so tabs never share history.
     session: String,
@@ -951,101 +737,21 @@ fn start_trace(
     channel: Channel<TraceEvent>,
     traces: State<'_, Traces>,
 ) -> Result<Started, String> {
-    if demo() {
-        return start_demo(&host, &session, interval_ms, with_history, channel, &traces);
-    }
-    let host = host.trim().to_lowercase();
-    let addr = (host.as_str(), 0)
-        .to_socket_addrs()
-        .map_err(|e| format!("cannot resolve {host}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("no address for {host}"))?
-        .ip();
-    // Ping sockets need the user's group within net.ipv4.ping_group_range. Where that is
-    // shut, ICMP goes through a raw socket instead if TracePlotter may open one.
-    #[cfg(target_os = "linux")]
-    let protocol = if protocol == "winicmp" && !pingsock::available(addr) && raw_sockets_allowed() {
-        "icmp".to_string()
-    } else {
-        protocol
-    };
-    // `None` is the system's ICMP echo.
-    let raw = match protocol.as_str() {
-        "icmp" => Some((Protocol::Icmp, PortDirection::None)),
-        "udp" => Some((Protocol::Udp, PortDirection::FixedDest(Port(port)))),
-        "tcp" => Some((Protocol::Tcp, PortDirection::FixedDest(Port(port)))),
-        "winicmp" if cfg!(any(windows, target_os = "linux")) => None,
-        other => return Err(format!("unknown protocol {other}")),
-    };
-    if raw.is_some() && !is_elevated() {
-        #[cfg(windows)]
-        return Err(format!(
-            "{} probes use raw sockets, which need Administrator rights. Restart TracePlotter as Administrator (File menu) or use ICMP (Windows API).",
-            protocol.to_uppercase()
-        ));
-        #[cfg(not(windows))]
-        return Err(format!(
-            "{} probes use raw sockets, which TracePlotter may not open yet. Allow them under Tools > Allow raw sockets… or use ICMP (ping socket).",
-            protocol.to_uppercase()
-        ));
-    }
-    let interval = Duration::from_millis(interval_ms.clamp(100, 60_000));
-    // A round lasts at least the interval, and a reply counts until its round ends.
-    let timeout = Duration::from_millis(timeout_ms.clamp(100, 10_000)).max(interval);
-    // From the smallest IPv6 probe to the most trippy-core sends.
-    let packet_size = packet_size.clamp(48, 1024);
-    let id = traces.next_id.fetch_add(1, Ordering::Relaxed);
-    let build = raw.map(|(probe, ports)| {
-        move || {
-            Builder::new(addr)
-                .protocol(probe)
-                .port_direction(ports)
-                // Distinct identifiers keep concurrent ICMP traces from reading each other's
-                // replies. The identifier is 16 bits, so it repeats every 65,536 runs.
-                .trace_identifier(id as u16)
-                .packet_size(packet_size)
-                // A round ends at the interval once the target answered; without an
-                // answer it waits out the timeout.
-                .min_round_duration(interval)
-                .max_round_duration(timeout)
-                .build()
-        }
-    });
-    // Built here so that settings the tracer refuses are reported to the caller.
-    let tracer = match &build {
-        Some(build) => Some(build().map_err(|e| e.to_string())?),
-        None => None,
-    };
-
-    let dir = history_dir(&session)?;
-    let history = if with_history {
-        load_history(&dir, history_rounds(interval.as_millis() as u64))
-    } else {
-        Vec::new()
-    };
-
-    let stop = Arc::new(AtomicBool::new(false));
-    traces.stops.lock().unwrap().insert(id, stop.clone());
-    // A silent round lasts the timeout. The rebuild should come after about DEAD_ROUNDS
-    // intervals whatever the timeout, so a long timeout does not keep a dead tracer for long.
-    let dead_rounds = (DEAD_ROUNDS as u128 * interval.as_millis())
-        .div_ceil(timeout.as_millis())
-        .max(1) as usize;
-    let recorder = Recorder {
-        channel,
-        history: Mutex::new(HistoryWriter::new(dir)),
-        failing: AtomicBool::new(false),
-    };
-
-    std::thread::spawn(move || match build {
-        Some(build) => trace_raw(build, tracer, dead_rounds, addr, &stop, &recorder),
-        #[cfg(any(windows, target_os = "linux"))]
-        None => trace_echo(addr, packet_size, timeout, interval, &stop, &recorder),
-        #[cfg(not(any(windows, target_os = "linux")))]
-        None => {}
-    });
-
-    Ok(Started { id, addr, history })
+    probe::start(
+        ProbeConfig {
+            cancel: None,
+            session,
+            host,
+            protocol,
+            port,
+            interval_ms,
+            timeout_ms,
+            packet_size,
+            with_history,
+        },
+        EventSink::new(move |event| channel.send(event).is_ok()),
+        &traces,
+    )
 }
 
 /// The folder for everything the app stores: trace history, the webview's storage (open
@@ -1093,7 +799,8 @@ fn history_dir(session: &str) -> Result<PathBuf, String> {
     let (dir, single) = history_paths(session)?;
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     if let Ok(text) = fs::read_to_string(&single) {
-        write_lines(&dir, text.lines()).map_err(|e| format!("cannot split {}: {e}", single.display()))?;
+        write_lines(&dir, text.lines())
+            .map_err(|e| format!("cannot split {}: {e}", single.display()))?;
         let _ = fs::remove_file(&single);
     }
     Ok(dir)
@@ -1116,6 +823,7 @@ fn load_window_state() -> Option<WindowState> {
 }
 
 /// Remembers how the window is placed. Called when it is about to close.
+#[cfg(feature = "legacy-ui")]
 fn save_window_state(window: &tauri::Window) {
     // A minimized window reports a position far off screen; keep what was saved before.
     if window.is_minimized().unwrap_or(false) {
@@ -1134,7 +842,10 @@ fn save_window_state(window: &tauri::Window) {
     };
     // While maximized the window reports the screen's size; keep the size it goes back to.
     let state = match load_window_state() {
-        Some(before) if maximized => WindowState { maximized, ..before },
+        Some(before) if maximized => WindowState {
+            maximized,
+            ..before
+        },
         _ => placed,
     };
     if let Ok(text) = serde_json::to_string(&state) {
@@ -1144,6 +855,7 @@ fn save_window_state(window: &tauri::Window) {
 
 /// Puts the window back where it was. The position is used only if it is still on a
 /// connected screen, so the window cannot open out of sight after a monitor is unplugged.
+#[cfg(feature = "legacy-ui")]
 fn restore_window_state(window: &tauri::WebviewWindow) {
     let Some(state) = load_window_state() else {
         return;
@@ -1168,13 +880,16 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
 }
 
 /// A tab's saved history without starting its trace, for a tab that is restored paused.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn read_history(session: String, interval_ms: u64) -> Result<Vec<Sample>, String> {
-    Ok(load_history(&history_dir(&session)?, history_rounds(interval_ms)))
+    Ok(load_history(
+        &history_dir(&session)?,
+        history_rounds(interval_ms),
+    ))
 }
 
 /// Erases a tab's saved history. A trace still writing to it loses those rounds too.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn delete_history(session: String) -> Result<(), String> {
     let (dir, single) = history_paths(&session)?;
     let gone = |result: std::io::Result<()>, path: &Path| match result {
@@ -1187,18 +902,24 @@ fn delete_history(session: String) -> Result<(), String> {
     gone(fs::remove_file(&single), &single)
 }
 
-#[tauri::command]
-fn stop_trace(id: u32, traces: State<'_, Traces>) {
+fn stop_probe(id: u32, traces: &Traces) -> Option<std::thread::JoinHandle<()>> {
     if let Some(stop) = traces.stops.lock().unwrap().remove(&id) {
         stop.store(true, Ordering::Relaxed);
     }
+    traces.workers.lock().unwrap().remove(&id)
+}
+
+#[cfg(feature = "legacy-ui")]
+#[tauri::command]
+fn stop_trace(id: u32, traces: State<'_, Traces>) {
+    let _ = stop_probe(id, &traces);
 }
 
 /// The locale of the host's regional format (how it writes dates and times), such as
 /// "pl-PL". This is the Windows "Regional format" setting, or elsewhere the locale of
 /// LC_TIME, which can differ from the display language the webview goes by. `None` where it
 /// cannot be read.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn host_locale() -> Option<String> {
     #[cfg(windows)]
     {
@@ -1213,7 +934,11 @@ fn host_locale() -> Option<String> {
         (length > 1).then(|| String::from_utf16_lossy(&name[..length as usize - 1]))
     }
     #[cfg(not(windows))]
-    locale_name(["LC_ALL", "LC_TIME", "LANG"].into_iter().filter_map(|key| std::env::var(key).ok()))
+    locale_name(
+        ["LC_ALL", "LC_TIME", "LANG"]
+            .into_iter()
+            .filter_map(|key| std::env::var(key).ok()),
+    )
 }
 
 /// The first set POSIX locale, such as "pl_PL.UTF-8", as a locale name such as "pl-PL".
@@ -1233,7 +958,11 @@ fn ptr_name(addr: IpAddr) -> String {
             format!("{d}.{c}.{b}.{a}.in-addr.arpa")
         }
         IpAddr::V6(v6) => {
-            let nibbles = v6.octets().into_iter().rev().map(|byte| format!("{:x}.{:x}.", byte & 15, byte >> 4));
+            let nibbles = v6
+                .octets()
+                .into_iter()
+                .rev()
+                .map(|byte| format!("{:x}.{:x}.", byte & 15, byte >> 4));
             nibbles.collect::<String>() + "ip6.arpa"
         }
     }
@@ -1273,7 +1002,9 @@ fn lookup_ptr(addr: IpAddr) -> Option<String> {
             if (*record).wType == DNS_TYPE_PTR {
                 let host = (*record).Data.PTR.pNameHost;
                 let length = (0..).take_while(|&i| *host.add(i) != 0).count();
-                found = Some(String::from_utf16_lossy(std::slice::from_raw_parts(host, length)));
+                found = Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+                    host, length,
+                )));
             }
             record = (*record).pNext;
         }
@@ -1290,7 +1021,7 @@ fn lookup_ptr(addr: IpAddr) -> Option<String> {
 }
 
 /// Hostname for a hop address, `None` when it has no PTR record.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn reverse_dns(addr: IpAddr) -> Option<String> {
     if demo() {
         let text = addr.to_string();
@@ -1320,7 +1051,7 @@ fn whois_query(server: &str, query: &str) -> std::io::Result<String> {
 }
 
 /// Who an address belongs to: asks IANA, then the registry IANA refers to.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn whois(addr: IpAddr) -> Result<String, String> {
     let query = addr.to_string();
     let iana = whois_query("whois.iana.org", &query).map_err(|e| e.to_string())?;
@@ -1336,7 +1067,8 @@ fn whois(addr: IpAddr) -> Result<String, String> {
 
 /// Asks the user where to save the raw request body, suggesting the Downloads folder and
 /// the name given in the `x-file-name` header. Returns the chosen path, `None` if cancelled.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+#[cfg(feature = "legacy-ui")]
 fn export_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, String> {
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("export needs a binary body".into());
@@ -1355,6 +1087,7 @@ fn export_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, S
 
 /// Asks where to save an export, suggesting `name` in the Downloads folder. `None` when
 /// the dialog was cancelled.
+#[cfg(feature = "legacy-ui")]
 fn save_dialog(app: &AppHandle, name: &str) -> Result<Option<PathBuf>, String> {
     let name = file_safe(name);
     if name.is_empty() {
@@ -1453,7 +1186,10 @@ fn http_get(url: &str) -> Result<ureq::Body, ureq::Error> {
         .into();
     let response = agent
         .get(url)
-        .header("User-Agent", concat!("TracePlotter/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "User-Agent",
+            concat!("TracePlotter/", env!("CARGO_PKG_VERSION")),
+        )
         .call()?;
     Ok(response.into_body())
 }
@@ -1463,7 +1199,8 @@ const IMPORT_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Asks the user for a samples export (.csv) and returns its file name and text, `None`
 /// if cancelled. The webview reads it into rounds (see import.ts).
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+#[cfg(feature = "legacy-ui")]
 fn import_file(app: AppHandle) -> Result<Option<(String, String)>, String> {
     let mut dialog = app.dialog().file().add_filter("CSV", &["csv"]);
     if let Ok(downloads) = app.path().download_dir() {
@@ -1478,14 +1215,19 @@ fn import_file(app: AppHandle) -> Result<Option<(String, String)>, String> {
         return Err(format!("{} is too large to import", path.display()));
     }
     let text = fs::read_to_string(&path).map_err(cannot)?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     Ok(Some((name, text)))
 }
 
 /// Saves the raw request body as the history of the new tab named in the `x-session`
 /// header: one round per line, as `Recorder` writes them. Lines that are not rounds are
 /// skipped. A session that has a history keeps it.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
+#[cfg(feature = "legacy-ui")]
 fn import_history(request: Request<'_>) -> Result<(), String> {
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("import needs a binary body".into());
@@ -1541,7 +1283,7 @@ fn latest_release() -> Result<Option<Release>, String> {
 }
 
 /// A newer release than the running version, if one is published.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn check_update() -> Result<Option<UpdateInfo>, String> {
     Ok(latest_release()?
         .filter(|release| is_newer(&release.version, env!("CARGO_PKG_VERSION")))
@@ -1562,8 +1304,7 @@ fn check_update() -> Result<Option<UpdateInfo>, String> {
 /// next to it as `.exe.new`; then the running one is renamed to `.exe.old` (removed at the
 /// next start) and the new one renamed into place. Only those two renames happen without
 /// an exe at its usual path, and the first is undone if the second fails.
-#[tauri::command(async)]
-fn install_update(app: AppHandle) -> Result<(), String> {
+fn prepare_update() -> Result<(), String> {
     // Releases carry one exe, for Windows. Elsewhere the package manager or the user updates.
     if !cfg!(windows) {
         return Err("updates are installed from the release page outside Windows".into());
@@ -1606,6 +1347,13 @@ fn install_update(app: AppHandle) -> Result<(), String> {
         let _ = fs::remove_file(&new);
         return Err(format!("could not replace the exe: {e}"));
     }
+    Ok(())
+}
+
+#[cfg(feature = "legacy-ui")]
+#[tauri::command(async)]
+fn install_update(app: AppHandle) -> Result<(), String> {
+    prepare_update()?;
     // A restart does not pass through the window's close request, where this is saved.
     if let Some(window) = app.get_webview_window("main") {
         save_window_state(&window.as_ref().window());
@@ -1617,7 +1365,7 @@ fn install_update(app: AppHandle) -> Result<(), String> {
 /// echo reply, destination unreachable and time exceeded, for IPv4 and IPv6.
 /// Without them the firewall drops the replies and hops show as lost.
 /// Also removes the rules added under the app's former name, PingScape.
-#[tauri::command(async)]
+#[cfg_attr(feature = "legacy-ui", tauri::command(async))]
 fn allow_icmp_replies() -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1652,7 +1400,7 @@ fn allow_icmp_replies() -> Result<(), String> {
 /// Whether the process may open raw sockets: on Windows with Administrator rights, which
 /// firewall rules need as well, elsewhere with CAP_NET_RAW. In demo mode nothing is probed,
 /// so it says yes.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn is_elevated() -> bool {
     #[cfg(windows)]
     {
@@ -1673,7 +1421,9 @@ fn raw_sockets_allowed() -> bool {
     fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
-            let caps = status.lines().find_map(|line| line.strip_prefix("CapEff:"))?;
+            let caps = status
+                .lines()
+                .find_map(|line| line.strip_prefix("CapEff:"))?;
             u64::from_str_radix(caps.trim(), 16).ok()
         })
         .is_some_and(|caps| caps & (1 << 13) != 0)
@@ -1681,7 +1431,7 @@ fn raw_sockets_allowed() -> bool {
 
 /// Whether `restart_elevated` can give the app raw sockets. An AppImage runs from a mount
 /// that ignores file capabilities, so it cannot.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn can_elevate() -> bool {
     std::env::var_os("APPIMAGE").is_none()
 }
@@ -1691,9 +1441,20 @@ const AFTER: &str = "--after";
 
 /// The switches this run was started with, and this process for the new one to wait for.
 fn restart_args() -> Vec<String> {
-    let mut args: Vec<String> = std::env::args()
-        .filter(|arg| arg == "--demo" || arg == "--mcp")
-        .collect();
+    let mut args = Vec::new();
+    let mut original = std::env::args().skip(1);
+    while let Some(arg) = original.next() {
+        match arg.as_str() {
+            "--demo" | "--mcp" | "--egui" => args.push(arg),
+            "--demo-days" => {
+                args.push(arg);
+                if let Some(days) = original.next() {
+                    args.push(days);
+                }
+            }
+            _ => {}
+        }
+    }
     args.extend([AFTER.to_string(), std::process::id().to_string()]);
     args
 }
@@ -1703,8 +1464,7 @@ fn restart_args() -> Vec<String> {
 /// which asks for an administrator's password, and restarts into it: the capability stays
 /// with the file, so later starts have it too. Tabs and history are kept, as across any
 /// restart. Async, so that the window keeps drawing while the prompt waits for an answer.
-#[tauri::command(async)]
-fn restart_elevated(app: AppHandle) -> Result<(), String> {
+fn spawn_elevated() -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -1723,13 +1483,10 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
         };
         // Anything up to 32 is an error; the usual one is the user saying no.
         if started as usize <= 32 {
-            return Err("TracePlotter was not restarted: Administrator rights were not given".into());
+            return Err(
+                "TracePlotter was not restarted: Administrator rights were not given".into(),
+            );
         }
-        // An exit does not pass through the window's close request, where this is saved.
-        if let Some(window) = app.get_webview_window("main") {
-            save_window_state(&window.as_ref().window());
-        }
-        app.exit(0);
         Ok(())
     }
     #[cfg(not(windows))]
@@ -1759,18 +1516,27 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
         std::process::Command::new(&exe)
             .args(restart_args())
             .spawn()
-            .map_err(|e| format!("TracePlotter was allowed raw sockets but did not restart: {e}"))?;
-        // An exit does not pass through the window's close request, where this is saved.
-        if let Some(window) = app.get_webview_window("main") {
-            save_window_state(&window.as_ref().window());
-        }
-        app.exit(0);
+            .map_err(|e| {
+                format!("TracePlotter was allowed raw sockets but did not restart: {e}")
+            })?;
         Ok(())
     }
 }
 
+#[cfg(feature = "legacy-ui")]
+#[tauri::command(async)]
+fn restart_elevated(app: AppHandle) -> Result<(), String> {
+    spawn_elevated()?;
+    // An exit does not pass through the window's close request, where this is saved.
+    if let Some(window) = app.get_webview_window("main") {
+        save_window_state(&window.as_ref().window());
+    }
+    app.exit(0);
+    Ok(())
+}
+
 /// Opens the project's GitHub page in the default browser.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 fn open_project_page() -> Result<(), String> {
     let url = format!("https://github.com/{UPDATE_REPO}");
     #[cfg(windows)]
@@ -1793,7 +1559,11 @@ fn open_project_page() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         std::process::Command::new(opener)
             .arg(&url)
             .spawn()
@@ -1824,7 +1594,9 @@ fn wait_for_predecessor() {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
         let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if !process.is_null() {
             WaitForSingleObject(process, 10_000);
@@ -1833,8 +1605,9 @@ fn wait_for_predecessor() {
     }
 }
 
+#[cfg(feature = "legacy-ui")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+fn run_legacy() {
     wait_for_predecessor();
     // WebKitGTK's DMA-BUF renderer breaks the Wayland connection with NVIDIA's driver
     // ("Error 71 (Protocol error) dispatching to Wayland display") and the app quits at
@@ -1861,7 +1634,11 @@ pub fn run() {
             fs::create_dir_all(data_dir())?;
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // Made-up data must not pass for a real trace, in the window or a screenshot of it.
-                .title(if demo() { "TracePlotter (demo)" } else { "TracePlotter" })
+                .title(if demo() {
+                    "TracePlotter (demo)"
+                } else {
+                    "TracePlotter"
+                })
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(640.0, 420.0)
                 .data_directory(data_dir().join("webview"))
@@ -1923,12 +1700,25 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+/// Starts the desktop interface selected at build time.
+pub fn run() {
+    #[cfg(feature = "legacy-migration")]
+    if std::env::args().any(|a| a == "--migrate-legacy-state") {
+        native::migration::run();
+        return;
+    }
+    #[cfg(feature = "egui-ui")]
+    if !cfg!(feature = "legacy-ui") || std::env::args().any(|a| a == "--egui") {
+        native::run();
+    }
+    #[cfg(feature = "legacy-ui")]
+    run_legacy();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trippy_core::{
-        CompletionReason, Flags, Probe, RoundId, Sequence, TimeToLive, TraceId,
-    };
+    use trippy_core::{CompletionReason, Flags, Probe, RoundId, Sequence, TimeToLive, TraceId};
 
     fn awaited(ttl: u8) -> ProbeStatus {
         ProbeStatus::Awaited(Probe {
@@ -1955,7 +1745,11 @@ mod tests {
     #[test]
     fn round_keeps_lost_probes_up_to_largest_ttl() {
         let probes = [awaited(1), ProbeStatus::NotSent, awaited(2), awaited(3)];
-        let round = Round::new(&probes, TimeToLive(2), CompletionReason::RoundTimeLimitExceeded);
+        let round = Round::new(
+            &probes,
+            TimeToLive(2),
+            CompletionReason::RoundTimeLimitExceeded,
+        );
         let lost = |ttl| HopSample {
             ttl,
             addr: None,
@@ -1966,7 +1760,10 @@ mod tests {
 
     #[test]
     fn ptr_names_reverse_the_address() {
-        assert_eq!(ptr_name("192.168.1.20".parse().unwrap()), "20.1.168.192.in-addr.arpa");
+        assert_eq!(
+            ptr_name("192.168.1.20".parse().unwrap()),
+            "20.1.168.192.in-addr.arpa"
+        );
         assert_eq!(
             ptr_name("2001:db8::567:89ab".parse().unwrap()),
             "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
@@ -1977,16 +1774,23 @@ mod tests {
     #[test]
     #[ignore]
     fn live_ptr_lookup_finds_a_name() {
-        assert_eq!(lookup_ptr("8.8.8.8".parse().unwrap()).as_deref(), Some("dns.google"));
+        assert_eq!(
+            lookup_ptr("8.8.8.8".parse().unwrap()).as_deref(),
+            Some("dns.google")
+        );
         assert_eq!(lookup_ptr("192.0.2.1".parse().unwrap()), None);
     }
 
     /// The version is kept in Cargo.toml only; tauri.conf.json has none, so the version the
     /// window shows (the frontend's `getVersion`) must be Cargo's, as the updater's is.
     #[test]
+    #[cfg(feature = "legacy-ui")]
     fn the_app_reports_the_version_from_cargo_toml() {
         let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
-        assert_eq!(context.package_info().version.to_string(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            context.package_info().version.to_string(),
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[test]
@@ -2001,18 +1805,30 @@ mod tests {
     fn history_is_kept_in_day_files_and_loads_its_newest_rounds() {
         let dir = std::env::temp_dir().join(format!("traceplotter-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let line = |t: u64| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":"10.0.0.1","rtt":1.5}}]}}"#);
+        let line =
+            |t: u64| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":"10.0.0.1","rtt":1.5}}]}}"#);
         // Ten days, two rounds each, with a bad line among them. 7 days are kept.
         let day = |d: u64| 20_000 * DAY_MS + d * DAY_MS;
-        let mut lines: Vec<String> = (0..10).flat_map(|d| [line(day(d)), line(day(d) + 1000)]).collect();
+        let mut lines: Vec<String> = (0..10)
+            .flat_map(|d| [line(day(d)), line(day(d) + 1000)])
+            .collect();
         lines.insert(5, "garbage".into());
         write_lines(&dir, lines.iter().map(String::as_str)).unwrap();
         // A writer starting a new day drops the days that fell out of the kept hours.
-        assert_eq!(day_files(&dir).iter().map(|(d, _)| d - 20_000).collect::<Vec<_>>(), [2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            day_files(&dir)
+                .iter()
+                .map(|(d, _)| d - 20_000)
+                .collect::<Vec<_>>(),
+            [2, 3, 4, 5, 6, 7, 8, 9]
+        );
 
         let loaded = load_history(&dir, 3);
         fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(loaded.iter().map(|s| s.t).collect::<Vec<_>>(), [day(8) + 1000, day(9), day(9) + 1000]);
+        assert_eq!(
+            loaded.iter().map(|s| s.t).collect::<Vec<_>>(),
+            [day(8) + 1000, day(9), day(9) + 1000]
+        );
         assert_eq!(loaded[0].hops[0].rtt, Some(1.5));
         assert_eq!(file_safe("..\\a/b:c"), ".._a_b_c");
     }
@@ -2025,7 +1841,11 @@ mod tests {
                 hops: rtts
                     .iter()
                     .enumerate()
-                    .map(|(i, rtt)| HopSample { ttl: i as u8 + 1, addr: None, rtt: *rtt })
+                    .map(|(i, rtt)| HopSample {
+                        ttl: i as u8 + 1,
+                        addr: None,
+                        rtt: *rtt,
+                    })
                     .collect(),
             })
             .unwrap()
@@ -2052,21 +1872,41 @@ mod tests {
         for tally in trip.values() {
             whole.merge(tally);
         }
-        assert_eq!((whole.sent, whole.received, whole.min, whole.max), (4, 3, Some(10.0), Some(14.0)));
+        assert_eq!(
+            (whole.sent, whole.received, whole.min, whole.max),
+            (4, 3, Some(10.0), Some(14.0))
+        );
         assert_eq!(whole.last, Some(12.0));
-        assert_eq!(tally_rounds(&text, 2000, 1000, 3000)[&0].values().map(|t| t.sent).sum::<u32>(), 2);
+        assert_eq!(
+            tally_rounds(&text, 2000, 1000, 3000)[&0]
+                .values()
+                .map(|t| t.sent)
+                .sum::<u32>(),
+            2
+        );
     }
 
     #[test]
     fn a_day_is_tallied_by_the_minute_as_its_file_grows() {
-        let path = std::env::temp_dir().join(format!("traceplotter-day-{}.jsonl", std::process::id()));
-        let line = |t: u64, rtt: f64| format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":null,"rtt":{rtt}}}]}}"#);
+        let path =
+            std::env::temp_dir().join(format!("traceplotter-day-{}.jsonl", std::process::id()));
+        let line = |t: u64, rtt: f64| {
+            format!(r#"{{"t":{t},"hops":[{{"ttl":1,"addr":null,"rtt":{rtt}}}]}}"#)
+        };
         // The second line is not finished yet: no newline.
-        fs::write(&path, format!("{}\n{}", line(1_000, 10.0), &line(61_000, 30.0)[..10])).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n{}", line(1_000, 10.0), &line(61_000, 30.0)[..10]),
+        )
+        .unwrap();
         let mut day = DayTally::default();
         day.catch_up(&path);
         assert_eq!(day.tallies[&1].len(), 1);
-        fs::write(&path, format!("{}\n{}\n", line(1_000, 10.0), line(61_000, 30.0))).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n{}\n", line(1_000, 10.0), line(61_000, 30.0)),
+        )
+        .unwrap();
         day.catch_up(&path);
         let hop = &day.tallies[&1];
         assert_eq!((hop[&0].sent, hop[&60_000].sent), (1, 1));
@@ -2081,9 +1921,16 @@ mod tests {
     #[test]
     fn a_day_file_dated_after_today_does_not_expire_the_real_ones() {
         let today = now_ms() / DAY_MS;
-        let days = |list: &[u64]| list.iter().map(|d| (*d, PathBuf::new())).collect::<Vec<_>>();
+        let days = |list: &[u64]| {
+            list.iter()
+                .map(|d| (*d, PathBuf::new()))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(first_kept_day(&days(&[today - 3, today])), Some(today - 7));
-        assert_eq!(first_kept_day(&days(&[today - 3, today + 1000])), Some(today - 7));
+        assert_eq!(
+            first_kept_day(&days(&[today - 3, today + 1000])),
+            Some(today - 7)
+        );
         // An old capture keeps its own last days.
         assert_eq!(first_kept_day(&days(&[20_000, 20_009])), Some(20_002));
     }
@@ -2097,7 +1944,10 @@ mod tests {
 
     #[test]
     fn a_line_knows_its_time_however_it_was_written() {
-        assert_eq!(line_time(r#"{"t":1700000000123,"hops":[]}"#), Some(1_700_000_000_123));
+        assert_eq!(
+            line_time(r#"{"t":1700000000123,"hops":[]}"#),
+            Some(1_700_000_000_123)
+        );
         assert_eq!(line_time(r#"{"hops":[],"t":5}"#), Some(5));
         assert_eq!(line_time("garbage"), None);
     }
@@ -2106,11 +1956,27 @@ mod tests {
     fn demo_rounds_cover_the_route_with_documentation_addresses() {
         let mut rng = DemoRng(1);
         let look = demo_look("demo.example");
-        let rounds: Vec<Sample> = (0..200).map(|i| demo_sample(&mut rng, &look, i * 1000)).collect();
-        assert!(rounds.iter().all(|round| round.hops.len() == DEMO_ROUTE.len()));
-        assert!(rounds.iter().all(|round| round.hops.iter().all(|hop| hop.rtt.is_none_or(|rtt| rtt > 0.0))));
+        let rounds: Vec<Sample> = (0..200)
+            .map(|i| demo_sample(&mut rng, &look, i * 1000))
+            .collect();
+        assert!(
+            rounds
+                .iter()
+                .all(|round| round.hops.len() == DEMO_ROUTE.len())
+        );
+        assert!(rounds.iter().all(|round| {
+            round
+                .hops
+                .iter()
+                .all(|hop| hop.rtt.is_none_or(|rtt| rtt > 0.0))
+        }));
         // The silent hop loses a fair share, the target next to nothing.
-        let lost = |ttl: u8| rounds.iter().filter(|r| r.hops[ttl as usize - 1].rtt.is_none()).count();
+        let lost = |ttl: u8| {
+            rounds
+                .iter()
+                .filter(|r| r.hops[ttl as usize - 1].rtt.is_none())
+                .count()
+        };
         assert!((40..110).contains(&lost(6)), "hop 6 lost {}", lost(6));
         assert!(lost(9) < 10);
     }
@@ -2119,15 +1985,25 @@ mod tests {
     fn demo_route_changes_stay_put_between_events() {
         let mut rng = DemoRng(1);
         let look = demo_look("demo.example");
-        let rounds: Vec<Sample> = (0..600).map(|i| demo_sample(&mut rng, &look, i * 1000)).collect();
-        assert!(rounds.windows(2).any(|pair| pair[0].hops[4].addr != pair[1].hops[4].addr));
+        let rounds: Vec<Sample> = (0..600)
+            .map(|i| demo_sample(&mut rng, &look, i * 1000))
+            .collect();
+        assert!(
+            rounds
+                .windows(2)
+                .any(|pair| pair[0].hops[4].addr != pair[1].hops[4].addr)
+        );
         for pair in rounds.windows(2) {
             if pair[0].t / 30_000 == pair[1].t / 30_000 {
                 assert_eq!(pair[0].hops[4].addr, pair[1].hops[4].addr);
             }
         }
         let target: IpAddr = DEMO_ROUTE[8].0.parse().unwrap();
-        assert!(rounds.iter().all(|round| round.hops[8].addr.is_none_or(|addr| addr == target)));
+        assert!(
+            rounds
+                .iter()
+                .all(|round| round.hops[8].addr.is_none_or(|addr| addr == target))
+        );
     }
 
     #[test]
@@ -2191,7 +2067,10 @@ mod tests {
                 .run_with(|round| {
                     let hops = round_to_hops(round);
                     println!("{protocol:?} {hops:?}");
-                    replies.fetch_add(hops.iter().filter(|h| h.rtt.is_some()).count(), Ordering::Relaxed);
+                    replies.fetch_add(
+                        hops.iter().filter(|h| h.rtt.is_some()).count(),
+                        Ordering::Relaxed,
+                    );
                 })
                 .unwrap();
             assert!(replies.into_inner() > 0, "{protocol:?}: no replies");

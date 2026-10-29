@@ -4,24 +4,31 @@
 //!
 //! It speaks the Streamable HTTP transport of the Model Context Protocol in its simplest
 //! form: every message is a POST to `/mcp` answered with one JSON body, and there is no
-//! event stream. The tabs and their numbers live in the webview, so a tool call is passed
-//! to it as an `mcp-request` event and its answer comes back through `mcp_respond`. That
-//! keeps one implementation of the statistics, the one the window shows.
+//! event stream. A tool callback reads the authoritative trace model. The legacy adapter
+//! sends an `mcp-request` to the webview and receives `mcp_respond`; the native adapter
+//! sends a controller command. Both return the statistics their window shows.
 
+#[cfg(feature = "legacy-ui")]
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr};
+#[cfg(feature = "legacy-ui")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "legacy-ui")]
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "legacy-ui")]
 use std::time::Duration;
 
+#[cfg(feature = "legacy-ui")]
 use serde::Serialize;
 use serde_json::{Value, json};
+#[cfg(feature = "legacy-ui")]
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// How long a tool call may take in the webview. Starting a trace resolves a name and
 /// reads its history, which can take a few seconds.
+#[cfg(feature = "legacy-ui")]
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Largest request body read; MCP requests are small.
 const MAX_BODY: u64 = 1024 * 1024;
@@ -148,7 +155,10 @@ fn error(id: &Value, code: i64, message: &str) -> Value {
 
 /// Answers one JSON-RPC message. `None` for a notification, which gets no answer.
 /// `call` runs a tool with its arguments.
-fn handle(message: &Value, call: impl FnOnce(&str, Value) -> Result<Value, String>) -> Option<Value> {
+fn handle(
+    message: &Value,
+    call: impl FnOnce(&str, Value) -> Result<Value, String>,
+) -> Option<Value> {
     let id = message.get("id")?;
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Some(error(id, -32600, "not a JSON-RPC request"));
@@ -181,7 +191,12 @@ fn handle(message: &Value, call: impl FnOnce(&str, Value) -> Result<Value, Strin
             let Some(name) = params["name"].as_str() else {
                 return Some(error(id, -32602, "tools/call needs a tool name"));
             };
-            if !tools().as_array().unwrap().iter().any(|tool| tool["name"] == name) {
+            if !tools()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == name)
+            {
                 return Some(error(id, -32602, &format!("unknown tool {name}")));
             }
             let arguments = match params.get("arguments") {
@@ -190,10 +205,16 @@ fn handle(message: &Value, call: impl FnOnce(&str, Value) -> Result<Value, Strin
             };
             // A tool that fails tells the agent why, as a result it can read and act on.
             let (text, is_error) = match call(name, arguments) {
-                Ok(answer) => (serde_json::to_string_pretty(&answer).unwrap_or_default(), false),
+                Ok(answer) => (
+                    serde_json::to_string_pretty(&answer).unwrap_or_default(),
+                    false,
+                ),
                 Err(message) => (message, true),
             };
-            result(id, json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+            result(
+                id,
+                json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }),
+            )
         }
         other => error(id, -32601, &format!("method {other} is not supported")),
     })
@@ -204,17 +225,22 @@ fn handle(message: &Value, call: impl FnOnce(&str, Value) -> Result<Value, Strin
 /// `Origin` header, and a DNS-rebinding page would have a foreign `Host`.
 fn allowed(host: Option<&str>, origin: Option<&str>, port: u16) -> bool {
     origin.is_none()
-        && host.is_some_and(|host| host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}"))
+        && host.is_some_and(|host| {
+            host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+        })
 }
 
 /// The running server and the tool calls that wait for the webview.
 #[derive(Default)]
 pub struct Mcp {
     server: Mutex<Option<Arc<tiny_http::Server>>>,
+    #[cfg(feature = "legacy-ui")]
     next_call: AtomicU64,
+    #[cfg(feature = "legacy-ui")]
     calls: Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>,
 }
 
+#[cfg(feature = "legacy-ui")]
 #[derive(Clone, Serialize)]
 struct CallEvent {
     id: u64,
@@ -223,12 +249,17 @@ struct CallEvent {
 }
 
 /// Runs a tool in the webview and waits for its answer.
+#[cfg(feature = "legacy-ui")]
 fn call_webview(app: &AppHandle, tool: &str, arguments: Value) -> Result<Value, String> {
     let mcp = app.state::<Mcp>();
     let id = mcp.next_call.fetch_add(1, Ordering::Relaxed);
     let (send, receive) = mpsc::channel();
     mcp.calls.lock().unwrap().insert(id, send);
-    let event = CallEvent { id, tool: tool.into(), arguments };
+    let event = CallEvent {
+        id,
+        tool: tool.into(),
+        arguments,
+    };
     let answer = match app.emit_to("main", "mcp-request", event) {
         Ok(()) => receive
             .recv_timeout(CALL_TIMEOUT)
@@ -249,7 +280,9 @@ fn respond(request: tiny_http::Request, status: u16, body: Option<Value>) {
     let _ = request.respond(response.with_status_code(status));
 }
 
-fn serve(app: AppHandle, mut request: tiny_http::Request, port: u16) {
+type ToolCall = dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync;
+
+fn serve(call: &ToolCall, mut request: tiny_http::Request, port: u16) {
     let header = |name: &'static str| {
         request
             .headers()
@@ -269,14 +302,19 @@ fn serve(app: AppHandle, mut request: tiny_http::Request, port: u16) {
         return respond(request, 405, None);
     }
     let mut body = String::new();
-    if request.as_reader().take(MAX_BODY).read_to_string(&mut body).is_err() {
+    if request
+        .as_reader()
+        .take(MAX_BODY)
+        .read_to_string(&mut body)
+        .is_err()
+    {
         return respond(request, 400, None);
     }
     let message: Value = match serde_json::from_str(&body) {
         Ok(message) => message,
         Err(_) => return respond(request, 400, Some(error(&Value::Null, -32700, "not JSON"))),
     };
-    match handle(&message, |tool, arguments| call_webview(&app, tool, arguments)) {
+    match handle(&message, call) {
         Some(answer) => respond(request, 200, Some(answer)),
         // A notification or a response from the client: accepted, nothing to say.
         None => respond(request, 202, None),
@@ -285,37 +323,56 @@ fn serve(app: AppHandle, mut request: tiny_http::Request, port: u16) {
 
 /// Starts the MCP server on `port` of the loopback interface, or stops it when `port` is
 /// `None`. Returns the address clients connect to.
+#[cfg(feature = "legacy-ui")]
 #[tauri::command]
-pub fn mcp_serve(app: AppHandle, port: Option<u16>, mcp: State<'_, Mcp>) -> Result<Option<String>, String> {
-    let mut running = mcp.server.lock().unwrap();
-    if let Some(server) = running.take() {
-        server.unblock();
-    }
-    let Some(port) = port else {
-        return Ok(None);
-    };
-    let server = tiny_http::Server::http(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-        .map(Arc::new)
-        .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
-    *running = Some(server.clone());
-    std::thread::spawn(move || {
-        for request in server.incoming_requests() {
-            let app = app.clone();
-            // Each in its own thread: a tool call waits for the webview.
-            std::thread::spawn(move || serve(app, request, port));
+pub fn mcp_serve(
+    app: AppHandle,
+    port: Option<u16>,
+    mcp: State<'_, Mcp>,
+) -> Result<Option<String>, String> {
+    mcp.start(
+        port,
+        Arc::new(move |tool, args| call_webview(&app, tool, args)),
+    )
+}
+
+impl Mcp {
+    pub(super) fn start(
+        &self,
+        port: Option<u16>,
+        call: Arc<ToolCall>,
+    ) -> Result<Option<String>, String> {
+        let mut running = self.server.lock().unwrap();
+        if let Some(server) = running.take() {
+            server.unblock();
         }
-    });
-    Ok(Some(format!("http://127.0.0.1:{port}/mcp")))
+        let Some(port) = port else {
+            return Ok(None);
+        };
+        let server = tiny_http::Server::http(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+            .map(Arc::new)
+            .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
+        *running = Some(server.clone());
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let call = call.clone();
+                // Each in its own thread: a tool call waits for the webview.
+                std::thread::spawn(move || serve(call.as_ref(), request, port));
+            }
+        });
+        Ok(Some(format!("http://127.0.0.1:{port}/mcp")))
+    }
 }
 
 /// Whether the app was started with `--mcp`, which turns the MCP server on for this run
 /// whatever the menu says. With `--demo` it gives agents made-up traces to work against.
-#[tauri::command]
+#[cfg_attr(feature = "legacy-ui", tauri::command)]
 pub fn mcp_flag() -> bool {
     std::env::args().any(|arg| arg == "--mcp")
 }
 
 /// The webview's answer to a tool call: `result` on success, else `error`.
+#[cfg(feature = "legacy-ui")]
 #[tauri::command]
 pub fn mcp_respond(id: u64, result: Option<Value>, error: Option<String>, mcp: State<'_, Mcp>) {
     if let Some(waiting) = mcp.calls.lock().unwrap().remove(&id) {
@@ -323,6 +380,16 @@ pub fn mcp_respond(id: u64, result: Option<Value>, error: Option<String>, mcp: S
             Some(error) => Err(error),
             None => Ok(result.unwrap_or(Value::Null)),
         });
+    }
+}
+
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        if let Ok(server) = self.server.get_mut()
+            && let Some(server) = server.take()
+        {
+            server.unblock();
+        }
     }
 }
 
@@ -340,11 +407,19 @@ mod tests {
 
     #[test]
     fn initialize_agrees_on_a_version_and_offers_tools() {
-        let answer = handle(&request("initialize", json!({ "protocolVersion": "2025-06-18" })), no_call).unwrap();
+        let answer = handle(
+            &request("initialize", json!({ "protocolVersion": "2025-06-18" })),
+            no_call,
+        )
+        .unwrap();
         assert_eq!(answer["id"], 7);
         assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
         assert!(answer["result"]["capabilities"]["tools"].is_object());
-        let unknown = handle(&request("initialize", json!({ "protocolVersion": "1999-01-01" })), no_call).unwrap();
+        let unknown = handle(
+            &request("initialize", json!({ "protocolVersion": "1999-01-01" })),
+            no_call,
+        )
+        .unwrap();
         assert_eq!(unknown["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
     }
 
@@ -352,28 +427,49 @@ mod tests {
     fn notifications_get_no_answer_and_unknown_methods_an_error() {
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert!(handle(&notification, no_call).is_none());
-        assert_eq!(handle(&request("resources/list", json!({})), no_call).unwrap()["error"]["code"], -32601);
+        assert_eq!(
+            handle(&request("resources/list", json!({})), no_call).unwrap()["error"]["code"],
+            -32601
+        );
     }
 
     #[test]
     fn every_tool_has_a_schema_and_start_is_limited_to_one_round_a_second() {
         let answer = handle(&request("tools/list", json!({})), no_call).unwrap();
         let tools = answer["result"]["tools"].as_array().unwrap();
-        assert!(tools.iter().all(|tool| tool["inputSchema"]["type"] == "object"));
-        let start = tools.iter().find(|tool| tool["name"] == "start_trace").unwrap();
-        assert_eq!(start["inputSchema"]["properties"]["interval_ms"]["enum"][0], 1000);
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["inputSchema"]["type"] == "object")
+        );
+        let start = tools
+            .iter()
+            .find(|tool| tool["name"] == "start_trace")
+            .unwrap();
+        assert_eq!(
+            start["inputSchema"]["properties"]["interval_ms"]["enum"][0],
+            1000
+        );
     }
 
     #[test]
     fn tool_calls_pass_their_arguments_and_report_failures_as_results() {
-        let call = request("tools/call", json!({ "name": "get_hops", "arguments": { "target": "a" } }));
+        let call = request(
+            "tools/call",
+            json!({ "name": "get_hops", "arguments": { "target": "a" } }),
+        );
         let answer = handle(&call, |tool, arguments| {
             assert_eq!(tool, "get_hops");
             Ok(json!({ "echo": arguments["target"] }))
         })
         .unwrap();
         assert_eq!(answer["result"]["isError"], false);
-        assert!(answer["result"]["content"][0]["text"].as_str().unwrap().contains("\"echo\": \"a\""));
+        assert!(
+            answer["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"echo\": \"a\"")
+        );
 
         let failed = handle(&call, |_, _| Err("no target a".into())).unwrap();
         assert_eq!(failed["result"]["isError"], true);
@@ -387,7 +483,11 @@ mod tests {
     fn only_loopback_clients_without_an_origin_get_in() {
         assert!(allowed(Some("127.0.0.1:3917"), None, 3917));
         assert!(allowed(Some("localhost:3917"), None, 3917));
-        assert!(!allowed(Some("127.0.0.1:3917"), Some("https://example.com"), 3917));
+        assert!(!allowed(
+            Some("127.0.0.1:3917"),
+            Some("https://example.com"),
+            3917
+        ));
         assert!(!allowed(Some("evil.example:3917"), None, 3917));
         assert!(!allowed(None, None, 3917));
     }

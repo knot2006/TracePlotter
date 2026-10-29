@@ -6,6 +6,13 @@ The backend is Rust, in `src-tauri/`, and probes with the
 [trippy-core](https://github.com/fujiapple852/trippy) engine. It is developed on Windows first; the
 code is kept portable.
 
+## Native egui preview
+
+The Rust interface is available behind `egui-ui`; the legacy interface remains the default.
+From the repository root, `cargo native -- --demo` runs it without npm or WebKit, and
+`cargo native-test` runs its unit and widget checks. [PORTING.md](PORTING.md) covers saved
+session migration, exports, the optional Blaze hook and platform acceptance still needed.
+
 ## What you need
 
 - Node.js 26 or newer
@@ -42,6 +49,7 @@ demo data. [AGENTS.md](AGENTS.md) has more for coding agents.
 ```bash
 npm run check
 npm test
+npm run build
 cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```

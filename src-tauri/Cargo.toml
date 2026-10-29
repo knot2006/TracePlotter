@@ -5,6 +5,7 @@ description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
 edition = "2024"
+rust-version = "1.95"
 
 [lib]
 # The `_lib` suffix avoids a name clash with the bin on Windows,
@@ -12,23 +13,46 @@ edition = "2024"
 name = "traceplotter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["legacy-ui"]
+dev-live = ["egui-ui", "dep:blaze-live"]
+ui-tests = ["egui-ui", "dep:egui_kittest"]
+legacy-migration = ["legacy-ui", "egui-ui", "tauri/custom-protocol"]
+egui-ui = ["dep:uuid","dep:eframe", "dep:egui_extras", "dep:egui_plot", "dep:rfd", "dep:arboard", "dep:chrono", "dep:image", "dep:pdf-writer", "dep:notify-rust", "dep:miniz_oxide", "dep:tauri-winres"]
+legacy-ui = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-notification", "dep:tauri-plugin-dialog"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
+tauri-winres = { version = "0.3", optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = [], optional = true }
 serde = { version = "1", features = ["derive"] }
 # Not capped: new releases, breaking ones included, are taken and our code is fixed when
 # the API changes. Cargo.lock keeps builds on the tested version until then.
 trippy-core = ">=0.13"
-tauri-plugin-notification = "2"
+tauri-plugin-notification = { version = "2", optional = true }
 serde_json = "1"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", optional = true }
 ureq = { version = "3", features = ["json"] }
 minisign-verify = "0.3"
 base64 = "0.23"
 # A small HTTP server for the MCP server (see mcp.rs).
 tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"], optional = true }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland", "accesskit"], optional = true }
+egui_extras = { version = "0.37", default-features = false, optional = true }
+egui_plot = { version = "0.38", optional = true }
+rfd = { version = "0.17", optional = true }
+arboard = { version = "3.6", features = ["wayland-data-control"], optional = true }
+chrono = { version = "0.4", features = ["unstable-locales"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+pdf-writer = { version = "0.14", optional = true }
+notify-rust = { version = "4", optional = true }
+miniz_oxide = { version = "0.8", optional = true }
+blaze-live = { path = "vendor/blaze-live", optional = true }
+
+egui_kittest = { version = "0.37", features = ["eframe", "wgpu"], optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 dns-lookup = "4"
@@ -42,6 +66,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_NetworkManagement_Dns",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
@@ -64,3 +89,10 @@ codegen-units = 16
 # Avoid cross-crate LTO and reuse compiled code between local builds.
 lto = false
 incremental = true
+
+# Incremental BeautifulRust checks for this desktop application.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

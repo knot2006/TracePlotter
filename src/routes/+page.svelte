@@ -229,13 +229,13 @@
     const existing = traces.find((t) => same(t.config, { host, protocol, port }));
     if (existing) {
       if (existing.paused) await togglePause(existing);
-      return { started: existing.paused ? "could not resume" : "resumed", ...describeTrace(existing, 600) };
+      return { started: existing.paused ? "could not resume" : "resumed", ...(await describeTrace(existing, 600)) };
     }
     const trace = await startTrace(newConfig({ host, protocol, port }, interval), bump);
     traces = [...traces, trace];
     session = [...session, trace.config];
     saveSession();
-    return { started: "new tab", ...slowed, ...describeTrace(trace, 600) };
+    return { started: "new tab", ...slowed, ...(await describeTrace(trace, 600)) };
   }
 
   /** Pauses a tab for an agent; its history stays. */

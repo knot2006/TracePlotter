@@ -1,3 +1,8 @@
 # Rust ships LLD, so Windows builds can link faster without another tool to install.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+# Run these from the repository root. The native demo needs no frontend build.
+[alias]
+native = ["run", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--features", "egui-ui"]
+native-test = ["test", "--lib", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--features", "egui-ui,ui-tests"]
