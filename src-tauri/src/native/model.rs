@@ -101,6 +101,7 @@ pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct Session {
     pub version: u32,
+    pub theme: Theme,
     pub settings: Settings,
     pub targets: Vec<Config>,
     pub active: String,
@@ -126,6 +127,7 @@ impl Default for Session {
         }
         Self {
             version: 1,
+            theme: Theme::default(),
             settings,
             targets: Vec::new(),
             active: "summary".into(),
@@ -427,6 +429,25 @@ impl Trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_theme_survives_session_roundtrip_and_defaults_for_older_sessions() {
+        assert_eq!(
+            Session::decode(r#"{"version":1}"#).unwrap().theme,
+            Theme::Ink
+        );
+        assert_eq!(
+            Session::decode(r#"{"version":1,"theme":"future"}"#)
+                .unwrap()
+                .theme,
+            Theme::Ink
+        );
+        let session = Session {
+            theme: Theme::Glass,
+            ..Session::default()
+        };
+        let saved = serde_json::to_string(&session).unwrap();
+        assert_eq!(Session::decode(&saved).unwrap().theme, Theme::Glass);
+    }
     #[test]
     fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {
         let old = Session::decode(r#"{"version":1,"hiddenColumns":["name"]}"#).unwrap();

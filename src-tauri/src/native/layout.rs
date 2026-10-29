@@ -21,7 +21,7 @@ impl Window {
         ui.painter().hline(
             ui.max_rect().x_range(),
             top,
-            egui::Stroke::new(1.0, palette().line),
+            egui::Stroke::new(1.0, palette(ui.ctx()).line),
         );
         egui::Frame::new()
             .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 })
@@ -57,21 +57,21 @@ impl Window {
                                                     rect.center(),
                                                     4.5,
                                                     if trace.alerting {
-                                                        palette().bad
+                                                        palette(ui.ctx()).bad
                                                     } else if trace.paused {
-                                                        palette().warn
+                                                        palette(ui.ctx()).warn
                                                     } else {
-                                                        palette().good
+                                                        palette(ui.ctx()).good
                                                     },
                                                 );
                                                 let mut name = egui::text::LayoutJob::default();
                                                 let host = RichText::new(format!("{}  ", trace.config.host))
-                                                    .color(if selected { palette().text } else { palette().soft });
+                                                    .color(if selected { palette(ui.ctx()).text } else { palette(ui.ctx()).soft });
                                                 for part in [
                                                     if selected { host.strong() } else { host },
                                                     RichText::new(short_protocol(&trace.config))
                                                         .size(12.0)
-                                                        .color(palette().muted),
+                                                        .color(palette(ui.ctx()).muted),
                                                 ] {
                                                     part.append_to(
                                                         &mut name,
@@ -106,7 +106,7 @@ impl Window {
                                         egui::Shape::rect_filled(
                                             response.rect,
                                             6.0,
-                                            plate_fill(selected, response.contains_pointer()),
+                                            plate_fill(ui.ctx(), selected, response.contains_pointer()),
                                         ),
                                     );
                                     response.container_context_menu(|ui| self.target_menu(ui, trace));
@@ -204,9 +204,9 @@ impl Window {
                 ui.allocate_exact_size(egui::vec2(165.0, 22.0), egui::Sense::hover());
             let third = rect.width() / 3.0;
             for (i, (color, text)) in [
-                (palette().good, String::new()),
-                (palette().warn, format!("{}ms", session.settings.warn_ms)),
-                (palette().bad, format!("{}ms", session.settings.bad_ms)),
+                (palette(ui.ctx()).good, String::new()),
+                (palette(ui.ctx()).warn, format!("{}ms", session.settings.warn_ms)),
+                (palette(ui.ctx()).bad, format!("{}ms", session.settings.bad_ms)),
             ]
             .into_iter()
             .enumerate()
@@ -637,7 +637,7 @@ impl Window {
                     .show(ui, |ui| {
                         for incident in incidents {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(time::date_time(incident.from)).monospace().color(palette().soft));
+                                ui.label(RichText::new(time::date_time(incident.from)).monospace().color(palette(ui.ctx()).soft));
                                 ui.label(match incident.to {
                                     Some(end) => format!("{:.0} s until recovery", end - incident.from),
                                     None => "no recovery recorded".into(),
@@ -668,6 +668,7 @@ impl Window {
                 }
                 ui.weak("Click an event to show its moment on the graph.");
                 ui.add_space(2.0);
+                let ctx = ui.ctx().clone();
                 egui_extras::TableBuilder::new(ui)
                     .id_salt("event-list-table")
                     .striped(true)
@@ -679,7 +680,7 @@ impl Window {
                     .header(22.0, |mut row| {
                         for title in ["Time", "Type", "Details"] {
                             row.col(|ui| {
-                                ui.label(RichText::new(title).small().color(palette().muted));
+                                ui.label(RichText::new(title).small().color(palette(ui.ctx()).muted));
                             });
                         }
                     })
@@ -691,7 +692,7 @@ impl Window {
                                 .as_ref()
                                 .is_some_and(|s| graphs::same_event(s, event));
                             row.set_selected(chosen);
-                            let color = graphs::event_color(event);
+                            let color = graphs::event_color(&ctx, event);
                             let label = logic::event_label(event);
                             let (kind, details) = match label.split_once(": ") {
                                 Some((kind, details)) => (kind.to_owned(), details.to_owned()),
@@ -703,7 +704,7 @@ impl Window {
                                     egui::Label::new(
                                         RichText::new(time::date_time(event["t"].as_f64().unwrap_or(0.0)))
                                             .monospace()
-                                            .color(palette().soft),
+                                            .color(palette(ui.ctx()).soft),
                                     )
                                     .selectable(false),
                                 );
@@ -745,11 +746,19 @@ impl Window {
                 ui.spacing_mut().interact_size.y = 20.0;
                 let mut end = self.end.unwrap_or(last);
                 ui.spacing_mut().slider_width = ui.available_width();
+                if theme::current(ui.ctx()) == Theme::Glass {
+                    let handle = palette(ui.ctx()).text;
+                    let widgets = &mut ui.visuals_mut().widgets;
+                    for state in [&mut widgets.hovered, &mut widgets.active] {
+                        state.bg_fill = handle;
+                        state.bg_stroke = egui::Stroke::NONE;
+                    }
+                }
                 // Green while following live data, the accent while looking back in history.
                 ui.visuals_mut().selection.bg_fill = if self.end.is_none() {
-                    palette().good.gamma_multiply(0.75)
+                    palette(ui.ctx()).good.gamma_multiply(0.75)
                 } else {
-                    palette().accent.gamma_multiply(0.75)
+                    palette(ui.ctx()).accent.gamma_multiply(0.75)
                 };
                 let response = ui
                     .add_enabled(
@@ -776,7 +785,7 @@ impl Window {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let nav = egui::Frame::new()
-                .fill(palette().shell)
+                .fill(palette(ui.ctx()).shell)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
                     ui.set_width(200.0);
@@ -847,6 +856,24 @@ impl Window {
                 });
             }
             1 => {
+                settings_group(ui, "Appearance", "Changes apply immediately and are remembered for the native interface.", |ui| {
+                    setting(ui, "Theme", "Glass uses charcoal panels and green accents.", |ui| {
+                        let previous = session.theme;
+                        egui::ComboBox::from_id_salt("native-theme-choice")
+                            .selected_text(session.theme.label())
+                            .show_ui(ui, |ui| {
+                                for theme in [Theme::Ink, Theme::Glass] {
+                                    ui.selectable_value(&mut session.theme, theme, theme.label());
+                                }
+                            })
+                            .response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Theme"));
+                        if session.theme != previous {
+                            apply_theme(ui.ctx(), session.theme);
+                            ui.ctx().request_repaint();
+                        }
+                        session.theme != previous
+                    }, &mut changed);
+                });
                 settings_group(ui, "Interface", "Switching restarts the app and keeps your tabs, settings and history.", |ui| {
                     setting(ui, "User interface", "Used when TracePlotter starts", |ui| {
                         egui::ComboBox::from_id_salt("gui-choice")
@@ -935,7 +962,7 @@ impl Window {
                     changed |= switch_setting(ui, "Allow AI agents to connect", "Tools > AI agents turns this on and off as well", &mut session.mcp);
                     changed |= number_setting(ui, "Port", "On the loopback address only", &mut s.mcp_port, 1024..=65535, "");
                     setting(ui, "Address", "", |ui| {
-                        ui.label(RichText::new(address.as_deref().unwrap_or("Not running")).monospace().color(palette().soft));
+                        ui.label(RichText::new(address.as_deref().unwrap_or("Not running")).monospace().color(palette(ui.ctx()).soft));
                         false
                     }, &mut changed);
                 });
@@ -944,7 +971,7 @@ impl Window {
                 settings_group(ui, "", "", |ui| {
                     setting(ui, "Raw sockets", if is_elevated() { "TracePlotter may open them" } else { "Not allowed yet" }, |ui| {
                         if is_elevated() {
-                            ui.label(RichText::new("Allowed").color(palette().good));
+                            ui.label(RichText::new("Allowed").color(palette(ui.ctx()).good));
                         } else if ui.add_enabled(!self.busy && can_elevate(), egui::Button::new("Allow and restart…")).clicked() {
                             self.runtime.command(Command::Save);
                             self.save_window(ui.ctx());
@@ -966,7 +993,7 @@ impl Window {
                 });
                 settings_group(ui, "Reset", "", |ui| {
                     setting(ui, "Restore default settings", "Probe, display, alert and history settings; targets stay", |ui| {
-                        let reset = ui.add(egui::Button::new(RichText::new("Restore defaults").color(palette().bad))).clicked();
+                        let reset = ui.add(egui::Button::new(RichText::new("Restore defaults").color(palette(ui.ctx()).bad))).clicked();
                         if reset {
                             s.clone_from(&Session::default().settings);
                         }
@@ -991,8 +1018,8 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
     // Pause is filled with the accent while a trace runs, start or resume with green; the
     // restart arrow is amber, as it erases history.
     let fill = match glyph {
-        "⏸" => Some(palette().accent),
-        "▶" => Some(palette().good),
+        "⏸" => Some(palette(ui.ctx()).accent),
+        "▶" => Some(palette(ui.ctx()).good),
         _ => None,
     };
     let mut button = egui::Button::new(
@@ -1008,15 +1035,15 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
     if let Some(fill) = fill {
         button = button.fill(fill);
     } else if glyph == "+" {
-        button = button.fill(plate_fill(false, false)).stroke(egui::Stroke::NONE);
+        button = button.fill(plate_fill(ui.ctx(), false, false)).stroke(egui::Stroke::NONE);
     }
     // The frameless close cross takes the tab's height, so it shares the tab's centre.
     let height = if glyph == "×" { TAB_HEIGHT } else { size };
     let response = ui.add_sized([size, height], button);
     let center = response.rect.center();
     let color = match glyph {
-        _ if fill.is_some() => palette().surface,
-        "↻" => palette().warn,
+        _ if fill.is_some() => palette(ui.ctx()).surface,
+        "↻" => palette(ui.ctx()).warn,
         _ => ui.visuals().text_color(),
     };
     if glyph == "⏸" {
@@ -1038,7 +1065,7 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
             egui::Stroke::NONE,
         ));
     } else if glyph == "×" {
-        let color = if response.hovered() { palette().text } else { palette().muted };
+        let color = if response.hovered() { palette(ui.ctx()).text } else { palette(ui.ctx()).muted };
         for d in [egui::vec2(3.5, 3.5), egui::vec2(3.5, -3.5)] {
             ui.painter()
                 .line_segment([center - d, center + d], egui::Stroke::new(1.5, color));
@@ -1140,7 +1167,7 @@ fn preset_input(
                     c + egui::vec2(4.5, -2.5),
                     c + egui::vec2(0.0, 3.0),
                 ],
-                if arrow.hovered() { palette().text } else { palette().soft },
+                if arrow.hovered() { palette(ui.ctx()).text } else { palette(ui.ctx()).soft },
                 egui::Stroke::NONE,
             ));
             arrow.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Presets"));
@@ -1197,27 +1224,27 @@ fn preset_input(
 const TAB_HEIGHT: f32 = 30.0;
 /// MonoCode's tab plates: a faint fill on every tab, a little more on hover. The open tab
 /// takes the accent, so it stands out from the rest at a glance.
-fn plate_fill(selected: bool, hovered: bool) -> Color32 {
+fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
     if selected {
-        palette().accent.gamma_multiply(0.24)
+        palette(ctx).accent.gamma_multiply(0.24)
     } else if hovered {
-        palette().text.gamma_multiply(0.07)
+        palette(ctx).text.gamma_multiply(0.07)
     } else {
-        palette().text.gamma_multiply(0.04)
+        palette(ctx).text.gamma_multiply(0.04)
     }
 }
 /// All targets or Settings: a plate with its mark, as the targets' tabs have.
 fn fixed_tab(ui: &mut egui::Ui, label: &str, selected: bool, gear: bool) -> egui::Response {
     let plate = ui.painter().add(egui::Shape::Noop);
     let text = RichText::new(format!("     {label}"))
-        .color(if selected { palette().text } else { palette().soft });
+        .color(if selected { palette(ui.ctx()).text } else { palette(ui.ctx()).soft });
     let response = ui.add_sized(
         [if gear { 104.0 } else { 120.0 }, TAB_HEIGHT],
         egui::Button::new(if selected { text.strong() } else { text }).frame(false),
     );
     ui.painter().set(
         plate,
-        egui::Shape::rect_filled(response.rect, 6.0, plate_fill(selected, response.hovered())),
+        egui::Shape::rect_filled(response.rect, 6.0, plate_fill(ui.ctx(), selected, response.hovered())),
     );
     tab_icon(ui, &response, label, gear);
     response
@@ -1284,9 +1311,13 @@ const SETTINGS_PAGES: [(&str, &str); 8] = [
 fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(184.0, 30.0), egui::Sense::click());
     let fill = if selected {
-        palette().text.gamma_multiply(0.10)
+        if theme::current(ui.ctx()) == Theme::Glass {
+            ui.visuals().selection.bg_fill
+        } else {
+            palette(ui.ctx()).text.gamma_multiply(0.10)
+        }
     } else if response.hovered() {
-        palette().text.gamma_multiply(0.05)
+        palette(ui.ctx()).text.gamma_multiply(0.05)
     } else {
         Color32::TRANSPARENT
     };
@@ -1296,16 +1327,16 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(14.0),
-        if selected || response.hovered() { palette().text } else { palette().soft },
+        if selected || response.hovered() { palette(ui.ctx()).text } else { palette(ui.ctx()).soft },
     );
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, title));
     response
 }
 
 fn page_header(ui: &mut egui::Ui, title: &str, description: &str) {
-    ui.label(RichText::new(title).size(20.0).color(palette().text));
+    ui.label(RichText::new(title).size(20.0).color(palette(ui.ctx()).text));
     ui.add_space(6.0);
-    ui.label(RichText::new(description).size(13.0).color(palette().muted));
+    ui.label(RichText::new(description).size(13.0).color(palette(ui.ctx()).muted));
     ui.add_space(8.0);
 }
 
@@ -1313,17 +1344,21 @@ fn page_header(ui: &mut egui::Ui, title: &str, description: &str) {
 fn settings_group(ui: &mut egui::Ui, title: &str, note: &str, rows: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(16.0);
     if !title.is_empty() {
-        ui.label(RichText::new(title).size(13.0).color(palette().text));
+        ui.label(RichText::new(title).size(13.0).color(palette(ui.ctx()).text));
     }
     if !note.is_empty() {
-        ui.label(RichText::new(note).size(12.0).color(palette().muted));
+        ui.label(RichText::new(note).size(12.0).color(palette(ui.ctx()).muted));
     }
     if !title.is_empty() || !note.is_empty() {
         ui.add_space(8.0);
     }
     egui::Frame::new()
-        .fill(palette().text.gamma_multiply(0.03))
-        .stroke(egui::Stroke::new(1.0, palette().text.gamma_multiply(0.10)))
+        .fill(if theme::current(ui.ctx()) == Theme::Glass {
+            palette(ui.ctx()).raised.gamma_multiply(0.75)
+        } else {
+            palette(ui.ctx()).text.gamma_multiply(0.03)
+        })
+        .stroke(egui::Stroke::new(1.0, palette(ui.ctx()).text.gamma_multiply(0.10)))
         .corner_radius(12)
         .inner_margin(egui::Margin::symmetric(16, 0))
         .show(ui, |ui| {
@@ -1335,7 +1370,7 @@ fn settings_group(ui: &mut egui::Ui, title: &str, note: &str, rows: impl FnOnce(
 
 fn settings_note(ui: &mut egui::Ui, text: &str) {
     ui.add_space(14.0);
-    ui.label(RichText::new(text).size(12.0).color(palette().muted));
+    ui.label(RichText::new(text).size(12.0).color(palette(ui.ctx()).muted));
 }
 
 /// An on/off switch: the accent when on, a grey track when off.
@@ -1347,13 +1382,13 @@ fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     }
     let t = ui.ctx().animate_bool_responsive(response.id, *on);
     let track = if ui.is_enabled() {
-        palette().text.gamma_multiply(0.2).lerp_to_gamma(palette().accent, t)
+        palette(ui.ctx()).text.gamma_multiply(0.2).lerp_to_gamma(palette(ui.ctx()).accent, t)
     } else {
-        palette().text.gamma_multiply(0.1)
+        palette(ui.ctx()).text.gamma_multiply(0.1)
     };
     ui.painter().rect_filled(rect, 10.0, track);
     let x = egui::lerp(rect.left() + 10.0..=rect.right() - 10.0, t);
-    ui.painter().circle_filled(egui::pos2(x, rect.center().y), 8.0, palette().text);
+    ui.painter().circle_filled(egui::pos2(x, rect.center().y), 8.0, palette(ui.ctx()).text);
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *on, label));
     response
 }
@@ -1378,7 +1413,7 @@ fn setting(
         ui.painter().hline(
             ui.max_rect().x_range(),
             y,
-            egui::Stroke::new(1.0, palette().text.gamma_multiply(0.05)),
+            egui::Stroke::new(1.0, palette(ui.ctx()).text.gamma_multiply(0.05)),
         );
     }
     ui.add_space(12.0);
@@ -1390,13 +1425,13 @@ fn setting(
     } else {
         2.0 + ui
             .painter()
-            .layout(note.into(), egui::FontId::proportional(12.0), palette().muted, label_width)
+            .layout(note.into(), egui::FontId::proportional(12.0), palette(ui.ctx()).muted, label_width)
             .size()
             .y
     };
     let label_height = ui
         .painter()
-        .layout(label.into(), egui::FontId::proportional(13.0), palette().text, label_width)
+        .layout(label.into(), egui::FontId::proportional(13.0), palette(ui.ctx()).text, label_width)
         .size()
         .y;
     let height = (label_height + note_height).max(28.0);
@@ -1409,9 +1444,9 @@ fn setting(
                 .allocate_ui(egui::vec2(label_width, label_height + note_height), |ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let response = ui.label(RichText::new(label).size(13.0).color(palette().text));
+                        let response = ui.label(RichText::new(label).size(13.0).color(palette(ui.ctx()).text));
                         if !note.is_empty() {
-                            ui.label(RichText::new(note).size(12.0).color(palette().muted));
+                            ui.label(RichText::new(note).size(12.0).color(palette(ui.ctx()).muted));
                         }
                         response
                     })

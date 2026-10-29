@@ -200,6 +200,7 @@ fn paint(
     gpu: &eframe::egui_wgpu::RenderState,
     size: [u32; 2],
     pixels_per_point: f32,
+    theme: Theme,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> Result<image::RgbaImage, String> {
     use eframe::{
@@ -222,7 +223,7 @@ fn paint(
         );
     }
     let ctx = egui::Context::default();
-    apply_theme(&ctx);
+    apply_theme(&ctx, theme);
     let mut raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -324,7 +325,7 @@ fn graph_image(
     } else {
         100 + snapshot.plots.len() as u32 * 290
     };
-    paint(gpu, [1100, height], pixels_per_point, |ui| {
+    paint(gpu, [1100, height], pixels_per_point, snapshot.session.theme, |ui| {
         ui.heading(format!("TracePlotter — {}", host(snapshot)));
         ui.label(format!(
             "{} to {}",
@@ -378,7 +379,7 @@ fn report_pages(
         chunks.push(start..rows.len());
         for range in chunks {
             let chunk = &rows[range];
-            pages.push(paint(gpu, [1100, 740], pixels_per_point, |ui| {
+            pages.push(paint(gpu, [1100, 740], pixels_per_point, snapshot.session.theme, |ui| {
                 ui.heading(format!(
                     "TracePlotter — {} ({})",
                     trace.config.host, trace.addr

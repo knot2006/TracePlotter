@@ -91,15 +91,65 @@ fn fixture(active: &str) -> Snapshot {
     }
 }
 fn harness(active: &str, size: [f32; 2]) -> (Harness<'static, Window>, mpsc::Receiver<Command>) {
-    let (runtime, commands) = Runtime::fixture(fixture(active));
+    themed_harness(active, size, Theme::Ink)
+}
+fn themed_harness(
+    active: &str,
+    size: [f32; 2],
+    theme: Theme,
+) -> (Harness<'static, Window>, mpsc::Receiver<Command>) {
+    let mut snapshot = fixture(active);
+    snapshot.session.theme = theme;
+    let (runtime, commands) = Runtime::fixture(snapshot);
     let h = Harness::builder().with_size(size).build_eframe(|cc| {
-        apply_theme(&cc.egui_ctx);
+        apply_theme(&cc.egui_ctx, theme);
         let mut window = Window::with_runtime(runtime);
         window.placed = true;
         window.window_state = None;
         window
     });
     (h, commands)
+}
+
+#[test]
+fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
+    let (mut h, commands) = harness("settings", [1100.0, 720.0]);
+    h.state_mut().settings_page = 1;
+    h.run();
+    let ink_accent = palette(&h.ctx).accent;
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
+        .click();
+    h.run();
+    h.get_by_label("Glass").click();
+    h.run();
+    assert_ne!(palette(&h.ctx).accent, ink_accent);
+    assert!(!h.state().busy && !h.state().needs_exit);
+    assert!(
+        commands
+            .try_iter()
+            .any(|c| matches!(c, Command::Preferences(s) if s.theme == Theme::Glass))
+    );
+
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
+        .click();
+    h.run();
+    h.get_by_label("Ink").click();
+    h.run();
+    assert_eq!(palette(&h.ctx).accent, ink_accent);
+}
+
+#[test]
+fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
+    for size in [[1100.0, 720.0], [640.0, 420.0]] {
+        let (mut h, _) = themed_harness("demo-one", size, Theme::Glass);
+        h.run();
+        assert_eq!(theme::current(&h.ctx), Theme::Glass);
+        assert!(h.get_by_label("Pause").rect().right() <= size[0]);
+        assert!(h.get_by_label("History position").rect().bottom() <= size[1]);
+        h.state_mut().editing = Some((fixture("demo-one").session.targets[0].clone(), false));
+        h.run();
+        assert!(h.get_by_label("Close").rect().bottom() <= size[1]);
+    }
 }
 #[test]
 fn trace_controls_emit_typed_commands() {
@@ -505,48 +555,60 @@ fn render_native_scenarios() {
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
     export::render_fixture(&gpu, &fixture("demo-one"), &output).unwrap();
-    for (active, name, size) in [
-        ("demo-one", "trace", [1100.0, 720.0]),
-        ("demo-one", "trace-hover", [1100.0, 720.0]),
-        ("demo-one", "trace-menu", [1100.0, 720.0]),
-        ("demo-one", "columns-menu", [1440.0, 900.0]),
-        ("demo-one", "trace-wide", [1440.0, 900.0]),
-        ("demo-one", "trace-small", [640.0, 420.0]),
-        ("summary", "summary", [1100.0, 720.0]),
-        ("settings", "settings", [1100.0, 720.0]),
-        ("settings", "settings-interface", [1100.0, 720.0]),
-        ("settings", "settings-wide", [1440.0, 900.0]),
-        ("demo-one", "probe-dialog", [1100.0, 720.0]),
-    ] {
-        let (mut h, _commands) = harness(active, size);
-        if name == "settings-interface" {
-            h.state_mut().settings_page = 1;
+    for theme in [Theme::Ink, Theme::Glass] {
+        if theme == Theme::Glass {
+            let mut snapshot = fixture("demo-one");
+            snapshot.session.theme = theme;
+            let exports = output.join("glass");
+            fs::create_dir_all(&exports).unwrap();
+            export::render_fixture(&gpu, &snapshot, &exports).unwrap();
         }
-        if name == "probe-dialog" {
-            h.state_mut().editing = Some((fixture(active).session.targets[0].clone(), false));
-        }
-        h.run();
-        if name == "trace-hover" {
-            let history = h.get_by_label("History position").rect();
-            h.hover_at(egui::pos2(500.0, history.top() - 70.0));
+        for (active, name, size) in [
+            ("demo-one", "trace", [1100.0, 720.0]),
+            ("demo-one", "trace-hover", [1100.0, 720.0]),
+            ("demo-one", "trace-menu", [1100.0, 720.0]),
+            ("demo-one", "columns-menu", [1440.0, 900.0]),
+            ("demo-one", "trace-wide", [1440.0, 900.0]),
+            ("demo-one", "trace-small", [640.0, 420.0]),
+            ("summary", "summary", [1100.0, 720.0]),
+            ("settings", "settings", [1100.0, 720.0]),
+            ("settings", "settings-interface", [1100.0, 720.0]),
+            ("settings", "settings-wide", [1440.0, 900.0]),
+            ("demo-one", "probe-dialog", [1100.0, 720.0]),
+        ] {
+            let (mut h, _commands) = themed_harness(active, size, theme);
+            if name == "settings-interface" {
+                h.state_mut().settings_page = 1;
+            }
+            if name == "probe-dialog" {
+                h.state_mut().editing = Some((fixture(active).session.targets[0].clone(), false));
+            }
             h.run();
-            assert!(h.query_by_label("Latency readout").is_some());
+            if name == "trace-hover" {
+                let history = h.get_by_label("History position").rect();
+                h.hover_at(egui::pos2(500.0, history.top() - 70.0));
+                h.run();
+                assert!(h.query_by_label("Latency readout").is_some());
+            }
+            if name == "trace-menu" {
+                let history = h.get_by_label("History position").rect();
+                secondary_click(&h, egui::pos2(500.0, history.top() - 65.0));
+                h.run();
+                assert!(h.query_by_label("Save this graph as PNG…").is_some());
+            }
+            if name == "columns-menu" {
+                h.get_by_label("IP").click_secondary();
+                h.run();
+                assert!(h.query_by_label("Reset to defaults").is_some());
+            }
+            h.render()
+                .unwrap()
+                .save(output.join(format!(
+                    "{}{name}.png",
+                    if theme == Theme::Glass { "glass-" } else { "" }
+                )))
+                .unwrap();
         }
-        if name == "trace-menu" {
-            let history = h.get_by_label("History position").rect();
-            secondary_click(&h, egui::pos2(500.0, history.top() - 65.0));
-            h.run();
-            assert!(h.query_by_label("Save this graph as PNG…").is_some());
-        }
-        if name == "columns-menu" {
-            h.get_by_label("IP").click_secondary();
-            h.run();
-            assert!(h.query_by_label("Reset to defaults").is_some());
-        }
-        h.render()
-            .unwrap()
-            .save(output.join(format!("{name}.png")))
-            .unwrap();
     }
 }
 

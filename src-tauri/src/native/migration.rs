@@ -130,7 +130,10 @@ fn decode(values: &Value) -> Result<Session, String> {
 
 #[cfg(feature = "legacy-ui")]
 pub(crate) fn import_values(values: &Value) -> Result<(), String> {
-    decode(values)?.save()
+    let mut state = decode(values)?;
+    // The classic interface has no theme preference, so keep the native choice.
+    state.theme = Session::load()?.theme;
+    state.save()
 }
 
 #[cfg(feature = "legacy-ui")]

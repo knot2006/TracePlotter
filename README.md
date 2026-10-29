@@ -117,6 +117,10 @@ To try the new GUI, open **Settings > Interface** and click **Switch to native G
 Tabs, settings and history carry over. To switch back, use
 **Settings > Display > Interface** in the native GUI. The choice is remembered between launches.
 
+The native GUI also offers **Ink** and **Glass** under **Settings > Display > Appearance > Theme**.
+Glass uses charcoal panels, soft borders and green accents inspired by the DLSS overlay. Theme
+changes apply immediately and are remembered. The window stays opaque; desktop blur is not required.
+
 ## Asking AI agents about your connection
 
 TracePlotter can let AI agents such as Claude read its traces, so you can ask them things like "why

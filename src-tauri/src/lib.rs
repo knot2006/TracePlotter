@@ -1743,6 +1743,7 @@ pub fn run() {
     #[cfg(feature = "egui-ui")]
     if gui::selected() == gui::Interface::Native {
         native::run();
+        #[cfg(feature = "legacy-ui")]
         return;
     }
     #[cfg(feature = "legacy-ui")]

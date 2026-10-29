@@ -285,7 +285,7 @@ fn readout(ui: &mut egui::Ui, data: &GraphData, time: f64, width: f64, span: f64
             time::time_of_day(data.xs[i])
         })
         .small()
-        .color(palette().muted),
+        .color(palette(ui.ctx()).muted),
     );
     if data.ls[i].is_none() {
         ui.small("not probing");
@@ -348,6 +348,7 @@ pub(super) fn show(
     compare: bool,
     selected: Option<&Value>,
 ) -> Output {
+    let theme_colors = palette(ui.ctx());
     let mut action = None;
     if compare {
         ui.add_space(8.0);
@@ -405,7 +406,8 @@ pub(super) fn show(
             format!("{}-{}", series[0].session, series[0].ttl)
         };
         // One neutral step above the black page, as the chart's own surface.
-        ui.visuals_mut().extreme_bg_color = Color32::from_rgb(0x10, 0x10, 0x10);
+        let glass = theme::current(ui.ctx()) == Theme::Glass;
+        ui.visuals_mut().extreme_bg_color = if glass { theme_colors.inset } else { Color32::from_rgb(0x10, 0x10, 0x10) };
         let jitter_response = if with_jitter {
             ui.vertical_centered(|ui| {
                 ui.small("Jitter (ms, running average)");
@@ -438,7 +440,7 @@ pub(super) fn show(
                 .allow_boxed_zoom(false)
             .allow_axis_zoom_drag(false)
                 .allow_double_click_reset(false)
-                .grid_color(palette().edge)
+                .grid_color(theme_colors.edge)
                 .link_axis(egui::Id::unique("trace-time"), [true, false])
                 .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
                 .custom_y_axes(axes(0.0, jitter_max, false))
@@ -450,14 +452,14 @@ pub(super) fn show(
                         for run in runs(&series.data.xs, &series.data.js) {
                             p.line(
                                 Line::new("Jitter", step_run(&run))
-                                    .color(series_color(index))
+                                    .color(if glass && !compare { theme_colors.accent_light } else { series_color(index) })
                                     .allow_band(false)
                                     .fill(0.0),
                             );
                         }
                     }
                     if let Some(x) = *pinned {
-                        p.vline(VLine::new("Pinned", x).color(palette().text));
+                        p.vline(VLine::new("Pinned", x).color(theme_colors.text));
                     }
                 });
             ui.add_space(8.0);
@@ -485,7 +487,7 @@ pub(super) fn show(
             .allow_boxed_zoom(false)
             .allow_axis_zoom_drag(false)
             .allow_double_click_reset(false)
-                .grid_color(palette().edge)
+                .grid_color(theme_colors.edge)
             .link_axis(egui::Id::unique("trace-time"), [true, false])
             .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
             .custom_y_axes(axes(ymin, ymax, true))
@@ -509,9 +511,9 @@ pub(super) fn show(
                     ymax,
                 ];
                 let colors = [
-                    palette().good,
-                    palette().warn,
-                    palette().bad,
+                    theme_colors.good,
+                    theme_colors.warn,
+                    theme_colors.bad,
                 ];
                 for (from, to) in coverage(&series) {
                     for band in 0..3 {
@@ -537,9 +539,9 @@ pub(super) fn show(
                         p.hline(
                             egui_plot::HLine::new("Threshold", threshold)
                                 .color(if threshold == snapshot.session.settings.warn_ms as f64 {
-                                    palette().warn.gamma_multiply(0.55)
+                                    theme_colors.warn.gamma_multiply(0.55)
                                 } else {
-                                    palette().bad.gamma_multiply(0.55)
+                                    theme_colors.bad.gamma_multiply(0.55)
                                 })
                                 .style(egui_plot::LineStyle::dashed_loose())
                                 .allow_hover(false),
@@ -550,13 +552,13 @@ pub(super) fn show(
                     let color = if compare {
                         series_color(index)
                     } else {
-                        palette().text
+                        theme_colors.text
                     };
                     let d = &series.data;
                     let loss_color = if compare && snapshot.session.settings.loss_by_target {
                         color
                     } else {
-                        palette().bad
+                        theme_colors.bad
                     };
                     let width = if d.xs.len() > 1 {
                         (d.xs.last().unwrap() - d.xs[0]) / d.xs.len() as f64
@@ -591,7 +593,7 @@ pub(super) fn show(
                     );
                 }
                 if let Some(x) = *pinned {
-                    p.vline(VLine::new("Pinned", x).color(palette().text));
+                    p.vline(VLine::new("Pinned", x).color(theme_colors.text));
                 }
                 p.pointer_coordinate()
             });
@@ -600,8 +602,8 @@ pub(super) fn show(
         // The thresholds are named where they meet the plot's right edge, so the zones do
         // not rest on colour alone.
         for (threshold, color) in [
-            (snapshot.session.settings.warn_ms as f64, palette().warn),
-            (snapshot.session.settings.bad_ms as f64, palette().bad),
+            (snapshot.session.settings.warn_ms as f64, theme_colors.warn),
+            (snapshot.session.settings.bad_ms as f64, theme_colors.bad),
         ] {
             if threshold > ymin && threshold < ymax {
                 let frame = response.transform.frame();
@@ -632,7 +634,7 @@ pub(super) fn show(
                 egui::Align2::LEFT_TOP,
                 &series[0].label,
                 egui::FontId::proportional(12.0),
-                palette().text,
+                theme_colors.text,
             );
         }
         actual_width = response.transform.frame().width();
@@ -743,13 +745,13 @@ pub(super) fn show(
             .gap(12.0);
             tooltip.popup = tooltip.popup.align(egui::RectAlign::BOTTOM_END).frame(
                 egui::Frame::popup(ui.style())
-                    .fill(palette().raised)
+                    .fill(theme_colors.raised)
                     .inner_margin(6),
             );
             tooltip.show(|ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.visuals_mut().override_text_color = Some(palette().text);
+                ui.visuals_mut().override_text_color = Some(theme_colors.text);
                 for series in &series {
                     if compare {
                         ui.label(RichText::new(&series.label).small().strong());
@@ -760,7 +762,7 @@ pub(super) fn show(
                 for event in events.iter().filter(|e| {
                     (response.transform.position_from_point_x(time_of(e)) - x).abs() <= 8.0
                 }) {
-                    ui.label(RichText::new(logic::event_label(event)).small().color(event_color(event)));
+                    ui.label(RichText::new(logic::event_label(event)).small().color(event_color(ui.ctx(), event)));
                 }
             });
         }
@@ -802,11 +804,11 @@ pub(super) fn period_events(events: &[Value], from: f64, to: f64) -> Vec<Value> 
         .filter(|e| (from..=to).contains(&time_of(e)))
         .collect()
 }
-pub(super) fn event_color(event: &Value) -> Color32 {
+pub(super) fn event_color(ctx: &egui::Context, event: &Value) -> Color32 {
     match event["kind"].as_str() {
-        Some("alert") => palette().bad,
-        Some("recover") => palette().good,
-        _ => palette().accent,
+        Some("alert") => palette(ctx).bad,
+        Some("recover") => palette(ctx).good,
+        _ => palette(ctx).accent,
     }
 }
 pub(super) fn same_event(a: &Value, b: &Value) -> bool {
@@ -828,7 +830,7 @@ fn event_marks(
         if !occupied.insert((x / 3.0).round() as i64) {
             continue;
         }
-        let color = event_color(event);
+        let color = event_color(ui.ctx(), event);
         painter.extend(egui::Shape::dashed_line(
             &[egui::pos2(x, frame.top()), egui::pos2(x, frame.bottom())],
             egui::Stroke::new(1.0, color),
@@ -843,7 +845,7 @@ fn event_marks(
     }
     if let Some(event) = selected {
         let x = transform.position_from_point_x(time_of(event));
-        let color = event_color(event);
+        let color = event_color(ui.ctx(), event);
         painter.rect_filled(
             egui::Rect::from_x_y_ranges(x - 7.0..=x + 7.0, frame.y_range()),
             0.0,
@@ -857,7 +859,7 @@ fn event_marks(
                 egui::pos2(x, frame.top() + 10.0),
             ],
             color,
-            egui::Stroke::new(1.0, palette().text),
+            egui::Stroke::new(1.0, palette(ui.ctx()).text),
         ));
     }
 }
