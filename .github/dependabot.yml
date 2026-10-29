@@ -1,4 +1,6 @@
 # Weekly dependency update pull requests.
+# Version updates wait until a release is at least three days old.
+# Security updates bypass this cooldown.
 # Minor and patch updates of one ecosystem come as a single pull request; a new major
 # version gets its own, because it may need code changes.
 version: 2
@@ -8,6 +10,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
@@ -17,6 +21,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
 
   # Backend: Tauri, its plugins and trippy-core. trippy-core has no upper bound, so its
   # new releases arrive here too; one that changes the API fails CI until our code is fixed.
@@ -24,6 +30,8 @@ updates:
     directory: /src-tauri
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]
