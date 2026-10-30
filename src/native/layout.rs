@@ -828,10 +828,14 @@ impl Window {
                 } else {
                     palette(ui.ctx()).accent.gamma_multiply(strength)
                 };
+                // With less history than the time span there is nothing to scroll back to, and
+                // egui centres the handle of an empty range, so the range is widened to keep the
+                // handle at the live end and the slider is disabled.
+                let oldest = (first + session.span).min(last);
                 let response = ui
                     .add_enabled(
-                        session.span > 0.0,
-                        egui::Slider::new(&mut end, (first + session.span).min(last)..=last)
+                        session.span > 0.0 && oldest < last,
+                        egui::Slider::new(&mut end, oldest.min(last - 1.0)..=last)
                             .show_value(false)
                             .trailing_fill(true),
                     )
