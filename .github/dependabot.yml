@@ -24,11 +24,3 @@ updates:
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]
-
-  # Release-only Linux packaging tool, kept outside the app's dependency tree.
-  - package-ecosystem: cargo
-    directory: /tools/bundle-linux
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 3

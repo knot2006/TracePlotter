@@ -121,10 +121,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           toolchain: stable
-      # linuxdeploy, which makes the AppImage, is an AppImage itself and runs through FUSE 2.
-      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libfuse2 patchelf
+      # rpm brings rpmbuild for the RPM package. linuxdeploy, which makes the AppImage, is an
+      # AppImage itself and runs through FUSE 2.
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libfuse2 patchelf rpm
       - run: cargo build --release --locked
-      - run: cargo run --locked --manifest-path tools/bundle-linux/Cargo.toml
+      - run: bash scripts/package-linux.sh
       - run: bash scripts/package-appimage.sh "$TAG"
       - name: Add the packages to the release
         env:

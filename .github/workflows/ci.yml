@@ -38,6 +38,6 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --lib --features ui-tests
       - if: runner.os == 'Linux'
-        run: cargo clippy --all-targets --locked --manifest-path tools/bundle-linux/Cargo.toml -- -D warnings
+        run: bash -n scripts/package-linux.sh
       - if: runner.os == 'Linux'
         run: bash -n scripts/package-appimage.sh
