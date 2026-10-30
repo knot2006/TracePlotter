@@ -2,7 +2,7 @@
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
 
-# Run these from the repository root. The native demo needs no frontend build.
+# Run these from the repository root.
 [alias]
-native = ["run", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--features", "egui-ui"]
-native-test = ["test", "--lib", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--features", "egui-ui,ui-tests"]
+native = ["run"]
+native-test = ["test", "--lib", "--features", "ui-tests"]

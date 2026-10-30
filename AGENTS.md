@@ -5,64 +5,56 @@ This file is for coding agents working on TracePlotter. People should start with
 
 ## The project
 
-TracePlotter is a Tauri 2 desktop app: a continuous visual traceroute and ping monitor. The
-interface is Svelte 5 with TypeScript and uPlot graphs, in `src/`. The backend is Rust, in
-`src-tauri/`, and probes with the trippy-core engine. It is developed on Windows first and also
-runs on Linux; CI runs on `windows-latest` and `ubuntu-latest`. Anything Windows-only sits behind
-`#[cfg(windows)]`, anything Linux-only behind `#[cfg(target_os = "linux")]`, each with a fallback
-for other systems, so check that a change builds without warnings on both.
+TracePlotter is a Rust desktop app with an egui interface and egui_plot graphs, in
+`src/native/`. The backend probes with trippy-core. It is developed on Windows
+first and also runs on Linux; CI runs on both. Keep platform-specific code behind the
+appropriate `#[cfg]` with a fallback, and build without warnings on both.
 
-The map of the code is under "Where things are" in CONTRIBUTING.md. In short, `src/routes/+page.svelte`
-holds the window, tabs, menus and saved session; `src/lib/TraceTab.svelte` one tab; `src/lib/trace.ts`
-a trace's data and its link to the backend; `src/lib/stats.ts` and `events.ts` the calculations;
-`src/lib/settings.ts` the app-wide settings and `Settings.svelte` their tab;
-`src/lib/agent.ts` the answers of the MCP server; `src-tauri/src/lib.rs` probing, history, updates
-and the other commands; `src-tauri/src/mcp.rs` the MCP server; `src-tauri/src/winicmp.rs` the
-Windows ICMP API and `src-tauri/src/pingsock.rs` Linux ping sockets, with what they share in
-`src-tauri/src/echo.rs`.
+The code map is in CONTRIBUTING.md. `native/mod.rs` owns the window; `native/layout.rs`
+and `graphs.rs` draw it; `native/app.rs` runs the controller independently of painting;
+`native/model.rs` holds traces, settings and saved sessions. `logic.rs` and `insights.rs`
+hold calculations, `lib.rs` history and platform commands, `probe.rs` probing, and
+`mcp.rs` the MCP server. `winicmp.rs`, `pingsock.rs` and `echo.rs` handle system ICMP.
 
 ## Checks
 
-Run these before proposing a change, in this order. The backend embeds the built frontend, so
-`npm run build` has to come before the Rust tests.
+Run the native checks before proposing a change:
 
 ```bash
-npm run check
-npm test
-npm run build
-cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
-cargo test --lib --manifest-path src-tauri/Cargo.toml
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib
+cargo native-test
 ```
 
-On Linux the Rust build needs the WebKitGTK development packages (`libwebkit2gtk-4.1-dev`,
-`libgtk-3-dev`, `librsvg2-dev`) and `libayatana-appindicator3-dev` for the system tray.
+On Linux the native build needs `libwayland-dev` and `libxkbcommon-dev`. No npm build,
+WebKitGTK or WebView2 is needed.
 
-Do not run the full `npm run tauri build`, nor the ignored `live_trace` test, in a sandbox or cloud
-machine: they need Windows and a real network, and the test Administrator rights as well. Leave
-those to a person.
+Do not run the full release packaging or ignored live network tests in a sandbox or cloud
+machine. Those need platform checks and a real network; raw sockets may also need extra rights.
 
-When a person asks for an exe to try on their own Windows machine, build it with the `fast` Cargo
-profile. It compiles on all cores in about half the time of `release`, and the exe behaves the same:
+When a person asks for an exe to try on Windows, use the `fast` Cargo profile:
 
 ```bash
-npm run tauri build -- --no-bundle -- --profile fast
+cargo build --profile fast
 ```
 
-The exe is written to `src-tauri/target/fast/traceplotter.exe`. The `release` profile is for
-published builds, which the Release workflow makes; do not hand out a `fast` build as a release.
+The exe is `target/fast/traceplotter.exe`. Published builds use `release`;
+do not hand out a `fast` build as a release.
 
 ## Conventions
 
 - Write code that reads like the code around it. Comments say why, in full sentences; they are as
   dense as the existing ones, not denser.
-- Trace data is kept in plain objects changed in place, and the interface redraws when a counter
-  (`rev`) changes. Do not move samples into Svelte state.
-- Pure logic goes in `src/lib/*.ts` with a `*.test.ts` beside it, run by `node --test`. Imports in
-  those files carry the `.ts` extension so that Node can run them.
+- Trace data belongs to the controller. Rendering reads snapshots; probing and MCP must
+  continue when the window is hidden.
+- Pure logic and its unit tests live together in Rust modules. Widget tests live in
+  `native/tests.rs` behind `ui-tests`.
+- Old browser sessions are read from disposable SQLite/LevelDB copies on first launch.
+  Keep original data untouched, preserve session IDs, and validate before saving.
 - trippy-core is a moving target: take its new releases and fix our code when its API changes,
   rather than holding it back.
-- The version is in `src-tauri/Cargo.toml` only. `tauri.conf.json` and `package.json` have none on
-  purpose: Tauri takes it from Cargo.toml. Do not add it back to them.
+- The version is in `Cargo.toml` only.
 - Documentation and pull request descriptions are plain prose, in the voice of the existing docs.
 
 ## Demo mode
@@ -74,7 +66,7 @@ history instead, for work on long periods.
 Use it for screenshots and for interface work:
 
 ```bash
-npm run tauri dev -- -- -- --demo
+cargo native -- --demo
 ```
 
 ## The MCP server
@@ -88,16 +80,15 @@ For development, run the demo with the server on and point an agent at it; this 
 `.mcp.json` already does that for Claude Code:
 
 ```bash
-npm run tauri dev -- -- -- --demo --mcp
+cargo native -- --demo --mcp
 ```
 
 The tools are `list_targets`, `get_hops`, `get_route_changes` and `get_latency_history`, which only
-read, and `start_trace` and `stop_trace`, which open or resume a tab and pause one. The Rust side
-(`mcp.rs`) speaks the protocol and describes the tools; it passes each call to the webview as an
-`mcp-request` event, where `agent.ts` and `+page.svelte` answer from the open tabs with the same
-statistics the window shows, and the answer comes back through the `mcp_respond` command. A new
-tool needs its description in `tools()` in `mcp.rs` and its answer in `READ_TOOLS` in `agent.ts`
-(or in `answerAgent` in `+page.svelte` when it changes tabs).
+read, and `start_trace` and `stop_trace`, which open or resume a tab and pause one.
+The Rust side (`mcp.rs`) speaks the protocol and describes the tools. Each call becomes a
+controller command; `native/agent.rs` answers from the same trace model the window shows.
+A new tool needs its description in `tools()` in `mcp.rs` and its controller answer in
+`native/agent.rs` or `native/app.rs` when it changes tabs.
 
 Many routers throttle their replies when they are probed more than once a second, which then looks
 like packet loss. Agents must not probe faster than that: `start_trace` never goes below a
