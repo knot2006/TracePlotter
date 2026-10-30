@@ -66,11 +66,11 @@ const INK: Palette = Palette {
     text: rgb(0xf5f5f5),
     soft: rgb(0xd6d6d6),
     muted: rgb(0x8f8f8f),
-    accent: rgb(0x7aa7ff),
-    accent_light: rgb(0x9cc0ff),
-    good: rgb(0x8fd6a8),
-    warn: rgb(0xf2c46d),
-    bad: rgb(0xff6b6b),
+    accent: rgb(0x4d8dff),
+    accent_light: rgb(0x70a6ff),
+    good: rgb(0x3ddc84),
+    warn: rgb(0xffb020),
+    bad: rgb(0xff4d4d),
 };
 
 /// Glass: cool charcoal panels, soft borderless controls and a vivid green for what is on.
