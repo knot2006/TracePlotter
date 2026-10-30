@@ -514,6 +514,11 @@ impl Window {
                     visuals.button_frame = true;
                     visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
                     visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                    // egui pads menu-bar buttons by only 2 px, which hugs the fill to the word;
+                    // wider padding with tighter spacing keeps the words where they were.
+                    let spacing = ui.spacing_mut();
+                    spacing.button_padding = egui::vec2(8.0, 4.0);
+                    spacing.item_spacing.x = 0.0;
                     ui.menu_button("File", |ui| {
                         menu_rows(ui);
                         if ui
