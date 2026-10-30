@@ -110,6 +110,8 @@ struct Window {
     last_view: Option<View>,
     error: Option<String>,
     message: Option<String>,
+    /// A newer published version, shown beside the Help menu until installed or dismissed.
+    update: Option<String>,
     end: Option<f64>,
     pinned: Option<f64>,
     editing: Option<(Config, bool)>,
@@ -219,6 +221,7 @@ impl Window {
             last_view: None,
             error: None,
             message: None,
+            update: None,
             end: None,
             pinned: None,
             editing: None,
@@ -288,6 +291,19 @@ impl Window {
     fn update_check(&mut self, ctx: &egui::Context) {
         self.job(ctx, || {
             Job::Updates(check_update().map(|update| update.map(|u| u.version)))
+        });
+    }
+    fn install_update(&mut self, ctx: &egui::Context) {
+        self.runtime.command(Command::Save);
+        self.save_window(ctx);
+        self.job(ctx, || {
+            Job::Restart(prepare_update().and_then(|()| {
+                std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+                    .args(restart_args())
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }))
         });
     }
     fn import(&mut self, ctx: &egui::Context, session: &Session) {
@@ -449,14 +465,7 @@ impl Window {
                     ))
                 }
                 Job::Updates(result) => match result {
-                    Ok(Some(version)) => {
-                        self.message = Some(format!(
-                            "TracePlotter {version} is available. Open Help for updates."
-                        ))
-                    }
-                    Ok(None) => {
-                        self.message = Some("You have the latest published version.".into())
-                    }
+                    Ok(version) => self.update = version,
                     Err(e) => self.error = Some(e),
                 },
             }
@@ -786,19 +795,7 @@ impl Window {
                                 )
                                 .clicked()
                         {
-                            self.runtime.command(Command::Save);
-                            self.save_window(ui.ctx());
-                            self.job(ui.ctx(), || {
-                                Job::Restart(prepare_update().and_then(|()| {
-                                    std::process::Command::new(
-                                        std::env::current_exe().map_err(|e| e.to_string())?,
-                                    )
-                                    .args(restart_args())
-                                    .spawn()
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string())
-                                }))
-                            });
+                            self.install_update(ui.ctx());
                             ui.close();
                         }
                         changed |= ui
@@ -812,6 +809,21 @@ impl Window {
                             ui.close();
                         }
                     });
+                    if let Some(version) = self.update.clone() {
+                        ui.label(format!("TracePlotter {version} is available."));
+                        if small_button(ui, "Update now").clicked() && !self.busy {
+                            // Only Windows has a signed installer; elsewhere the releases page has the update.
+                            if cfg!(windows) {
+                                self.install_update(ui.ctx());
+                            } else if let Err(e) = open_project_page() {
+                                self.error = Some(e);
+                            }
+                            self.update = None;
+                        }
+                        if small_button(ui, "Dismiss").clicked() {
+                            self.update = None;
+                        }
+                    }
                     if self.busy {
                         ui.spinner();
                         ui.weak("Working…");
