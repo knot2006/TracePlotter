@@ -30,6 +30,8 @@ pub(super) struct TraceView {
     pub config: Config,
     pub paused: bool,
     pub addr: String,
+    /// Read only by the demo's screenshot capture, which debug builds alone contain.
+    #[cfg_attr(not(debug_assertions), expect(dead_code))]
     pub loading: bool,
     pub error: Option<String>,
     pub alerting: bool,
