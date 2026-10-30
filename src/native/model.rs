@@ -102,6 +102,8 @@ pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"
 pub(super) struct Session {
     pub version: u32,
     pub theme: Theme,
+    /// How much of the desktop shows through Glass's panels, from 0 to 0.7.
+    pub transparency: f32,
     pub settings: Settings,
     pub targets: Vec<Config>,
     pub active: String,
@@ -128,6 +130,7 @@ impl Default for Session {
         Self {
             version: 1,
             theme: Theme::default(),
+            transparency: 0.0,
             settings,
             targets: Vec::new(),
             active: "summary".into(),

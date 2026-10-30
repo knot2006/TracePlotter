@@ -352,6 +352,7 @@ impl Controller {
                 Command::Preferences(s) => {
                     let previous = (self.session.mcp, self.session.settings.mcp_port);
                     self.session.theme = s.theme;
+                    self.session.transparency = s.transparency;
                     self.session.settings = s.settings;
 
                     self.session.hidden_columns = s.hidden_columns;

@@ -413,7 +413,7 @@ pub(super) fn show(
         // One neutral step above the black page, as the chart's own surface.
         let glass = theme::current(ui.ctx()) == Theme::Glass;
         ui.visuals_mut().extreme_bg_color = if glass {
-            theme_colors.inset
+            theme_colors.inset.gamma_multiply(theme::opacity(ui.ctx()))
         } else {
             Color32::from_rgb(0x10, 0x10, 0x10)
         };

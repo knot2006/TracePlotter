@@ -37,6 +37,8 @@ uuid = { version = "1", features = ["v4"] }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland", "accesskit"] }
 egui_extras = { version = "0.37", default-features = false }
 egui_plot = { version = "0.38" }
+# The window's handle, for the blur behind Glass (see native/blur.rs).
+raw-window-handle = "0.6"
 rfd = { version = "0.17" }
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 chrono = { version = "0.4", features = ["unstable-locales"] }
@@ -57,6 +59,10 @@ dns-lookup = "4"
 # Ping sockets, for ICMP traces that need no raw socket (see pingsock.rs).
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+# The blur behind Glass's translucent window on Wayland (see native/blur.rs).
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
 # reverse DNS without NetBIOS. Also the check for Administrator rights and the restart with them.
@@ -65,12 +71,14 @@ libc = "0.2"
 auto-launch = { version = "0.6" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Storage_FileSystem",
     "Win32_NetworkManagement_Dns",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_System_IO",
     "Win32_System_Threading",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
 ] }
 

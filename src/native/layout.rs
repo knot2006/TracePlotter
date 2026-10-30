@@ -128,14 +128,11 @@ impl Window {
                                         .response;
                                     ui.painter().set(
                                         plate,
-                                        egui::Shape::rect_filled(
+                                        plate_shape(
+                                            ui.ctx(),
                                             response.rect,
-                                            6.0,
-                                            plate_fill(
-                                                ui.ctx(),
-                                                selected,
-                                                response.contains_pointer(),
-                                            ),
+                                            selected,
+                                            response.contains_pointer(),
                                         ),
                                     );
                                     response
@@ -819,19 +816,17 @@ impl Window {
                 ui.spacing_mut().interact_size.y = 20.0;
                 let mut end = self.end.unwrap_or(last);
                 ui.spacing_mut().slider_width = ui.available_width();
-                if theme::current(ui.ctx()) == Theme::Glass {
-                    let handle = palette(ui.ctx()).text;
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    for state in [&mut widgets.hovered, &mut widgets.active] {
-                        state.bg_fill = handle;
-                        state.bg_stroke = egui::Stroke::NONE;
-                    }
-                }
+                glass_handle(ui);
                 // Green while following live data, the accent while looking back in history.
-                ui.visuals_mut().selection.bg_fill = if self.end.is_none() {
-                    palette(ui.ctx()).good.gamma_multiply(0.75)
+                let strength = if theme::current(ui.ctx()) == Theme::Glass {
+                    1.0
                 } else {
-                    palette(ui.ctx()).accent.gamma_multiply(0.75)
+                    0.75
+                };
+                ui.visuals_mut().selection.bg_fill = if self.end.is_none() {
+                    palette(ui.ctx()).good.gamma_multiply(strength)
+                } else {
+                    palette(ui.ctx()).accent.gamma_multiply(strength)
                 };
                 let response = ui
                     .add_enabled(
@@ -858,7 +853,7 @@ impl Window {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let nav = egui::Frame::new()
-                .fill(palette(ui.ctx()).shell)
+                .fill(ui.visuals().panel_fill)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
                     ui.set_width(200.0);
@@ -989,7 +984,7 @@ impl Window {
             1 => {
                 settings_group(
                     ui,
-                    "Appearance",
+                    "",
                     "Changes apply immediately and are remembered.",
                     |ui| {
                         setting(
@@ -1025,6 +1020,44 @@ impl Window {
                             },
                             &mut changed,
                         );
+                        if session.theme == Theme::Glass {
+                            setting(
+                                ui,
+                                "Transparency",
+                                "How much of the desktop shows through. Windows 11 and KDE Plasma blur it.",
+                                |ui| {
+                                    glass_handle(ui);
+                                    ui.spacing_mut().slider_width = 160.0;
+                                    // The slider follows the value already applied, not the
+                                    // saved session, which catches up only after a save.
+                                    let mut percent = (1.0 - theme::opacity(ui.ctx())) * 100.0;
+                                    // The setting's row lays out from the right: the value, then the slider.
+                                    ui.label(format!("{percent:.0} %"));
+                                    let response = ui.add(
+                                        egui::Slider::new(&mut percent, 0.0..=70.0)
+                                            .show_value(false),
+                                    );
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Slider,
+                                            true,
+                                            "Transparency",
+                                        )
+                                    });
+                                    if response.changed() {
+                                        theme::set_transparency(ui.ctx(), percent / 100.0);
+                                    }
+                                    // A drag is saved once, when it ends, rather than every frame.
+                                    let done = response.drag_stopped()
+                                        || (response.changed() && !response.dragged());
+                                    if done {
+                                        session.transparency = 1.0 - theme::opacity(ui.ctx());
+                                    }
+                                    done
+                                },
+                                &mut changed,
+                            );
+                        }
                     },
                 );
                 settings_group(
@@ -1039,6 +1072,8 @@ impl Window {
                     },
                 );
                 s.bad_ms = s.bad_ms.max(s.warn_ms + 1);
+            }
+            2 => {
                 settings_group(ui, "Compare graph", "", |ui| {
                     changed |= switch_setting(
                         ui,
@@ -1070,7 +1105,7 @@ impl Window {
                     },
                 );
             }
-            2 => {
+            3 => {
                 settings_group(ui, "", "", |ui| {
                     changed |= switch_setting(
                         ui,
@@ -1080,7 +1115,7 @@ impl Window {
                     );
                 });
             }
-            3 => {
+            4 => {
                 settings_group(ui, "", "", |ui| {
                     changed |= number_setting(
                         ui,
@@ -1096,7 +1131,7 @@ impl Window {
                     "A day of history takes about 35 MB per target at an interval of one second. The newest day is held in the window; older periods are read from disk when the time span reaches them.",
                 );
             }
-            4 => {
+            5 => {
                 let before = self.background;
                 ui.add_enabled_ui(self.tray.is_some(), |ui| {
                     settings_group(ui, "", "", |ui| {
@@ -1149,7 +1184,7 @@ impl Window {
                     );
                 }
             }
-            5 => {
+            6 => {
                 let address = self.runtime.read().mcp_url.clone();
                 settings_group(ui, "", "", |ui| {
                     changed |= switch_setting(
@@ -1182,7 +1217,7 @@ impl Window {
                     );
                 });
             }
-            6 => {
+            7 => {
                 settings_group(ui, "", "", |ui| {
                     setting(
                         ui,
@@ -1502,6 +1537,44 @@ fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
         palette(ctx).text.gamma_multiply(0.04)
     }
 }
+/// Glass draws a slider as a green fill up to a white-rimmed handle, which turns into a
+/// white disc while it is hovered or dragged.
+fn glass_handle(ui: &mut egui::Ui) {
+    if theme::current(ui.ctx()) != Theme::Glass {
+        return;
+    }
+    let handle = palette(ui.ctx()).text;
+    ui.visuals_mut().selection.bg_fill = palette(ui.ctx()).accent;
+    let widgets = &mut ui.visuals_mut().widgets;
+    // The rail and the resting handle share this fill, so the rim is what marks the handle.
+    widgets.inactive.bg_fill = handle.gamma_multiply(0.16);
+    widgets.inactive.fg_stroke = egui::Stroke::new(2.0, handle);
+    for state in [&mut widgets.hovered, &mut widgets.active] {
+        state.bg_fill = handle;
+        state.bg_stroke = egui::Stroke::NONE;
+    }
+}
+/// A tab's plate. Glass rims the open one with the accent, as its chosen options are.
+fn plate_shape(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    selected: bool,
+    hovered: bool,
+) -> egui::Shape {
+    let stroke = if selected && theme::current(ctx) == Theme::Glass {
+        egui::Stroke::new(1.0, palette(ctx).accent.gamma_multiply(0.7))
+    } else {
+        egui::Stroke::NONE
+    };
+    egui::epaint::RectShape::new(
+        rect,
+        6.0,
+        plate_fill(ctx, selected, hovered),
+        stroke,
+        egui::StrokeKind::Inside,
+    )
+    .into()
+}
 /// All targets or Settings: a plate with its mark, as the targets' tabs have.
 fn fixed_tab(ui: &mut egui::Ui, label: &str, selected: bool, gear: bool) -> egui::Response {
     let plate = ui.painter().add(egui::Shape::Noop);
@@ -1516,11 +1589,7 @@ fn fixed_tab(ui: &mut egui::Ui, label: &str, selected: bool, gear: bool) -> egui
     );
     ui.painter().set(
         plate,
-        egui::Shape::rect_filled(
-            response.rect,
-            6.0,
-            plate_fill(ui.ctx(), selected, response.hovered()),
-        ),
+        plate_shape(ui.ctx(), response.rect, selected, response.hovered()),
     );
     tab_icon(ui, &response, label, gear);
     response
@@ -1571,14 +1640,18 @@ fn interval_label(ms: u64) -> String {
     )
 }
 /// The sections of Settings, in their navigation order, with each page's description.
-const SETTINGS_PAGES: [(&str, &str); 8] = [
+const SETTINGS_PAGES: [(&str, &str); 9] = [
     (
         "New targets",
         "What a new tab starts with. Open tabs keep their own: change those in the toolbar and under Trace.",
     ),
     (
+        "Appearance",
+        "The theme, Glass's transparency and the latency colours.",
+    ),
+    (
         "Display",
-        "Latency colours, the comparison graph and the hop table's columns.",
+        "The comparison graph and the hop table's columns.",
     ),
     ("Notifications", "Desktop notifications for this computer."),
     (
@@ -1618,13 +1691,22 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(rect, 6.0, fill);
+    let glass = theme::current(ui.ctx()) == Theme::Glass;
+    let stroke = if selected && glass {
+        egui::Stroke::new(1.0, palette(ui.ctx()).accent.gamma_multiply(0.7))
+    } else {
+        egui::Stroke::NONE
+    };
+    ui.painter()
+        .rect(rect, 6.0, fill, stroke, egui::StrokeKind::Inside);
     ui.painter().text(
         rect.left_center() + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(14.0),
-        if selected || response.hovered() {
+        if selected && glass {
+            palette(ui.ctx()).accent_light
+        } else if selected || response.hovered() {
             palette(ui.ctx()).text
         } else {
             palette(ui.ctx()).soft
@@ -1670,8 +1752,9 @@ fn settings_group(ui: &mut egui::Ui, title: &str, note: &str, rows: impl FnOnce(
         ui.add_space(8.0);
     }
     egui::Frame::new()
+        // Glass sinks its groups a shade below the panel, as cards set into a frosted pane.
         .fill(if theme::current(ui.ctx()) == Theme::Glass {
-            palette(ui.ctx()).raised.gamma_multiply(0.75)
+            Color32::from_black_alpha(56)
         } else {
             palette(ui.ctx()).text.gamma_multiply(0.03)
         })
@@ -1715,8 +1798,14 @@ fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     };
     ui.painter().rect_filled(rect, 10.0, track);
     let x = egui::lerp(rect.left() + 10.0..=rect.right() - 10.0, t);
+    // Glass greys the knob while off, so on and off differ by more than the track.
+    let knob = if theme::current(ui.ctx()) == Theme::Glass {
+        palette(ui.ctx()).muted.lerp_to_gamma(Color32::WHITE, t)
+    } else {
+        palette(ui.ctx()).text
+    };
     ui.painter()
-        .circle_filled(egui::pos2(x, rect.center().y), 8.0, palette(ui.ctx()).text);
+        .circle_filled(egui::pos2(x, rect.center().y), 8.0, knob);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *on, label)
     });

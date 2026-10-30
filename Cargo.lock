@@ -4048,6 +4048,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "notify-rust",
  "pdf-writer",
+ "raw-window-handle",
  "rfd",
  "rusqlite",
  "rusty-leveldb",
@@ -4060,6 +4061,9 @@ dependencies = [
  "trippy-core",
  "ureq",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
  "windows-sys 0.61.2",
 ]
 

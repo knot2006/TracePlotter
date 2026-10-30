@@ -141,6 +141,29 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
 }
 
 #[test]
+fn glass_transparency_slider_applies_and_sends_a_saved_preference() {
+    let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], Theme::Glass);
+    h.state_mut().settings_page = 1;
+    h.run();
+    let rail = h
+        .get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency")
+        .rect();
+    h.hover_at(rail.left_center());
+    h.drag_at(rail.left_center());
+    h.run();
+    h.hover_at(rail.center());
+    h.run();
+    h.drop_at(rail.center());
+    h.run();
+    assert!(theme::opacity(&h.ctx) < 1.0);
+    assert!(
+        commands
+            .try_iter()
+            .any(|c| matches!(c, Command::Preferences(s) if s.transparency > 0.0))
+    );
+}
+
+#[test]
 fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
     for size in [[1100.0, 720.0], [640.0, 420.0]] {
         let (mut h, _) = themed_harness("demo-one", size, Theme::Glass);
@@ -171,19 +194,39 @@ fn trace_controls_emit_typed_commands() {
     assert!(h.state().end.is_none());
 }
 #[test]
+fn a_move_or_resize_gives_egui_back_the_release_the_compositor_kept() {
+    let ctx = egui::Context::default();
+    let mut raw = egui::RawInput::default();
+    release_pointer_after_compositor(&ctx, &mut raw);
+    assert!(raw.events.is_empty());
+    hand_pointer_to_compositor(&ctx, egui::ViewportCommand::StartDrag);
+    release_pointer_after_compositor(&ctx, &mut raw);
+    assert!(matches!(
+        raw.events[..],
+        [egui::Event::PointerButton {
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            ..
+        }]
+    ));
+    release_pointer_after_compositor(&ctx, &mut raw);
+    assert_eq!(raw.events.len(), 1);
+}
+
+#[test]
 fn window_corners_resize_from_either_edge_without_covering_controls() {
     use egui::{CursorIcon as C, ResizeDirection as D};
     let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
     h.run();
     for (pos, direction, cursor) in [
-        ([7.0, 24.0], D::NorthWest, C::ResizeNorthWest),
-        ([24.0, 7.0], D::NorthWest, C::ResizeNorthWest),
-        ([1093.0, 24.0], D::NorthEast, C::ResizeNorthEast),
-        ([1076.0, 7.0], D::NorthEast, C::ResizeNorthEast),
-        ([7.0, 696.0], D::SouthWest, C::ResizeSouthWest),
-        ([24.0, 713.0], D::SouthWest, C::ResizeSouthWest),
-        ([1093.0, 696.0], D::SouthEast, C::ResizeSouthEast),
-        ([1076.0, 713.0], D::SouthEast, C::ResizeSouthEast),
+        ([4.0, 14.0], D::NorthWest, C::ResizeNorthWest),
+        ([14.0, 4.0], D::NorthWest, C::ResizeNorthWest),
+        ([1096.0, 14.0], D::NorthEast, C::ResizeNorthEast),
+        ([1086.0, 4.0], D::NorthEast, C::ResizeNorthEast),
+        ([4.0, 706.0], D::SouthWest, C::ResizeSouthWest),
+        ([14.0, 716.0], D::SouthWest, C::ResizeSouthWest),
+        ([1096.0, 706.0], D::SouthEast, C::ResizeSouthEast),
+        ([1086.0, 716.0], D::SouthEast, C::ResizeSouthEast),
     ] {
         let pos = egui::pos2(pos[0], pos[1]);
         h.hover_at(pos);
@@ -211,6 +254,8 @@ fn window_corners_resize_from_either_edge_without_covering_controls() {
     }
     for pos in [
         h.get_by_label("Close window").rect().center(),
+        // Inside the Close button, near the corner, where the old target reached.
+        egui::pos2(1080.0, 8.0),
         egui::pos2(1084.0, 705.0),
     ] {
         h.hover_at(pos);
@@ -562,12 +607,12 @@ fn render_native_scenarios() {
             ("demo-one", "trace-small", [640.0, 420.0]),
             ("summary", "summary", [1100.0, 720.0]),
             ("settings", "settings", [1100.0, 720.0]),
-            ("settings", "settings-display", [1100.0, 720.0]),
+            ("settings", "settings-appearance", [1100.0, 720.0]),
             ("settings", "settings-wide", [1440.0, 900.0]),
             ("demo-one", "probe-dialog", [1100.0, 720.0]),
         ] {
             let (mut h, _commands) = themed_harness(active, size, theme);
-            if name == "settings-display" {
+            if name == "settings-appearance" {
                 h.state_mut().settings_page = 1;
             }
             if name == "probe-dialog" {

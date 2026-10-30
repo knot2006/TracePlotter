@@ -73,19 +73,20 @@ const INK: Palette = Palette {
     bad: rgb(0xff6b6b),
 };
 
+/// Glass: cool charcoal panels, soft borderless controls and a vivid green for what is on.
 const GLASS: Palette = Palette {
     surface: rgb(0x101410),
-    shell: rgb(0x292e33),
-    inset: rgb(0x16191c),
-    raised: rgb(0x22262a),
-    input: rgb(0x1b1e22),
-    line: rgb(0x3e454b),
+    shell: rgb(0x2a2e33),
+    inset: rgb(0x1c1f23),
+    raised: rgb(0x23272b),
+    input: rgb(0x1a1d21),
+    line: rgb(0x353b41),
     edge: rgb(0x7d8792),
-    text: rgb(0xebeef2),
-    soft: rgb(0xc6cbd1),
-    muted: rgb(0xa6adb6),
-    accent: rgb(0x76b82a),
-    accent_light: rgb(0xa4d65e),
+    text: rgb(0xeef0f2),
+    soft: rgb(0xd2d6db),
+    muted: rgb(0x9aa1a9),
+    accent: rgb(0x76b900),
+    accent_light: rgb(0x9bd442),
     good: rgb(0x8fd16a),
     warn: rgb(0xf2c46d),
     bad: rgb(0xff7777),
@@ -108,7 +109,7 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     }
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("native-theme"), theme));
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = palette(ctx).shell;
+    visuals.panel_fill = palette(ctx).shell.gamma_multiply(opacity(ctx));
     visuals.window_fill = palette(ctx).raised;
     visuals.extreme_bg_color = palette(ctx).input;
     visuals.faint_bg_color = palette(ctx).raised;
@@ -141,18 +142,37 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
         visuals.menu_corner_radius = egui::CornerRadius::same(8);
         visuals.slider_trailing_fill = true;
         visuals.handle_shape = egui::style::HandleShape::Circle;
-        for state in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-            state.corner_radius = egui::CornerRadius::same(6);
+        // A chosen option is an olive plate with green lettering, as the segmented controls
+        // of graphics drivers' overlays have.
+        visuals.selection.bg_fill = palette(ctx).accent.gamma_multiply(0.28);
+        visuals.selection.stroke = egui::Stroke::new(1.0, palette(ctx).accent_light);
+        // Controls are soft plates without outlines; only the one in use takes the accent.
+        for (state, fill, edge) in [
+            (&mut w.inactive, 0.09, 0.05),
+            (&mut w.hovered, 0.15, 0.12),
+            (&mut w.active, 0.2, 0.0),
+            (&mut w.open, 0.15, 0.0),
+        ] {
+            state.corner_radius = egui::CornerRadius::same(8);
+            state.bg_fill = palette(ctx).text.gamma_multiply(fill);
+            state.weak_bg_fill = state.bg_fill;
+            state.bg_stroke = egui::Stroke::new(1.0, palette(ctx).text.gamma_multiply(edge));
         }
         w.active.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
         w.open.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
+        visuals.window_shadow = egui::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: Color32::from_black_alpha(110),
+        };
     }
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_visuals(visuals);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
         s.spacing.interact_size.y = 32.0;
-        s.spacing.slider_rail_height = if theme == Theme::Glass { 3.0 } else { 8.0 };
+        s.spacing.slider_rail_height = if theme == Theme::Glass { 4.0 } else { 8.0 };
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
         s.text_styles
@@ -164,6 +184,29 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     });
 }
 
+/// How opaque the window's panels are: Glass lets some of the desktop through, as its
+/// transparency setting asks, while other themes are solid.
+pub(super) fn opacity(ctx: &egui::Context) -> f32 {
+    if current(ctx) != Theme::Glass {
+        return 1.0;
+    }
+    let transparency = ctx
+        .data(|d| d.get_temp::<f32>(egui::Id::unique("native-transparency")))
+        .unwrap_or(0.0);
+    1.0 - transparency
+}
+pub(super) fn set_transparency(ctx: &egui::Context, transparency: f32) {
+    // A saved session is not trusted to hold a usable number.
+    let transparency = if transparency.is_finite() {
+        transparency.clamp(0.0, 0.7)
+    } else {
+        0.0
+    };
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("native-transparency"), transparency));
+    let fill = palette(ctx).shell.gamma_multiply(opacity(ctx));
+    ctx.style_mut_of(egui::Theme::Dark, |s| s.visuals.panel_fill = fill);
+}
+
 /// A quiet light across the charcoal surface gives the cards depth without desktop blur.
 pub(super) fn glass_surface(ui: &egui::Ui) {
     if current(ui.ctx()) != Theme::Glass {
@@ -172,12 +215,12 @@ pub(super) fn glass_surface(ui: &egui::Ui) {
     let rect = ui.max_rect();
     let mut mesh = egui::Mesh::default();
     for (pos, color) in [
-        (rect.left_top(), rgb(0x30363b)),
-        (rect.right_top(), rgb(0x24292d)),
-        (rect.left_bottom(), rgb(0x16191c)),
-        (rect.right_bottom(), rgb(0x1b2023)),
+        (rect.left_top(), rgb(0x2c3136)),
+        (rect.right_top(), rgb(0x23272b)),
+        (rect.left_bottom(), rgb(0x181b1e)),
+        (rect.right_bottom(), rgb(0x1d2125)),
     ] {
-        mesh.colored_vertex(pos, color);
+        mesh.colored_vertex(pos, color.gamma_multiply(opacity(ui.ctx())));
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 3, 2);
@@ -214,5 +257,23 @@ mod tests {
         let original = ink.style_of(egui::Theme::Dark);
         assert_eq!(switched.visuals, original.visuals);
         assert_eq!(switched.spacing, original.spacing);
+    }
+
+    #[test]
+    fn only_glass_lets_the_desktop_through_and_never_entirely() {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx, Theme::Glass);
+        set_transparency(&ctx, 5.0);
+        assert_eq!(opacity(&ctx), 0.3);
+        assert!(ctx.style_of(egui::Theme::Dark).visuals.panel_fill.a() < 255);
+        set_transparency(&ctx, f32::NAN);
+        assert_eq!(opacity(&ctx), 1.0);
+        set_transparency(&ctx, 0.5);
+        apply_theme(&ctx, Theme::Ink);
+        assert_eq!(opacity(&ctx), 1.0);
+        assert_eq!(
+            ctx.style_of(egui::Theme::Dark).visuals.panel_fill,
+            INK.shell
+        );
     }
 }

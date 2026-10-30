@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 mod agent;
 mod app;
+mod blur;
 mod context;
 mod export;
 mod graphs;
@@ -38,12 +39,20 @@ pub(super) fn run() {
                 rgba: i.into_raw(),
             }
         });
+    // The window opens at its saved size: resizing it once it is shown leaves KWin's blur
+    // behind the window stale, and moving it then leaves trails of old screen content.
+    let size = load_window_state()
+        .and_then(|s| s.size)
+        .filter(|size| size.iter().all(|v| v.is_finite() && *v > 0.0))
+        .unwrap_or([1100.0, 720.0]);
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(title)
         .with_app_id("io.github.knot2006.traceplotter")
-        .with_inner_size([1100.0, 720.0])
+        .with_inner_size(size)
         .with_min_inner_size([640.0, 420.0])
-        .with_decorations(false);
+        .with_decorations(false)
+        // Glass can let the desktop show through; the other theme paints every pixel.
+        .with_transparent(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
@@ -51,6 +60,7 @@ pub(super) fn run() {
         title,
         eframe::NativeOptions {
             viewport,
+            wgpu_options: blur::wgpu_options(),
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(Window::new(cc).map_err(std::io::Error::other)?))),
@@ -149,6 +159,7 @@ struct Window {
     background: tray::Options,
     /// Whether the app starts at sign-in, as last read from Windows.
     startup: bool,
+    blur: blur::Blur,
     #[cfg(feature = "dev-live")]
     live: Option<blaze_live::Live>,
 }
@@ -156,8 +167,10 @@ impl Window {
     fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
         let session = Session::load()?;
         apply_theme(&cc.egui_ctx, session.theme);
+        theme::set_transparency(&cc.egui_ctx, session.transparency);
         let runtime = Runtime::start(session.clone(), cc.egui_ctx.clone());
         let mut result = Self::with_runtime(runtime);
+        result.blur = blur::request(cc);
         result.gpu = cc.wgpu_render_state.clone();
         result.window_state = load_window_state();
         result.remember_window = true;
@@ -251,6 +264,7 @@ impl Window {
             tray: None,
             background: tray::Options::default(),
             startup: false,
+            blur: blur::Blur::default(),
             #[cfg(feature = "dev-live")]
             live: None,
         }
@@ -356,6 +370,7 @@ impl Window {
                 width: (inner.width() * p) as u32,
                 height: (inner.height() * p) as u32,
                 maximized,
+                size: Some([inner.width(), inner.height()]),
             };
             Some(if maximized {
                 self.window_state
@@ -383,10 +398,12 @@ impl Window {
         self.placed = true;
         if let Some(s) = self.window_state {
             let (p, monitor) = ctx.input(|i| (i.pixels_per_point(), i.viewport().monitor_size));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                s.width as f32 / p,
-                s.height as f32 / p,
-            )));
+            if s.size.is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    s.width as f32 / p,
+                    s.height as f32 / p,
+                )));
+            }
             if monitor.is_some_and(|m| {
                 s.x >= 0
                     && s.y >= 0
@@ -1407,7 +1424,15 @@ impl Window {
     }
 }
 impl eframe::App for Window {
+    /// Nothing behind the panels, so that Glass's transparency reaches the desktop.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        release_pointer_after_compositor(ctx, raw_input);
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.blur.update(ui.ctx());
         #[cfg(feature = "dev-live")]
         if let Some(live) = self.live.as_mut() {
             if let Some(outcome) = live.poll() {
@@ -1562,7 +1587,13 @@ impl eframe::App for Window {
                 });
             });
         }
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(palette(ui.ctx()).inset)).show(ui, |ui| {
+        // Glass paints its own gradient, which a solid fill underneath would make opaque.
+        let backdrop = if theme::current(ui.ctx()) == Theme::Glass {
+            Color32::TRANSPARENT
+        } else {
+            palette(ui.ctx()).inset
+        };
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(backdrop)).show(ui, |ui| {
             theme::glass_surface(ui);
             if session.active == "settings" {
                 changed |= self.settings(ui, &mut session);
@@ -1862,9 +1893,31 @@ fn window_controls(ui: &mut egui::Ui) {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             } else {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                hand_pointer_to_compositor(ui.ctx(), egui::ViewportCommand::StartDrag);
             }
         }
+    });
+}
+/// Starts a move or resize that the compositor carries out with the pointer it takes over.
+fn hand_pointer_to_compositor(ctx: &egui::Context, command: egui::ViewportCommand) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("pointer-with-compositor"), true));
+    ctx.send_viewport_cmd(command);
+}
+/// The compositor keeps the release that ends a move or resize, so egui would go on
+/// believing the button held and light nothing under the pointer until the next click.
+/// The release is given to egui on the next frame instead.
+fn release_pointer_after_compositor(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    let handed =
+        ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("pointer-with-compositor")));
+    if handed != Some(true) {
+        return;
+    }
+    let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+    raw_input.events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
     });
 }
 /// Without a system frame the window draws its own border, and its edges resize it.
@@ -1892,9 +1945,10 @@ fn window_edges(ctx: &egui::Context) {
     const RESIZE_EDGE: f32 = 5.0;
     let horizontal = (pos.x - rect.left()).min(rect.right() - pos.x);
     let vertical = (pos.y - rect.top()).min(rect.bottom() - pos.y);
-    // Longer corner targets follow the edges without covering nearby controls.
-    let corner = horizontal < 32.0 && vertical < 32.0 && horizontal.min(vertical) < 10.0;
-    let reach = if corner { 32.0 } else { RESIZE_EDGE };
+    // Corner targets run a little along both edges, short and thin enough to stay clear of
+    // the window buttons beside them.
+    let corner = horizontal < 16.0 && vertical < 16.0 && horizontal.min(vertical) < 6.0;
+    let reach = if corner { 16.0 } else { RESIZE_EDGE };
     let west = pos.x - rect.left() < reach;
     let east = rect.right() - pos.x < reach;
     let north = pos.y - rect.top() < reach;
@@ -1913,7 +1967,7 @@ fn window_edges(ctx: &egui::Context) {
     };
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+        hand_pointer_to_compositor(ctx, egui::ViewportCommand::BeginResize(direction));
     }
 }
 fn protocol(ui: &mut egui::Ui, value: &mut String) -> bool {

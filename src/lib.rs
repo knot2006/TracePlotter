@@ -730,6 +730,10 @@ struct WindowState {
     width: u32,
     height: u32,
     maximized: bool,
+    /// The same size in egui points, so that the window can open at it. Files saved
+    /// before it existed lack it, and their window is resized once it is shown.
+    #[serde(default)]
+    size: Option<[f32; 2]>,
 }
 
 fn load_window_state() -> Option<WindowState> {
@@ -1340,6 +1344,21 @@ pub fn run() {
 mod tests {
     use super::*;
     use trippy_core::{CompletionReason, Flags, Probe, RoundId, Sequence, TimeToLive, TraceId};
+
+    #[test]
+    fn window_state_keeps_older_files_and_its_size_in_points() {
+        let old: WindowState =
+            serde_json::from_str(r#"{"x":0,"y":0,"width":1650,"height":1080,"maximized":false}"#)
+                .unwrap();
+        assert_eq!(old.size, None);
+        let saved = WindowState {
+            size: Some([1100.0, 720.0]),
+            ..old
+        };
+        let back: WindowState =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.size, Some([1100.0, 720.0]));
+    }
 
     fn awaited(ttl: u8) -> ProbeStatus {
         ProbeStatus::Awaited(Probe {
