@@ -48,7 +48,7 @@ notify-rust = { version = "4" }
 miniz_oxide = { version = "0.8" }
 # The native interface's tray icon, for monitoring with the window hidden (see native/tray.rs).
 # On Linux it speaks StatusNotifierItem over D-Bus from its own thread, without GTK or libxdo.
-tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 blaze-live = { path = "vendor/blaze-live", optional = true }
 
 egui_kittest = { version = "0.37", features = ["eframe", "wgpu"], optional = true }
