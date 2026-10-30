@@ -113,6 +113,12 @@ target starts with, the latency limits of the green, yellow and red colours, the
 history, the columns of the hop table, the port of the MCP server, the update check and
 a switch for desktop notifications.
 
+The app uses the native egui interface. Its **Glass** and **Ink** themes are under
+**Settings > Appearance**, with the latency colours. Glass, at 45 % transparency, is the default.
+Glass uses charcoal panels, soft borders and green accents inspired by the DLSS overlay. Theme
+changes apply immediately and are remembered. Its Transparency slider lets the desktop show
+through; Windows 11 and KDE Plasma on Wayland blur what shows through, other systems do not.
+
 ## Asking AI agents about your connection
 
 TracePlotter can let AI agents such as Claude read its traces, so you can ask them things like "why
@@ -140,8 +146,7 @@ programs running on this computer can reach it. Switch it off with the same menu
 
 ## Requirements
 
-- Windows 10 or 11 with the WebView2 runtime (part of Windows 11), or Linux (see
-  [Linux](#linux)).
+- Windows 10 or 11, or Linux (see [Linux](#linux)).
 - **Administrator rights only for raw sockets.** The app starts without them, and traces with the
   packet type ICMP (Windows API), which new targets start with, need none. ICMP (raw socket), UDP and
   TCP probes and adding the firewall rules below do: when one of them is asked for, the app offers
@@ -176,8 +181,7 @@ Remove them again with `Remove-NetFirewallRule TRACEPLOTTER_ICMPV4, TRACEPLOTTER
 <details>
 <summary>Packages, ping sockets and raw-socket rights.</summary>
 
-The `.deb` and `.rpm` packages need WebKitGTK 4.1 (Ubuntu 22.04, Debian 12, Fedora 36 or later).
-The AppImage brings its own WebKitGTK and runs anywhere. New targets start with the packet type
+The native interface uses the system's graphics drivers and X11 or Wayland. New targets start with the packet type
 **ICMP (ping socket)**, which traces through the ping sockets `ping` and `tracepath` use and needs no
 rights at all, only a group within `net.ipv4.ping_group_range`; most distributions open that to
 every user.
@@ -202,15 +206,18 @@ itself: when a newer release is found, it offers a link to the project page.
 
 On Windows there is no installer. `TracePlotter.exe` runs from any folder and keeps everything it
 stores in a `TracePlotter-data` folder next to itself: trace history (`history`, a folder per tab
-with one JSON-lines file per day), open tabs and settings (`webview`) and the window's size and position (`window.json`). Copy
+with one JSON-lines file per day), open tabs and settings (`native-state.json`) and the window's size and position (`window.json`). Copy
 the exe together with that folder to move the app; delete the folder to reset it. App data stays
 in that folder; optional Windows startup registration is stored in your account's registry instead.
 
-Not portable: the WebView2 runtime and the Windows Firewall rules above, which belong to the
-machine.
+The Windows Firewall rules above belong to the machine.
 
 On Linux the app is installed by its package, or runs as an AppImage, and keeps its data in
 `~/.local/share/TracePlotter-data`.
+
+Old sessions are imported automatically on the first launch of the native version. Tabs,
+settings and layout are converted from browser storage; trace history keeps its original
+files and session IDs. The original browser profile is kept. Close the old version first.
 
 ## Updates
 
@@ -251,7 +258,7 @@ traceplotter --demo
 Building from source, running the tests and publishing a release are described in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Built with [Tauri 2](https://tauri.app), [Svelte 5](https://svelte.dev), [uPlot](https://github.com/leeoniya/uPlot)
+Built with [egui](https://www.egui.rs), [egui_plot](https://github.com/emilk/egui_plot)
 and the [trippy-core](https://github.com/fujiapple852/trippy) probe engine.
 
 ## License

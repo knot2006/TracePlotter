@@ -1,0 +1,125 @@
+{
+  "sourceCommit": "146b1b2",
+  "captured": "2026-10-29",
+  "platform": "Linux X11, WebKitGTK, scale 1",
+  "syntheticDemo": true,
+  "captures": [
+    {
+      "file": "01-trace-1100x720.png",
+      "metrics": "01-trace-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "4b9faa2f7d0ec82921bf6055137842aac2b263b3394bc8414d8e8d0204aeed8d"
+    },
+    {
+      "file": "02-trace-1440x900.png",
+      "metrics": "02-trace-1440x900.json",
+      "windowSize": [
+        1440,
+        900
+      ],
+      "imageSize": [
+        1440,
+        874
+      ],
+      "sha256": "33f5a12abed42928997eeaae6856b6181658eeb9ef3b4ba14f7f979f0b68a5d4"
+    },
+    {
+      "file": "03-trace-640x420.png",
+      "metrics": "03-trace-640x420.json",
+      "windowSize": [
+        640,
+        420
+      ],
+      "imageSize": [
+        640,
+        394
+      ],
+      "sha256": "166ab5b274906d74755e0951db9ff6c0fdfc78e95a22f850de2056819a428438"
+    },
+    {
+      "file": "04-all-targets-1100x720.png",
+      "metrics": "04-all-targets-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "24a6ec97e2280a6ecefd8c6f0c7d49efb76a8d79ad93c7d0feed8b1bc6081b07"
+    },
+    {
+      "file": "05-settings-1100x720.png",
+      "metrics": "05-settings-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "a97f3161489a24521c937e13ab2238fd81f85e1b2cdceafa4e0132ad09ca046c"
+    },
+    {
+      "file": "06-settings-1440x900.png",
+      "metrics": "06-settings-1440x900.json",
+      "windowSize": [
+        1440,
+        900
+      ],
+      "imageSize": [
+        1440,
+        874
+      ],
+      "sha256": "6963cec04cfd3f247296526b50b34c2cd38badf35bd8481b5cedbd86d64dae03"
+    },
+    {
+      "file": "07-probe-dialog-1100x720.png",
+      "metrics": "07-probe-dialog-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "fe9278183868a2f7ea2872fab873a2a31b54c0254f1f8961a06c060d884b4b40"
+    },
+    {
+      "file": "08-alert-dialog-1100x720.png",
+      "metrics": "08-alert-dialog-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "18a86aedcea91efd134a2c28dc75995157c048dbb5ea814e550d20de086fa67b"
+    },
+    {
+      "file": "09-multiple-hops-1100x720.png",
+      "metrics": "09-multiple-hops-1100x720.json",
+      "windowSize": [
+        1100,
+        720
+      ],
+      "imageSize": [
+        1100,
+        694
+      ],
+      "sha256": "582dfbee4d4c831b62aaa35c2e70c813f3a89a6aee95acf5ff49d23621aa8fbe"
+    }
+  ]
+}

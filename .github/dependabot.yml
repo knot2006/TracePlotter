@@ -5,17 +5,6 @@
 # version gets its own, because it may need code changes.
 version: 2
 updates:
-  # Frontend: Svelte, uPlot, the Tauri JavaScript API and the build tools.
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 3
-    groups:
-      npm-minor-and-patch:
-        update-types: [minor, patch]
-
   # The workflows' actions, which are pinned to commits.
   - package-ecosystem: github-actions
     directory: /
@@ -24,10 +13,10 @@ updates:
     cooldown:
       default-days: 3
 
-  # Backend: Tauri, its plugins and trippy-core. trippy-core has no upper bound, so its
+  # Native interface, storage readers and trippy-core. trippy-core has no upper bound, so its
   # new releases arrive here too; one that changes the API fails CI until our code is fixed.
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directory: /
     schedule:
       interval: weekly
     cooldown:
@@ -35,3 +24,11 @@ updates:
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]
+
+  # Release-only Linux packaging tool, kept outside the app's dependency tree.
+  - package-ecosystem: cargo
+    directory: /tools/bundle-linux
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3

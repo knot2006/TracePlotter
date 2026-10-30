@@ -1,3 +1,8 @@
 # Rust ships LLD, so Windows builds can link faster without another tool to install.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+# Run these from the repository root.
+[alias]
+native = ["run"]
+native-test = ["test", "--lib", "--features", "ui-tests"]

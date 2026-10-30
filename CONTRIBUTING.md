@@ -1,60 +1,54 @@
 # Contributing to TracePlotter
 
-TracePlotter is a [Tauri 2](https://tauri.app) desktop app. The interface is
-[Svelte 5](https://svelte.dev) with [uPlot](https://github.com/leeoniya/uPlot) graphs, in `src/`.
-The backend is Rust, in `src-tauri/`, and probes with the
-[trippy-core](https://github.com/fujiapple852/trippy) engine. It is developed on Windows first; the
-code is kept portable.
+TracePlotter is a Rust desktop app with an [egui](https://www.egui.rs) interface,
+[egui_plot](https://github.com/emilk/egui_plot) graphs and the
+[trippy-core](https://github.com/fujiapple852/trippy) probe engine. It is developed on
+Windows first; the code is kept portable.
 
 ## What you need
 
-- Node.js 26 or newer
-- Rust (stable, MSVC toolchain)
-- Visual Studio Build Tools with "Desktop development with C++"
+- Rust 1.95 or newer
+- On Windows, Visual Studio Build Tools with "Desktop development with C++"
+- On Debian or Ubuntu, `libwayland-dev` and `libxkbcommon-dev`
 
 Windows x64 builds use Rust's bundled LLD linker, set in `.cargo/config.toml`, to shorten
-linking without installing another tool. The Visual Studio Build Tools are still needed for
-the Windows SDK and libraries. Rust 1.90 and newer already use LLD on x64 Linux.
+linking without installing another tool. The Visual Studio Build Tools are still needed
+for the Windows SDK and libraries. Rust 1.90 and newer already use LLD on x64 Linux.
 
 ## Run from source
 
-A normal terminal will do. Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need
-Administrator rights; for those, start the terminal elevated or use **Tools > Restart as
-Administrator…** in the app.
+From the repository root:
 
 ```bash
-npm install
-npm run tauri dev
+cargo native
+cargo native -- --demo
+cargo native -- --demo --mcp --demo-days 7
 ```
 
-Add `-- -- -- --demo` to work on the interface with made-up data and no probing. npm on Windows
-takes the first `--` for itself; elsewhere two are enough, and the third does no harm:
+`cargo native` runs `cargo run`. Demo mode uses
+made-up data in a separate folder and starts no probes. `--mcp` enables the MCP server
+for that run. [AGENTS.md](AGENTS.md) has more for coding agents.
 
-```bash
-npm run tauri dev -- -- -- --demo
-```
-
-Add `--mcp` as well to turn on the MCP server for that run, so that an agent can work against the
-demo data. [AGENTS.md](AGENTS.md) has more for coding agents.
+Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need extra rights. Use
+**Tools > Restart as Administrator…** on Windows, or **Allow raw sockets…** on Linux.
 
 ## Test
 
 ```bash
-npm run check
-npm test
-cargo clippy --lib --tests --manifest-path src-tauri/Cargo.toml -- -D warnings
-cargo test --lib --manifest-path src-tauri/Cargo.toml
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib
+cargo native-test
 ```
 
-The CI workflow runs these on every push and pull request.
-
-On Linux, install `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev` and
-`libayatana-appindicator3-dev` before building (Debian and Ubuntu package names).
+CI runs the native checks on Windows and Linux. No frontend build, npm, WebKitGTK or
+WebView2 is needed. `ui-tests` adds the headless widget tests. Synthetic GPU/export checks
+remain ignored unless requested explicitly.
 
 A live probe check against a real host needs an elevated terminal and a network:
 
 ```bash
-cargo test --lib --manifest-path src-tauri/Cargo.toml -- --ignored live_trace --nocapture
+cargo test --lib -- --ignored live_trace --nocapture
 ```
 
 Set `TRACEPLOTTER_TARGET` to an IP address to change its target (default `1.1.1.1`).
@@ -62,73 +56,61 @@ Set `TRACEPLOTTER_TARGET` to an IP address to change its target (default `1.1.1.
 ## Build
 
 ```bash
-npm run tauri build -- --no-bundle
+cargo build --release --locked
 ```
 
-The exe is written to `src-tauri/target/release/traceplotter.exe`. That is a build folder: the
-app's `TracePlotter-data` folder next to it is deleted by `cargo clean`.
-
-The release build optimises on one core and takes a few minutes. For a local test build, the
-`fast` profile compiles on all cores, skips cross-crate link-time optimisation and reuses compiled
-code between builds. It writes `src-tauri/target/fast/traceplotter.exe`:
+The Windows exe is written to `target/release/traceplotter.exe`. For a local
+build to try on Windows, use the `fast` profile:
 
 ```bash
-npm run tauri build -- --no-bundle -- --profile fast
+cargo build --profile fast --locked
 ```
 
-This trades some runtime optimisation for shorter builds; published builds still use `release`.
+It writes `target/fast/traceplotter.exe`, compiles on all cores, skips cross-crate
+link-time optimisation and reuses compiled code between builds. Published builds use
+`release`. Data next to a Windows build is deleted by `cargo clean`; copy the exe and its
+data folder elsewhere to keep them.
 
 ## Where things are
 
-- `src/routes/+page.svelte`: window layout, tabs, toolbar, menus, the saved session.
-- `src/lib/TraceTab.svelte`: one tab, with the hop table, dialogs and exports.
-- `src/lib/HopGraph.svelte`: one latency graph with its jitter strip.
-- `src/lib/Summary.svelte` and `CompareGraph.svelte`: the All targets tab and its graph that compares
-  the round trips of the ticked targets.
-- `src/lib/Toast.svelte` and `exports.ts`: messages at the bottom of the window, and saving and
-  copying exports.
-- `src/lib/Settings.svelte` and `settings.ts`: the Settings tab and the app-wide settings it changes.
-- `src/lib/trace.ts`: a trace's data and its link to the backend.
-- `src/lib/stats.ts`, `events.ts`, `time.ts`: calculations and formatting, with tests beside them.
-- `src-tauri/src/lib.rs`: probing, history files (a folder per tab, a file per day, tallied by the
-  minute when a long period is read), updates and the other backend commands.
-- `src-tauri/src/mcp.rs` and `src/lib/agent.ts`: the MCP server that lets AI agents read the traces.
-- `src-tauri/src/winicmp.rs` and `pingsock.rs`: ICMP traces without raw sockets, through the Windows
-  ICMP API and Linux ping sockets; `echo.rs` holds what they share.
+- `src/native/mod.rs`: the window, menus, dialogs and commands.
+- `src/native/layout.rs`, `graphs.rs`, `context.rs` and `theme.rs`: the interface.
+- `src/native/app.rs`: the controller; probing, alerts and MCP keep running while hidden.
+- `src/native/model.rs`: sessions, settings, trace data and persistence.
+- `src/native/migration.rs`: automatic import of browser-stored sessions from older versions.
+- `src/native/agent.rs`: the MCP tools' answers from the trace model.
+- `src/native/export.rs`, `import.rs`, `report.rs` and `time.rs`: exports, CSV import,
+  support reports and regional formatting.
+- `src/native/tray.rs`: background monitoring and Windows startup registration.
+- `src/logic.rs` and `insights.rs`: statistics and events, with unit tests.
+- `src/lib.rs`: history, DNS, WHOIS, updates and platform commands.
+- `src/probe.rs`, `winicmp.rs`, `pingsock.rs` and `echo.rs`: probing.
+- `src/mcp.rs`: the MCP protocol and HTTP listener.
 
-Dates and numbers of a trace are kept in plain objects that are changed in place; the interface
-redraws when a counter (`rev`) changes. That keeps a day of samples out of Svelte's reactivity.
+[PORTING.md](PORTING.md) describes saved-session compatibility and remaining platform checks.
 
 ## Dependencies
 
-Dependabot opens weekly pull requests for npm packages, Rust crates and the workflows' actions.
-`trippy-core` is not pinned or capped, so new releases are taken as they come, breaking ones
-included. Its API is unstable, so when an update breaks the build we fix our code rather than hold
-the version back. An update of it needs a build and the live probe check before it is merged.
+Dependabot opens weekly pull requests for Rust crates and workflow actions. `trippy-core`
+is not pinned or capped: when its API changes, fix the code rather than hold it back.
+An update of it needs a build and the live probe check before it is merged.
 
 ## Publishing a release
 
-1. Set the new version in `src-tauri/Cargo.toml`, the only place that holds it (Tauri takes it
-   from there), build once so that `Cargo.lock` follows, and commit.
-2. Tag that commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
-
-The Release workflow then builds the exe, signs it for that version and publishes it with its
-signature. Installed copies find it through GitHub's latest release and install it only if the
-signature is valid and names the version the release claims.
-
-### The signing key
-
-The workflow needs the repository secret `TAURI_SIGNING_PRIVATE_KEY`: the contents of the private
-key made with `npm run tauri signer generate`. Its public half is `UPDATE_PUBLIC_KEY` in
-`src-tauri/src/lib.rs`. A key with a password also needs the secret
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-
-Whoever has the private key can publish updates that every installed copy accepts. Keep it out of
-the repository and keep a backup: with a new key, existing copies no longer accept updates.
-
-To check that a file signed with the key is accepted by the app's own verification:
+Set the version in `Cargo.toml`, update `Cargo.lock`, commit, then push a tag:
 
 ```bash
-npm run tauri signer sign -- -f path/to/private.key -p "" --app-version 1.2.3 sample.bin
-TRACEPLOTTER_SIGNED_FILE=sample.bin cargo test --lib --manifest-path src-tauri/Cargo.toml -- --ignored a_file_signed
+git tag v0.2.0
+git push origin v0.2.0
 ```
+
+The Release workflow builds the native app, signs the Windows exe and publishes packages.
+Linux Debian/RPM packages use `tools/bundle-linux`, a release-only wrapper around the
+bundler library. `scripts/package-appimage.sh` uses linuxdeploy directly, without a GTK
+plugin. Neither tool is linked into the app. The Tauri CLI is used only to sign Windows
+updates in the existing format.
+The private signing key remains in `TAURI_SIGNING_PRIVATE_KEY`; its optional password is
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key is `UPDATE_PUBLIC_KEY` in `lib.rs`.
+Signing keeps the existing Tauri/minisign format so older installed versions can verify updates.
+Never commit the private key. Keep a backup: changing the key prevents existing installations
+from accepting updates.
