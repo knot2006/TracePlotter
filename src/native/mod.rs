@@ -869,7 +869,13 @@ impl Window {
                 for id in &columns {
                     let column =
                         if id == "bar" {
-                            egui_extras::Column::remainder().at_least(152.0)
+                            // Not resizable and clipped: egui_extras otherwise keeps a column's
+                            // last width, or what it drew, and the chart, which fills its cell,
+                            // would stay as wide as before the window shrank.
+                            egui_extras::Column::remainder()
+                                .at_least(152.0)
+                                .resizable(false)
+                                .clip(true)
                         } else {
                             egui_extras::Column::initial(
                                 session.column_widths.get(id).copied().unwrap_or(
@@ -1011,7 +1017,10 @@ impl Window {
                                         );
                                     } else if id == "ip" || id == "name" {
                                         ui.add_space(10.0);
-                                        ui.add(egui::Label::new(text).truncate());
+                                        // Selectable text would take the pointer from the row,
+                                        // which then neither lights up nor takes the click; the
+                                        // row's menu copies the address and the name.
+                                        ui.add(egui::Label::new(text).truncate().selectable(false));
                                     } else {
                                         // Only loss is coloured; the latency columns stay plain, as in
                                         // the legacy table, and the hop badge carries their grade.
@@ -1052,7 +1061,8 @@ impl Window {
                                                     egui::Label::new(
                                                         RichText::new(text).color(color),
                                                     )
-                                                    .truncate(),
+                                                    .truncate()
+                                                    .selectable(false),
                                                 );
                                                 if let Some(tip) = tip {
                                                     label.on_hover_text(tip);
@@ -1787,10 +1797,16 @@ fn focus_ring(ctx: &egui::Context) {
 /// Menu rows sized for reading down a list; the toolbar's 32 px controls would leave them
 /// sparse and hard to scan.
 fn menu_rows(ui: &mut egui::Ui) {
+    // Glass gives its menus the roomier rows of its other controls.
+    let glass = theme::current(ui.ctx()) == Theme::Glass;
     let spacing = ui.spacing_mut();
-    spacing.interact_size.y = 26.0;
+    spacing.interact_size.y = if glass { 30.0 } else { 26.0 };
     spacing.item_spacing.y = 2.0;
-    spacing.button_padding = egui::vec2(8.0, 4.0);
+    spacing.button_padding = if glass {
+        egui::vec2(12.0, 6.0)
+    } else {
+        egui::vec2(8.0, 4.0)
+    };
     ui.set_min_width(230.0);
 }
 /// A group's name inside a menu: small and muted, so it reads as a label, not a command.

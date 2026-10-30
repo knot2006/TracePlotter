@@ -61,6 +61,7 @@ impl Window {
         hop: Option<&app::Row>,
         snapshot: &Snapshot,
     ) {
+        menu_rows(ui);
         let addr = hop.map_or(trace.addr.as_str(), |hop| hop.addr.as_str());
         let name = hop.map_or(trace.config.host.as_str(), |hop| hop.name.as_str());
         if let Ok(ip) = addr.parse::<IpAddr>() {
@@ -98,6 +99,7 @@ impl Window {
     }
 
     pub(super) fn target_menu(&mut self, ui: &mut egui::Ui, trace: &TraceView) {
+        menu_rows(ui);
         if ui
             .button(if trace.paused { "Resume" } else { "Pause" })
             .clicked()

@@ -21,7 +21,7 @@ fn menu(
     mut loss_by_target: bool,
     action: &mut Option<Action>,
 ) {
-    ui.set_min_width(220.0);
+    menu_rows(ui);
     if !compare {
         if ui.button("Back to live").clicked() {
             *action = Some(Action::Live);

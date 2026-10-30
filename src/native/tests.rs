@@ -844,3 +844,32 @@ fn clicking_into_a_preset_field_opens_its_list() {
         "A pick closes the list"
     );
 }
+
+#[test]
+fn latency_column_shrinks_with_the_window() {
+    let (mut h, _commands) = harness("demo-one", [1440.0, 720.0]);
+    h.run();
+    h.set_size(egui::vec2(1100.0, 720.0));
+    h.run();
+    // The table fits the narrower window again, so there is nothing to scroll sideways.
+    let before = h.get_by_label("Hop").rect().left();
+    h.hover_at(egui::pos2(400.0, 300.0));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(-400.0, 0.0),
+        modifiers: egui::Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    h.run();
+    assert_eq!(h.get_by_label("Hop").rect().left(), before);
+}
+
+#[test]
+fn clicking_a_cell_text_selects_its_row() {
+    let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    h.get_by_label("router3.example").click();
+    h.run();
+    assert_eq!(h.state().selected, vec![3]);
+}

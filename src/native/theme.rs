@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Theme {
-    Glass,
+    Ink,
     #[default]
     #[serde(other)]
-    Ink,
+    Glass,
 }
 
 impl Theme {
@@ -139,7 +139,17 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     w.hovered.bg_stroke = egui::Stroke::new(1.0, palette(ctx).muted);
     if theme == Theme::Glass {
         visuals.window_corner_radius = egui::CornerRadius::same(12);
-        visuals.menu_corner_radius = egui::CornerRadius::same(8);
+        visuals.menu_corner_radius = egui::CornerRadius::same(10);
+        // Menus and dialogs are frosted panes of their own: a step lighter than the panels,
+        // rimmed with light rather than a dark line, and lifted by a soft shadow.
+        visuals.window_fill = rgb(0x2b3035);
+        visuals.window_stroke = egui::Stroke::new(1.0, palette(ctx).text.gamma_multiply(0.12));
+        visuals.popup_shadow = egui::Shadow {
+            offset: [0, 6],
+            blur: 18,
+            spread: 0,
+            color: Color32::from_black_alpha(120),
+        };
         visuals.slider_trailing_fill = true;
         visuals.handle_shape = egui::style::HandleShape::Circle;
         // A chosen option is an olive plate with green lettering, as the segmented controls
@@ -173,6 +183,7 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
         s.spacing.interact_size.y = 32.0;
         s.spacing.slider_rail_height = if theme == Theme::Glass { 4.0 } else { 8.0 };
+        s.spacing.menu_margin = egui::Margin::same(if theme == Theme::Glass { 8 } else { 6 });
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
         s.text_styles

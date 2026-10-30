@@ -113,8 +113,8 @@ target starts with, the latency limits of the green, yellow and red colours, the
 history, the columns of the hop table, the port of the MCP server, the update check and
 a switch for desktop notifications.
 
-The app uses the native egui interface. **Ink** and **Glass** themes are under
-**Settings > Appearance**, with the latency colours.
+The app uses the native egui interface. Its **Glass** and **Ink** themes are under
+**Settings > Appearance**, with the latency colours. Glass, at 45 % transparency, is the default.
 Glass uses charcoal panels, soft borders and green accents inspired by the DLSS overlay. Theme
 changes apply immediately and are remembered. Its Transparency slider lets the desktop show
 through; Windows 11 and KDE Plasma on Wayland blur what shows through, other systems do not.

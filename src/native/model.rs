@@ -130,7 +130,7 @@ impl Default for Session {
         Self {
             version: 1,
             theme: Theme::default(),
-            transparency: 0.0,
+            transparency: 0.45,
             settings,
             targets: Vec::new(),
             active: "summary".into(),
@@ -474,22 +474,23 @@ mod tests {
     use super::*;
     #[test]
     fn native_theme_survives_session_roundtrip_and_defaults_for_older_sessions() {
-        assert_eq!(
-            Session::decode(r#"{"version":1}"#).unwrap().theme,
-            Theme::Ink
-        );
+        let older = Session::decode(r#"{"version":1}"#).unwrap();
+        assert_eq!(older.theme, Theme::Glass);
+        assert_eq!(older.transparency, 0.45);
         assert_eq!(
             Session::decode(r#"{"version":1,"theme":"future"}"#)
                 .unwrap()
                 .theme,
-            Theme::Ink
+            Theme::Glass
         );
         let session = Session {
-            theme: Theme::Glass,
+            theme: Theme::Ink,
+            transparency: 0.0,
             ..Session::default()
         };
         let saved = serde_json::to_string(&session).unwrap();
-        assert_eq!(Session::decode(&saved).unwrap().theme, Theme::Glass);
+        let back = Session::decode(&saved).unwrap();
+        assert_eq!((back.theme, back.transparency), (Theme::Ink, 0.0));
     }
     #[test]
     fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {
