@@ -20,7 +20,7 @@ ui-tests = ["dep:egui_kittest"]
 tauri-winres = "0.3"
 
 [dependencies]
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 rusty-leveldb = "4"
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
