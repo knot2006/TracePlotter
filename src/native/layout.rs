@@ -64,12 +64,18 @@ impl Window {
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 ui.spacing_mut().item_spacing.x = 6.0;
+                                                // The dot's slot is as tall as the tab, so that
+                                                // it is centred on the tab and not on the row's
+                                                // height before the tab is placed. The host's
+                                                // digits sit one and a half pixels below the tab's
+                                                // centre; lowered as much, the dot lines up with
+                                                // them and covers whole pixels, not blurred halves.
                                                 let (rect, _) = ui.allocate_exact_size(
-                                                    egui::vec2(9.0, 9.0),
+                                                    egui::vec2(9.0, TAB_HEIGHT),
                                                     egui::Sense::hover(),
                                                 );
                                                 ui.painter().circle_filled(
-                                                    rect.center(),
+                                                    rect.center() + egui::vec2(0.0, 1.5),
                                                     4.5,
                                                     if trace.alerting {
                                                         palette(ui.ctx()).bad
@@ -233,6 +239,8 @@ impl Window {
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(165.0, 22.0), egui::Sense::hover());
             let third = rect.width() / 3.0;
+            ui.painter()
+                .rect_filled(rect, 0.0, graphs::chart_surface(ui.ctx()));
             for (i, (color, text)) in [
                 (palette(ui.ctx()).good, String::new()),
                 (
@@ -252,7 +260,7 @@ impl Window {
                     egui::vec2(third, rect.height()),
                 );
                 ui.painter()
-                    .rect_filled(chip, 0.0, color.gamma_multiply(0.25));
+                    .rect_filled(chip, 0.0, color.gamma_multiply(ZONE_TINTS[i]));
                 ui.painter().text(
                     chip.center(),
                     egui::Align2::CENTER_CENTER,
@@ -1302,11 +1310,11 @@ impl Window {
 
 fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::Response {
     let vector = matches!(glyph, "⏸" | "▶" | "↻" | "×");
-    // Pause is filled with the accent while a trace runs, start or resume with green; the
-    // restart arrow is amber, as it erases history.
+    // Start or resume is filled with the accent, pause with amber while a trace runs; the
+    // restart arrow is amber too, as it erases history.
     let fill = match glyph {
-        "⏸" => Some(palette(ui.ctx()).accent),
-        "▶" => Some(palette(ui.ctx()).good),
+        "⏸" => Some(palette(ui.ctx()).warn),
+        "▶" => Some(palette(ui.ctx()).accent),
         _ => None,
     };
     let mut button = egui::Button::new(
@@ -1328,7 +1336,15 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
     }
     // The frameless close cross takes the tab's height, so it shares the tab's centre.
     let height = if glyph == "×" { TAB_HEIGHT } else { size };
-    let response = ui.add_sized([size, height], button);
+    // A button is otherwise at least as tall as the theme's controls, which would stretch a
+    // small round button, such as the summary's, into a pill.
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().interact_size = egui::vec2(size, height);
+            ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            ui.add_sized([size, height], button)
+        })
+        .inner;
     let center = response.rect.center();
     let color = match glyph {
         _ if fill.is_some() => palette(ui.ctx()).surface,

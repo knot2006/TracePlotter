@@ -813,7 +813,7 @@ pub(super) fn whois_facts(text: &str) -> Vec<Value> {
     let mut fields = BTreeMap::new();
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("% Abuse contact for ")
-            && let Some(v) = line.split('\'').nth(1)
+            && let Some(v) = line.rsplit('\'').nth(1)
         {
             fields.entry("abuse".into()).or_insert(v.into());
         }
@@ -864,6 +864,14 @@ mod tests {
             }
             _ => assert_eq!(got, expected, "{context}"),
         }
+    }
+
+    #[test]
+    fn ripe_abuse_contact_is_the_address_not_the_range() {
+        let text = "% Abuse contact for '192.0.2.0 - 192.0.2.255' is 'abuse@example.net'\n\
+                    inetnum: 192.0.2.0 - 192.0.2.255\n";
+        let facts = super::whois_facts(text);
+        assert_eq!(facts.last().unwrap()["value"], "abuse@example.net");
     }
 
     #[test]

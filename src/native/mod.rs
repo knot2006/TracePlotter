@@ -855,6 +855,9 @@ impl Window {
             .iter()
             .filter_map(|h| h.stats.max)
             .fold(1.0, f64::max);
+        // The table sits on the graphs' surface; its size is known only once it is drawn.
+        let surface = ui.painter().add(egui::Shape::Noop);
+        let top = ui.cursor().top();
         egui::ScrollArea::horizontal()
             .id_salt("table-horizontal")
             .show(ui, |ui| {
@@ -1094,6 +1097,14 @@ impl Window {
                         });
                     });
             });
+        ui.painter().set(
+            surface,
+            egui::Shape::rect_filled(
+                egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top()),
+                0.0,
+                graphs::chart_surface(ui.ctx()),
+            ),
+        );
         // The splitter between the table and the graphs: drag it to give the graphs more
         // room, double-click it to fit the table to its rows again.
         // A stable id: one taken from the position would change as the splitter moves and
@@ -1414,23 +1425,59 @@ impl Window {
         }
         if let Some((addr, text)) = &self.whois {
             let mut open = true;
-            egui::Window::new(format!("WHOIS {addr}"))
-                .open(&mut open)
-                .default_size([640.0, 500.0])
+            let facts = logic::whois_facts(text);
+            let modal = egui::Modal::new(egui::Id::unique("whois"))
+                .frame(egui::Frame::popup(&ctx.style_of(egui::Theme::Dark)).inner_margin(14))
                 .show(ctx, |ui| {
-                    for fact in logic::whois_facts(text) {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(fact["label"].as_str().unwrap_or_default());
-                            ui.label(fact["value"].as_str().unwrap_or_default());
+                    ui.set_width((ctx.content_rect().width() - 64.0).clamp(280.0, 640.0));
+                    ui.strong(format!("Whois {addr}"));
+                    ui.add_space(8.0);
+                    // Without facts the answer is an error or an unusual registry; it is
+                    // shown whole rather than folded away.
+                    if facts.is_empty() {
+                        ui.label(text);
+                    } else {
+                        egui::Grid::new("whois-facts")
+                            .num_columns(2)
+                            .spacing([16.0, 6.0])
+                            .show(ui, |ui| {
+                                for fact in &facts {
+                                    ui.weak(fact["label"].as_str().unwrap_or_default());
+                                    ui.add(
+                                        egui::Label::new(
+                                            fact["value"].as_str().unwrap_or_default(),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(8.0);
+                        egui::CollapsingHeader::new("Full record").show(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .max_height((ctx.content_rect().height() - 320.0).max(160.0))
+                                .show(ui, |ui| {
+                                    ui.monospace(logic::whois_record(text));
+                                });
                         });
                     }
-                    if ui.button("Copy record").clicked() {
-                        ctx.copy_text(logic::whois_record(text));
-                    }
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        ui.monospace(logic::whois_record(text));
-                    });
+                    ui.add_space(8.0);
+                    // The row asks for no height: a layout that took what is left would keep
+                    // the modal as tall as the open record after it is folded again.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 0.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui.button("Close").clicked() {
+                                open = false;
+                            }
+                            if !facts.is_empty() && ui.button("Copy record").clicked() {
+                                ctx.copy_text(logic::whois_record(text));
+                            }
+                        },
+                    );
                 });
+            open &= !modal.should_close();
             if !open {
                 self.whois = None;
             }
@@ -2165,6 +2212,10 @@ fn spark(ui: &mut egui::Ui, values: &[Option<f64>]) {
     }
 }
 
+/// How strongly the good, slow and bad zones tint the chart surface: in the hop graph, the
+/// table's latency bars and their legend alike.
+const ZONE_TINTS: [f32; 3] = [0.24, 0.24, 0.26];
+
 fn latency_bar(
     ui: &mut egui::Ui,
     stats: logic::Stats,
@@ -2220,16 +2271,16 @@ fn latency_bar(
         settings.bad_ms as f64,
         f64::INFINITY,
     ];
-    for (band, (color, strength)) in [
-        (palette(ui.ctx()).good, 0.32),
-        (palette(ui.ctx()).warn, 0.32),
-        (palette(ui.ctx()).bad, 0.34),
+    for (band, color) in [
+        palette(ui.ctx()).good,
+        palette(ui.ctx()).warn,
+        palette(ui.ctx()).bad,
     ]
     .into_iter()
     .enumerate()
     {
         let zone = egui::Rect::from_x_y_ranges(x(edges[band])..=x(edges[band + 1]), rect.y_range());
-        painter.rect_filled(zone, 0.0, color.gamma_multiply(strength));
+        painter.rect_filled(zone, 0.0, color.gamma_multiply(ZONE_TINTS[band]));
     }
     // Packet loss is a bar from the left, where the full width is 100 %.
     if stats.loss_pct > 0.0 {

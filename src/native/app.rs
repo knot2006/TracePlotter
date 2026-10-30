@@ -671,6 +671,15 @@ impl Controller {
         }
     }
     fn resolve(&mut self, i: usize) {
+        // A hop loses its name when its address changes or a tab is reopened, and only a
+        // fresh answer would set it again; the cache already has the names it was asked for.
+        for hop in &mut self.traces[i].hops {
+            if hop.name.is_none()
+                && let Some(addr) = hop.addr
+            {
+                hop.name = self.names.get(&addr).and_then(|(name, _)| name.clone());
+            }
+        }
         for addr in self.traces[i]
             .hops
             .iter()
@@ -681,7 +690,7 @@ impl Controller {
             if self
                 .names
                 .get(&addr)
-                .is_some_and(|(name, t)| name.is_some() || now_ms().saturating_sub(*t) < 60000)
+                .is_some_and(|(_, t)| now_ms().saturating_sub(*t) < 60000)
             {
                 continue;
             }
@@ -1272,6 +1281,22 @@ mod tests {
                 rtt: Some(10.0),
             }],
         })
+    }
+    #[test]
+    fn hops_take_names_already_in_the_cache() {
+        let mut c = controller();
+        let addr: IpAddr = "192.0.2.1".parse().unwrap();
+        c.names
+            .insert(addr, (Some("router.example".into()), now_ms() - 120_000));
+        let mut trace = Trace::new(Config::default());
+        trace.hops.push(Hop {
+            ttl: 1,
+            addr: Some(addr),
+            ..Hop::default()
+        });
+        c.traces.push(trace);
+        c.resolve(0);
+        assert_eq!(c.traces[0].hops[0].name.as_deref(), Some("router.example"));
     }
     #[test]
     fn samples_and_snapshots_need_no_paint_and_ignore_old_runs() {

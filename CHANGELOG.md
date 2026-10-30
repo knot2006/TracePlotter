@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.1
+
+### Fixes
+
+- Hops show their host names again. A hop lost its name when its address changed or its tab was
+  reopened, and a name already looked up was never put back.
+- The whois window shows the abuse contact's address instead of the address range.
+
+### Interface
+
+- The whois window looks as it did before 0.2.0: the main facts in two columns, the full record
+  folded away below them, and Copy record and Close buttons. It returns to its size when the
+  record is folded again.
+- The hop table and the latency legend sit on the same dark surface as the graphs, and the
+  latency bars use the same good, slow and bad tints as the hop graph.
+- The play and pause buttons in the summary are round. Play and resume are green, pause amber.
+- The status dots in the tabs line up with the host names.
+
 ## 0.2.0
 
 TracePlotter is now a fully native application. The interface is drawn with

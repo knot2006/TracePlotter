@@ -410,13 +410,8 @@ pub(super) fn show(
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
-        // One neutral step above the black page, as the chart's own surface.
         let glass = theme::current(ui.ctx()) == Theme::Glass;
-        ui.visuals_mut().extreme_bg_color = if glass {
-            theme_colors.inset.gamma_multiply(theme::opacity(ui.ctx()))
-        } else {
-            Color32::from_rgb(0x10, 0x10, 0x10)
-        };
+        ui.visuals_mut().extreme_bg_color = chart_surface(ui.ctx());
         let jitter_response = if with_jitter {
             ui.vertical_centered(|ui| {
                 ui.small("Jitter (ms, running average)");
@@ -534,7 +529,7 @@ pub(super) fn show(
                                     &[edges[band]; 2],
                                     &[edges[band + 1]; 2],
                                 )
-                                .fill_color(colors[band].gamma_multiply([0.24, 0.24, 0.26][band]))
+                                .fill_color(colors[band].gamma_multiply(ZONE_TINTS[band]))
                                 .allow_hover(false),
                             );
                         }
@@ -832,6 +827,16 @@ pub(super) fn event_color(ctx: &egui::Context, event: &Value) -> Color32 {
 pub(super) fn same_event(a: &Value, b: &Value) -> bool {
     a["t"] == b["t"] && a["kind"] == b["kind"]
 }
+/// One neutral step above the black page, as a chart's own surface; the hop table's latency
+/// bars sit on it too.
+pub(super) fn chart_surface(ctx: &egui::Context) -> Color32 {
+    if theme::current(ctx) == Theme::Glass {
+        palette(ctx).inset.gamma_multiply(theme::opacity(ctx))
+    } else {
+        Color32::from_rgb(0x10, 0x10, 0x10)
+    }
+}
+
 /// Dashed marks with a tab at the top; the selected event is drawn last, solid, over a band.
 fn event_marks(
     ui: &egui::Ui,
