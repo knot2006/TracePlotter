@@ -103,3 +103,8 @@ unsafe_op_in_unsafe_fn = "warn"
 [lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+
+# egui-winit with one change: windows are made without a GDI redirection surface, which
+# screenshots would otherwise show over Glass (see vendor/egui-winit/VENDORED.md).
+[patch.crates-io]
+egui-winit = { path = "vendor/egui-winit" }
