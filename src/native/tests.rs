@@ -136,6 +136,17 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
         .click();
     h.run();
+    h.get_by_label("Glass (new)").click();
+    h.run();
+    assert_eq!(theme::current(&h.ctx), Theme::GlassNew);
+    assert!(
+        commands
+            .try_iter()
+            .any(|c| matches!(c, Command::Preferences(s) if s.theme == Theme::GlassNew))
+    );
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
+        .click();
+    h.run();
     h.get_by_label("Dark").click();
     h.run();
     assert_eq!(palette(&h.ctx).accent, dark_accent);
@@ -148,9 +159,9 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
 #[test]
 fn transparency_slider_applies_and_sends_each_themes_saved_preference() {
     for &theme in if cfg!(windows) {
-        &[Theme::Dark, Theme::Glass][..]
+        &[Theme::Dark, Theme::Glass, Theme::GlassNew][..]
     } else {
-        &[Theme::Glass][..]
+        &[Theme::Glass, Theme::GlassNew][..]
     } {
         let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], theme);
         h.state_mut().settings_page = 1;
@@ -194,43 +205,59 @@ fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
     }
 }
 #[test]
-fn history_fill_stops_at_the_handle_centre() {
-    for theme in [Theme::Dark, Theme::Glass] {
-        let (mut h, _) = themed_harness("demo-one", [1100.0, 720.0], theme);
-        h.run();
-        let bounds = h.get_by_label("History position").rect();
-        let handle = h
-            .output()
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Circle(circle) if bounds.contains(circle.center) => {
-                    Some(circle.center)
-                }
-                _ => None,
-            })
-            .expect("History slider handle");
-        let fill_end = h
-            .output()
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if bounds.contains(rect.rect.center())
-                        && rect.rect.height() <= 4.1
-                        && rect.rect.width() > 100.0 =>
-                {
-                    Some(rect.rect.right())
-                }
-                _ => None,
-            })
-            .reduce(f32::min)
-            .expect("History slider fill");
-        assert!(
-            (fill_end - handle.x).abs() < 0.01,
-            "{theme:?}: fill ends at {fill_end}, handle at {}",
-            handle.x
-        );
+fn slider_fills_stop_at_the_handle_centre() {
+    for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
+        for label in ["History position", "Transparency"] {
+            if label == "Transparency" && theme == Theme::Dark && !cfg!(windows) {
+                continue;
+            }
+            let (mut h, _) = themed_harness(
+                if label == "Transparency" {
+                    "settings"
+                } else {
+                    "demo-one"
+                },
+                [1100.0, 720.0],
+                theme,
+            );
+            h.state_mut().settings_page = 1;
+            h.run();
+            let bounds = h
+                .get_by_role_and_label(egui::accesskit::Role::Slider, label)
+                .rect();
+            let handle = h
+                .output()
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle) if bounds.contains(circle.center) => {
+                        Some(circle.center)
+                    }
+                    _ => None,
+                })
+                .expect("Slider handle");
+            let fill_end = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if bounds.contains(rect.rect.center())
+                            && rect.rect.height() <= 4.1
+                            && rect.rect.width() > 10.0 =>
+                    {
+                        Some(rect.rect.right())
+                    }
+                    _ => None,
+                })
+                .reduce(f32::min)
+                .expect("Slider fill");
+            assert!(
+                (fill_end - handle.x).abs() < 0.01,
+                "{theme:?} {label}: fill ends at {fill_end}, handle at {}",
+                handle.x
+            );
+        }
     }
 }
 
@@ -648,8 +675,8 @@ fn render_native_scenarios() {
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
     export::render_fixture(&gpu, &fixture("demo-one"), &output).unwrap();
-    for theme in [Theme::Dark, Theme::Glass] {
-        if theme == Theme::Glass {
+    for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
+        if theme.is_glass() {
             let mut snapshot = fixture("demo-one");
             snapshot.session.theme = theme;
             let exports = output.join("glass");
@@ -698,7 +725,11 @@ fn render_native_scenarios() {
                 .unwrap()
                 .save(output.join(format!(
                     "{}{name}.png",
-                    if theme == Theme::Glass { "glass-" } else { "" }
+                    match theme {
+                        Theme::Glass => "glass-",
+                        Theme::GlassNew => "glass-new-",
+                        Theme::Dark => "",
+                    }
                 )))
                 .unwrap();
         }
@@ -882,6 +913,29 @@ fn settings_tab_closes_back_to_the_tab_it_came_from() {
             .try_iter()
             .any(|c| matches!(c, Command::Select(id) if id == "demo-one"))
     );
+}
+
+#[test]
+fn settings_interval_arrow_stays_to_the_right_of_the_input() {
+    let (mut h, commands) = harness("settings", [1100.0, 720.0]);
+    h.run();
+    let field = h
+        .query_all_by_role_and_label(egui::accesskit::Role::TextInput, "Interval")
+        .last()
+        .expect("Settings interval input")
+        .rect();
+    let arrow = h
+        .query_all_by_label("Presets")
+        .find(|node| (node.rect().center().y - field.center().y).abs() < 1.0)
+        .expect("Interval preset arrow");
+    assert!(arrow.rect().left() >= field.right());
+    arrow.click();
+    h.run();
+    h.get_by_label("5 seconds").click();
+    h.run();
+    assert!(commands.try_iter().any(
+        |command| matches!(command, Command::Preferences(s) if s.settings.interval_ms == 5000)
+    ));
 }
 
 #[test]

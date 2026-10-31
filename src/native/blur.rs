@@ -41,6 +41,7 @@ pub(super) fn request(cc: &eframe::CreationContext<'_>) -> Blur {
         return Blur::default();
     };
     let hwnd = window.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+    remove_native_caption(hwnd);
     let set = |attribute: i32, value: i32| {
         // Safety: the window is the one eframe has just opened, and the value outlives the call.
         unsafe {
@@ -66,7 +67,35 @@ pub(super) fn request(cc: &eframe::CreationContext<'_>) -> Blur {
     // Acrylic follows the window's light or dark mode, and Glass is dark.
     set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
     set(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW);
-    Blur::default()
+    Blur {
+        hwnd: hwnd as isize,
+    }
+}
+
+#[cfg(windows)]
+fn remove_native_caption(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_CAPTION,
+    };
+    // winit keeps WS_CAPTION even without decorations. The full-window acrylic frame lets
+    // its native buttons show through our translucent title bar, behind the custom ones.
+    // Safety: this is our live eframe window; resize and system-menu styles are preserved.
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if style & WS_CAPTION as isize != 0 {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION as isize));
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -84,12 +113,19 @@ pub(super) fn request(_cc: &eframe::CreationContext<'_>) -> Blur {
 /// The blur behind the window, kept to the window's size from its first frame on.
 #[derive(Default)]
 pub(super) struct Blur {
+    #[cfg(windows)]
+    hwnd: isize,
     #[cfg(target_os = "linux")]
     wayland: Option<wayland::Effect>,
 }
 impl Blur {
     /// Called every frame; it speaks to the compositor only when the blur has to change.
     pub fn update(&mut self, _ctx: &eframe::egui::Context) {
+        // winit can restore its window styles when maximizing or changing the window state.
+        #[cfg(windows)]
+        if self.hwnd != 0 {
+            remove_native_caption(self.hwnd as windows_sys::Win32::Foundation::HWND);
+        }
         #[cfg(target_os = "linux")]
         if let Some(effect) = &mut self.wayland {
             effect.update(_ctx);

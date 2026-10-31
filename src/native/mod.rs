@@ -1669,7 +1669,7 @@ impl eframe::App for Window {
             });
         }
         // Glass paints its own gradient; Dark uses a neutral frost without a second tint.
-        let backdrop = if theme::current(ui.ctx()) == Theme::Glass {
+        let backdrop = if theme::current(ui.ctx()).is_glass() {
             Color32::TRANSPARENT
         } else {
             palette(ui.ctx())
@@ -1682,7 +1682,7 @@ impl eframe::App for Window {
             egui::Margin::symmetric(12, 8)
         };
         egui::CentralPanel::default().frame(egui::Frame::new().fill(backdrop).inner_margin(content_margin)).show(ui, |ui| {
-            theme::glass_surface(ui);
+            theme::glass_surface(ui, content_margin);
             if session.active == "settings" {
                 changed |= self.settings(ui, &mut session);
             } else {
@@ -1879,16 +1879,19 @@ fn focus_ring(ctx: &egui::Context) {
         );
     }
 }
-/// Menu rows sized for reading down a list; the toolbar's 32 px controls would leave them
+/// Menu rows sized for reading down a list; the toolbar's controls would leave them
 /// sparse and hard to scan.
 fn menu_rows(ui: &mut egui::Ui) {
     // Glass gives its menus the roomier rows of its other controls.
-    let glass = theme::current(ui.ctx()) == Theme::Glass;
+    let theme = theme::current(ui.ctx());
     let spacing = ui.spacing_mut();
-    spacing.interact_size.y = if glass { 30.0 } else { 26.0 };
+    spacing.interact_size.y = match theme {
+        Theme::Glass | Theme::GlassNew => 28.0,
+        Theme::Dark => 26.0,
+    };
     spacing.item_spacing.y = 2.0;
-    spacing.button_padding = if glass {
-        egui::vec2(12.0, 6.0)
+    spacing.button_padding = if theme.is_glass() {
+        egui::vec2(10.0, 5.0)
     } else {
         egui::vec2(8.0, 4.0)
     };
@@ -1906,13 +1909,11 @@ fn small_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
 /// The window has no system frame: the free part of the menu row moves it, and these
 /// buttons stand in for the system ones.
 fn window_controls(ui: &mut egui::Ui) {
-    let dark = theme::current(ui.ctx()) == Theme::Dark;
+    let original_glass = theme::current(ui.ctx()) == Theme::Glass;
     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        if dark {
-            ui.add_space(8.0);
-        }
+        ui.add_space(8.0);
         let mut row = egui::Rangef::NOTHING;
         for (command, label) in [
             (egui::ViewportCommand::Close, "Close window"),
@@ -1922,23 +1923,19 @@ fn window_controls(ui: &mut egui::Ui) {
             ),
             (egui::ViewportCommand::Minimized(true), "Minimize"),
         ] {
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(if dark { 30.0 } else { 46.0 }, 40.0),
-                egui::Sense::click(),
-            );
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(30.0, 40.0), egui::Sense::click());
             row = rect.y_range();
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
             let close = label == "Close window";
             if response.hovered() {
                 ui.painter().rect_filled(
-                    if dark {
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(30.0, 24.0))
-                    } else {
-                        rect
-                    },
-                    if dark { 6.0 } else { 0.0 },
-                    if close && !dark {
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(30.0, 24.0)),
+                    6.0,
+                    if close && original_glass {
                         palette(ui.ctx()).bad.gamma_multiply(0.8)
+                    } else if close && theme::current(ui.ctx()) == Theme::GlassNew {
+                        palette(ui.ctx()).bad.gamma_multiply(0.18)
                     } else {
                         palette(ui.ctx()).text.gamma_multiply(0.1)
                     },
@@ -1949,10 +1946,10 @@ fn window_controls(ui: &mut egui::Ui) {
                 1.2,
                 if response.hovered() {
                     palette(ui.ctx()).text
-                } else if dark {
-                    palette(ui.ctx()).muted
-                } else {
+                } else if original_glass {
                     palette(ui.ctx()).soft
+                } else {
+                    palette(ui.ctx()).muted
                 },
             );
             let square = |c: egui::Pos2| egui::Rect::from_center_size(c, egui::vec2(9.0, 9.0));

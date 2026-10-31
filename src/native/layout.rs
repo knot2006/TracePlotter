@@ -32,12 +32,10 @@ impl Window {
                 bottom: 4,
             })
             .show(ui, |ui| {
-                if theme::current(ui.ctx()) == Theme::Dark {
-                    ui.spacing_mut().interact_size.y = tab_height;
-                    ui.style_mut()
-                        .text_styles
-                        .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
-                }
+                ui.spacing_mut().interact_size.y = tab_height;
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
                 ui.horizontal(|ui| {
                     let strip_width = (ui.available_width() - 120.0).max(100.0);
                     egui::ScrollArea::horizontal()
@@ -828,20 +826,15 @@ impl Window {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(0, 5))
             .show(ui, |ui| {
-                ui.spacing_mut().interact_size.y = 20.0;
                 let mut end = self.end.unwrap_or(last);
                 ui.spacing_mut().slider_width = ui.available_width();
-                glass_handle(ui);
-                // egui extends a rounded rail's fill by its corner radius. A square rail
-                // stops exactly at the handle's centre, visible through its translucent fill.
-                ui.visuals_mut().widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
                 // Green while following live data, the accent while looking back in history.
-                let strength = if theme::current(ui.ctx()) == Theme::Glass {
+                let strength = if theme::current(ui.ctx()).is_glass() {
                     1.0
                 } else {
                     0.75
                 };
-                ui.visuals_mut().selection.bg_fill = if self.end.is_none() {
+                let fill = if self.end.is_none() {
                     palette(ui.ctx()).good.gamma_multiply(strength)
                 } else {
                     palette(ui.ctx()).accent.gamma_multiply(strength)
@@ -850,14 +843,13 @@ impl Window {
                 // egui centres the handle of an empty range, so the range is widened to keep the
                 // handle at the live end and the slider is disabled.
                 let oldest = (first + session.span).min(last);
-                let response = ui
-                    .add_enabled(
-                        session.span > 0.0 && oldest < last,
-                        egui::Slider::new(&mut end, oldest.min(last - 1.0)..=last)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                    .on_hover_text("History position");
+                let response = filled_slider(
+                    ui,
+                    egui::Slider::new(&mut end, oldest.min(last - 1.0)..=last),
+                    session.span > 0.0 && oldest < last,
+                    fill,
+                )
+                .on_hover_text("History position");
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Slider, true, "History position")
                 });
@@ -1012,13 +1004,13 @@ impl Window {
                         setting(
                             ui,
                             "Theme",
-                            "Dark uses neutral panels; Glass uses charcoal and green accents.",
+                            "Glass is the original charcoal theme; Glass (new) uses brighter blue slate and vivid green accents.",
                             |ui| {
                                 let previous = session.theme;
                                 egui::ComboBox::from_id_salt("native-theme-choice")
                                     .selected_text(session.theme.label())
                                     .show_ui(ui, |ui| {
-                                        for theme in [Theme::Dark, Theme::Glass] {
+                                        for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
                                             ui.selectable_value(
                                                 &mut session.theme,
                                                 theme,
@@ -1050,22 +1042,23 @@ impl Window {
                             },
                             &mut changed,
                         );
-                        if session.theme == Theme::Glass || cfg!(windows) {
+                        if session.theme.is_glass() || cfg!(windows) {
                             setting(
                                 ui,
                                 "Transparency",
                                 "How much of the desktop shows through. Windows 11 and KDE Plasma blur it.",
                                 |ui| {
-                                    glass_handle(ui);
                                     ui.spacing_mut().slider_width = 160.0;
                                     // The slider follows the value already applied, not the
                                     // saved session, which catches up only after a save.
                                     let mut percent = (1.0 - theme::opacity(ui.ctx())) * 100.0;
                                     // The setting's row lays out from the right: the value, then the slider.
                                     ui.label(format!("{percent:.0} %"));
-                                    let response = ui.add(
-                                        egui::Slider::new(&mut percent, 0.0..=70.0)
-                                            .show_value(false),
+                                    let response = filled_slider(
+                                        ui,
+                                        egui::Slider::new(&mut percent, 0.0..=70.0),
+                                        true,
+                                        palette(ui.ctx()).accent,
                                     );
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
@@ -1198,7 +1191,7 @@ impl Window {
                     let mut startup = self.startup;
                     ui.add_enabled_ui(tray::startup_available(), |ui| {
                         settings_group(ui, "Start at sign-in", "", |ui| {
-                            if switch_setting(ui, "Start when I sign in to Windows", "Starts in the tray and restores running targets. Turn this on again if you move the portable exe. Unavailable in demo mode.", &mut startup) {
+                            if switch_setting(ui, "Start when I sign in to Windows", "Restores running targets in the tray. Re-enable if you move the portable exe. Unavailable in demo mode.", &mut startup) {
                                 match tray::set_startup(startup) {
                                     Ok(()) => self.startup = tray::startup(),
                                     Err(e) => self.error = Some(format!("Background setting was not changed: {e}")),
@@ -1484,42 +1477,55 @@ fn preset_input(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let height = ui.spacing().interact_size.y;
-            ui.add_space(8.0);
-            let field = ui.add_sized(
-                [width - 34.0, height],
-                egui::TextEdit::singleline(text)
-                    .id_salt(id)
-                    .hint_text(hint)
-                    .frame(egui::Frame::NONE)
-                    .align(egui::Align2::LEFT_CENTER),
-            );
-            field.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, name));
-            // Escape gives up the edit; the field shows `shown` again on the next frame.
-            if field.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                if *text != shown {
-                    picked = Some(Picked::Typed(text.trim().to_owned()));
-                }
-            } else if !field.has_focus() {
-                *text = shown.clone();
-            }
-            let (rect, arrow) =
-                ui.allocate_exact_size(egui::vec2(26.0, height), egui::Sense::click());
-            let c = rect.center();
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    c + egui::vec2(-4.5, -2.5),
-                    c + egui::vec2(4.5, -2.5),
-                    c + egui::vec2(0.0, 3.0),
-                ],
-                if arrow.hovered() {
-                    palette(ui.ctx()).text
-                } else {
-                    palette(ui.ctx()).soft
+            // Settings aligns controls from the right, but a preset field always puts its
+            // text first and its arrow last, just like the same control in the toolbar.
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.add_space(8.0);
+                    let field = ui.add_sized(
+                        [width - 34.0, height],
+                        egui::TextEdit::singleline(text)
+                            .id_salt(id)
+                            .hint_text(hint)
+                            .frame(egui::Frame::NONE)
+                            .align(egui::Align2::LEFT_CENTER),
+                    );
+                    field.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, name)
+                    });
+                    // Escape gives up the edit; the field shows `shown` again on the next frame.
+                    if field.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        if *text != shown {
+                            picked = Some(Picked::Typed(text.trim().to_owned()));
+                        }
+                    } else if !field.has_focus() {
+                        *text = shown.clone();
+                    }
+                    let (rect, arrow) =
+                        ui.allocate_exact_size(egui::vec2(26.0, height), egui::Sense::click());
+                    let c = rect.center();
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        vec![
+                            c + egui::vec2(-4.5, -2.5),
+                            c + egui::vec2(4.5, -2.5),
+                            c + egui::vec2(0.0, 3.0),
+                        ],
+                        if arrow.hovered() {
+                            palette(ui.ctx()).text
+                        } else {
+                            palette(ui.ctx()).soft
+                        },
+                        egui::Stroke::NONE,
+                    ));
+                    arrow.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, "Presets")
+                    });
+                    (field, arrow)
                 },
-                egui::Stroke::NONE,
-            ));
-            arrow.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Presets"));
-            (field, arrow)
+            )
+            .inner
         });
     let (field, arrow) = frame.inner;
     // As an HTML input with a datalist: the presets open on a click into the field as well
@@ -1572,13 +1578,19 @@ fn preset_input(
     picked
 }
 /// MonoCode's tab plates: a faint fill on every tab, a little more on hover. The open tab
-/// takes a neutral wash in Dark and the accent in Glass.
+/// takes a neutral wash in Dark and a vivid green tint in Glass.
 fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
     if selected {
         if theme::current(ctx) == Theme::Dark {
             palette(ctx).text.gamma_multiply(0.10)
         } else {
-            palette(ctx).accent.gamma_multiply(0.24)
+            palette(ctx)
+                .accent
+                .gamma_multiply(if theme::current(ctx) == Theme::Glass {
+                    0.24
+                } else {
+                    0.22
+                })
         }
     } else if hovered {
         palette(ctx).text.gamma_multiply(0.07)
@@ -1586,32 +1598,52 @@ fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
         palette(ctx).text.gamma_multiply(0.04)
     }
 }
-/// Glass draws a slider as a green fill up to a white-rimmed handle, which turns into a
-/// white disc while it is hovered or dragged.
-fn glass_handle(ui: &mut egui::Ui) {
-    if theme::current(ui.ctx()) != Theme::Glass {
-        return;
-    }
-    let handle = palette(ui.ctx()).text;
-    ui.visuals_mut().selection.bg_fill = palette(ui.ctx()).accent;
-    let widgets = &mut ui.visuals_mut().widgets;
-    // The rail and the resting handle share this fill, so the rim is what marks the handle.
-    widgets.inactive.bg_fill = handle.gamma_multiply(0.16);
-    widgets.inactive.fg_stroke = egui::Stroke::new(2.0, handle);
-    for state in [&mut widgets.hovered, &mut widgets.active] {
-        state.bg_fill = handle;
-        state.bg_stroke = egui::Stroke::NONE;
-    }
+/// History and transparency share a rail whose fill ends at the circular handle's centre.
+fn filled_slider(
+    ui: &mut egui::Ui,
+    slider: egui::Slider<'_>,
+    enabled: bool,
+    fill: Color32,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 20.0;
+        ui.visuals_mut().selection.bg_fill = fill;
+        // egui extends a rounded rail's fill by its corner radius. Keep that overhang out of
+        // the translucent handle, without changing the surrounding controls' rounded corners.
+        ui.visuals_mut().widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+        if theme::current(ui.ctx()).is_glass() {
+            let handle = palette(ui.ctx()).text;
+            let widgets = &mut ui.visuals_mut().widgets;
+            // The rail and the resting handle share this fill, so the rim is what marks the handle.
+            widgets.inactive.bg_fill = handle.gamma_multiply(0.16);
+            widgets.inactive.fg_stroke = egui::Stroke::new(2.0, handle);
+            for state in [&mut widgets.hovered, &mut widgets.active] {
+                state.bg_fill = handle;
+                state.bg_stroke = egui::Stroke::NONE;
+            }
+        }
+        ui.add_enabled(enabled, slider.show_value(false).trailing_fill(true))
+    })
+    .inner
 }
-/// A tab's plate. Glass rims the open one with the accent, as its chosen options are.
+/// A tab's plate. Glass lights the selected tab's edge with its green accent.
 fn plate_shape(
     ctx: &egui::Context,
     rect: egui::Rect,
     selected: bool,
     hovered: bool,
 ) -> egui::Shape {
-    let stroke = if selected && theme::current(ctx) == Theme::Glass {
-        egui::Stroke::new(1.0, palette(ctx).accent.gamma_multiply(0.7))
+    let stroke = if selected && theme::current(ctx).is_glass() {
+        egui::Stroke::new(
+            1.0,
+            palette(ctx)
+                .accent
+                .gamma_multiply(if theme::current(ctx) == Theme::Glass {
+                    0.7
+                } else {
+                    0.55
+                }),
+        )
     } else {
         egui::Stroke::NONE
     };
@@ -1735,6 +1767,8 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     let fill = if selected {
         if theme::current(ui.ctx()) == Theme::Glass {
             ui.visuals().selection.bg_fill
+        } else if theme::current(ui.ctx()) == Theme::GlassNew {
+            palette(ui.ctx()).accent.gamma_multiply(0.14)
         } else {
             palette(ui.ctx()).text.gamma_multiply(0.10)
         }
@@ -1743,14 +1777,28 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     } else {
         Color32::TRANSPARENT
     };
-    let glass = theme::current(ui.ctx()) == Theme::Glass;
+    let glass = theme::current(ui.ctx()).is_glass();
     let stroke = if selected && glass {
-        egui::Stroke::new(1.0, palette(ui.ctx()).accent.gamma_multiply(0.7))
+        if theme::current(ui.ctx()) == Theme::Glass {
+            egui::Stroke::new(1.0, palette(ui.ctx()).accent.gamma_multiply(0.7))
+        } else {
+            egui::Stroke::new(1.0, palette(ui.ctx()).text.gamma_multiply(0.10))
+        }
     } else {
         egui::Stroke::NONE
     };
     ui.painter()
         .rect(rect, 6.0, fill, stroke, egui::StrokeKind::Inside);
+    if selected && theme::current(ui.ctx()) == Theme::GlassNew {
+        ui.painter().rect_filled(
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 2.0, rect.center().y),
+                egui::vec2(3.0, 14.0),
+            ),
+            1.5,
+            palette(ui.ctx()).accent,
+        );
+    }
     ui.painter().text(
         rect.left_center() + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
@@ -1807,6 +1855,8 @@ fn settings_group(ui: &mut egui::Ui, title: &str, note: &str, rows: impl FnOnce(
         // Glass sinks its groups a shade below the panel, as cards set into a frosted pane.
         .fill(if theme::current(ui.ctx()) == Theme::Glass {
             Color32::from_black_alpha(56)
+        } else if theme::current(ui.ctx()) == Theme::GlassNew {
+            Color32::from_black_alpha(32)
         } else {
             palette(ui.ctx()).text.gamma_multiply(0.03)
         })
@@ -1851,7 +1901,7 @@ fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     ui.painter().rect_filled(rect, 10.0, track);
     let x = egui::lerp(rect.left() + 10.0..=rect.right() - 10.0, t);
     // Glass greys the knob while off, so on and off differ by more than the track.
-    let knob = if theme::current(ui.ctx()) == Theme::Glass {
+    let knob = if theme::current(ui.ctx()).is_glass() {
         palette(ui.ctx()).muted.lerp_to_gamma(Color32::WHITE, t)
     } else {
         palette(ui.ctx()).text

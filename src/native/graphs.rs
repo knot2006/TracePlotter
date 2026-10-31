@@ -410,7 +410,7 @@ pub(super) fn show(
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
-        let glass = theme::current(ui.ctx()) == Theme::Glass;
+        let glass = theme::current(ui.ctx()).is_glass();
         ui.visuals_mut().extreme_bg_color = chart_surface(ui.ctx());
         let jitter_response = if with_jitter {
             ui.vertical_centered(|ui| {
