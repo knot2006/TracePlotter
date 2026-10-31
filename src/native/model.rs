@@ -104,6 +104,8 @@ pub(super) struct Session {
     pub theme: Theme,
     /// How much of the desktop shows through Glass's panels, from 0 to 0.7.
     pub transparency: f32,
+    /// Dark keeps a lighter frost independently of Glass's transparency.
+    pub dark_transparency: f32,
     pub settings: Settings,
     pub targets: Vec<Config>,
     pub active: String,
@@ -131,6 +133,7 @@ impl Default for Session {
             version: 1,
             theme: Theme::default(),
             transparency: 0.45,
+            dark_transparency: 0.15,
             settings,
             targets: Vec::new(),
             active: "summary".into(),
@@ -477,6 +480,9 @@ mod tests {
         let older = Session::decode(r#"{"version":1}"#).unwrap();
         assert_eq!(older.theme, Theme::Glass);
         assert_eq!(older.transparency, 0.45);
+        assert_eq!(older.dark_transparency, 0.15);
+        let ink = Session::decode(r#"{"version":1,"theme":"ink"}"#).unwrap();
+        assert_eq!(ink.theme, Theme::Dark);
         assert_eq!(
             Session::decode(r#"{"version":1,"theme":"future"}"#)
                 .unwrap()
@@ -484,13 +490,16 @@ mod tests {
             Theme::Glass
         );
         let session = Session {
-            theme: Theme::Ink,
+            theme: Theme::Dark,
             transparency: 0.0,
+            dark_transparency: 0.2,
             ..Session::default()
         };
         let saved = serde_json::to_string(&session).unwrap();
+        assert!(saved.contains(r#""theme":"dark""#));
         let back = Session::decode(&saved).unwrap();
-        assert_eq!((back.theme, back.transparency), (Theme::Ink, 0.0));
+        assert_eq!((back.theme, back.transparency), (Theme::Dark, 0.0));
+        assert_eq!(back.dark_transparency, 0.2);
     }
     #[test]
     fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {

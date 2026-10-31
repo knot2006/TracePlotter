@@ -51,7 +51,7 @@ pub(super) fn run() {
         .with_inner_size(size)
         .with_min_inner_size([640.0, 420.0])
         .with_decorations(false)
-        // Glass can let the desktop show through; the other theme paints every pixel.
+        // The themes can let the desktop show through their translucent panels.
         .with_transparent(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
@@ -169,7 +169,14 @@ impl Window {
     fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
         let session = Session::load()?;
         apply_theme(&cc.egui_ctx, session.theme);
-        theme::set_transparency(&cc.egui_ctx, session.transparency);
+        theme::set_transparency(
+            &cc.egui_ctx,
+            if session.theme == Theme::Dark {
+                session.dark_transparency
+            } else {
+                session.transparency
+            },
+        );
         let runtime = Runtime::start(session.clone(), cc.egui_ctx.clone());
         let mut result = Self::with_runtime(runtime);
         result.blur = blur::request(cc);
@@ -901,7 +908,7 @@ impl Window {
                                 session.column_widths.get(id).copied().unwrap_or(
                                     match id.as_str() {
                                         "ip" => 140.0,
-                                        "name" => 240.0,
+                                        "name" => 216.0,
                                         "loss" => 68.0,
                                         "median" | "p95" | "p99" => 72.0,
                                         "lossBurst" => 172.0,
@@ -1498,7 +1505,7 @@ impl Window {
     }
 }
 impl eframe::App for Window {
-    /// Nothing behind the panels, so that Glass's transparency reaches the desktop.
+    /// Nothing behind the panels, so that their transparency reaches the desktop.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
@@ -1661,13 +1668,20 @@ impl eframe::App for Window {
                 });
             });
         }
-        // Glass paints its own gradient, which a solid fill underneath would make opaque.
+        // Glass paints its own gradient; Dark uses a neutral frost without a second tint.
         let backdrop = if theme::current(ui.ctx()) == Theme::Glass {
             Color32::TRANSPARENT
         } else {
-            palette(ui.ctx()).inset
+            palette(ui.ctx())
+                .inset
+                .gamma_multiply(theme::opacity(ui.ctx()))
         };
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(backdrop)).show(ui, |ui| {
+        let content_margin = if session.active == "settings" {
+            egui::Margin::ZERO
+        } else {
+            egui::Margin::symmetric(12, 8)
+        };
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(backdrop).inner_margin(content_margin)).show(ui, |ui| {
             theme::glass_surface(ui);
             if session.active == "settings" {
                 changed |= self.settings(ui, &mut session);
@@ -1688,6 +1702,12 @@ impl eframe::App for Window {
                         ui.label("Type a host above and press Enter or Start. Each target opens in its own tab.");
                     }
                 }
+                let has_graph_selection = if active.is_some() {
+                    !self.selected.is_empty()
+                } else {
+                    snapshot.traces.iter().any(|trace| session.compare.contains(&trace.config.session_id))
+                };
+                if has_graph_selection {
                 let old_span = session.span;
                 changed |= self.period_bar(ui, &snapshot, active, &mut session);
                 let graph_budget = (ui.available_height() - 35.0).max(0.0);
@@ -1735,6 +1755,7 @@ impl eframe::App for Window {
                     self.selected_event = None;
                 }
                 changed |= session.span != old_span;
+                }
                 let view = View {
                     session: if active.is_some() {
                         session.active.clone()
@@ -1885,9 +1906,13 @@ fn small_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
 /// The window has no system frame: the free part of the menu row moves it, and these
 /// buttons stand in for the system ones.
 fn window_controls(ui: &mut egui::Ui) {
+    let dark = theme::current(ui.ctx()) == Theme::Dark;
     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
+        if dark {
+            ui.add_space(8.0);
+        }
         let mut row = egui::Rangef::NOTHING;
         for (command, label) in [
             (egui::ViewportCommand::Close, "Close window"),
@@ -1897,16 +1922,22 @@ fn window_controls(ui: &mut egui::Ui) {
             ),
             (egui::ViewportCommand::Minimized(true), "Minimize"),
         ] {
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(46.0, 40.0), egui::Sense::click());
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(if dark { 30.0 } else { 46.0 }, 40.0),
+                egui::Sense::click(),
+            );
             row = rect.y_range();
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
             let close = label == "Close window";
             if response.hovered() {
                 ui.painter().rect_filled(
-                    rect,
-                    0.0,
-                    if close {
+                    if dark {
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(30.0, 24.0))
+                    } else {
+                        rect
+                    },
+                    if dark { 6.0 } else { 0.0 },
+                    if close && !dark {
                         palette(ui.ctx()).bad.gamma_multiply(0.8)
                     } else {
                         palette(ui.ctx()).text.gamma_multiply(0.1)
@@ -1918,6 +1949,8 @@ fn window_controls(ui: &mut egui::Ui) {
                 1.2,
                 if response.hovered() {
                     palette(ui.ctx()).text
+                } else if dark {
+                    palette(ui.ctx()).muted
                 } else {
                     palette(ui.ctx()).soft
                 },

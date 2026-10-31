@@ -16,6 +16,7 @@ impl Window {
         session: &mut Session,
     ) -> bool {
         let mut changed = false;
+        let tab_height = theme::tab_height(ui.ctx());
         // A hairline and some air set the tabs apart from the title bar's menus.
         let top = ui.cursor().min.y;
         ui.painter().hline(
@@ -31,6 +32,12 @@ impl Window {
                 bottom: 4,
             })
             .show(ui, |ui| {
+                if theme::current(ui.ctx()) == Theme::Dark {
+                    ui.spacing_mut().interact_size.y = tab_height;
+                    ui.style_mut()
+                        .text_styles
+                        .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+                }
                 ui.horizontal(|ui| {
                     let strip_width = (ui.available_width() - 120.0).max(100.0);
                     egui::ScrollArea::horizontal()
@@ -71,7 +78,7 @@ impl Window {
                                                 // centre; lowered as much, the dot lines up with
                                                 // them and covers whole pixels, not blurred halves.
                                                 let (rect, _) = ui.allocate_exact_size(
-                                                    egui::vec2(9.0, TAB_HEIGHT),
+                                                    egui::vec2(9.0, tab_height),
                                                     egui::Sense::hover(),
                                                 );
                                                 ui.painter().circle_filled(
@@ -109,7 +116,7 @@ impl Window {
                                                     );
                                                 }
                                                 let tab = ui.add_sized(
-                                                    [0.0, TAB_HEIGHT],
+                                                    [0.0, tab_height],
                                                     egui::Button::new(name).frame(false),
                                                 );
                                                 if tab.clicked() {
@@ -144,7 +151,7 @@ impl Window {
                                     response
                                         .container_context_menu(|ui| self.target_menu(ui, trace));
                                 }
-                                if icon_button(ui, "+", "New target", TAB_HEIGHT).clicked() {
+                                if icon_button(ui, "+", "New target", tab_height).clicked() {
                                     self.select(session, "summary".into());
                                     self.focus_host = true;
                                     changed = true;
@@ -579,7 +586,7 @@ impl Window {
     ) -> bool {
         let mut changed = false;
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(16, 4))
+            .inner_margin(egui::Margin::symmetric(0, 4))
             .show(ui, |ui| {
                 ui.spacing_mut().interact_size.y = 24.0;
                 ui.horizontal(|ui| {
@@ -819,12 +826,15 @@ impl Window {
             return;
         }
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(16, 5))
+            .inner_margin(egui::Margin::symmetric(0, 5))
             .show(ui, |ui| {
                 ui.spacing_mut().interact_size.y = 20.0;
                 let mut end = self.end.unwrap_or(last);
                 ui.spacing_mut().slider_width = ui.available_width();
                 glass_handle(ui);
+                // egui extends a rounded rail's fill by its corner radius. A square rail
+                // stops exactly at the handle's centre, visible through its translucent fill.
+                ui.visuals_mut().widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
                 // Green while following live data, the accent while looking back in history.
                 let strength = if theme::current(ui.ctx()) == Theme::Glass {
                     1.0
@@ -1002,13 +1012,13 @@ impl Window {
                         setting(
                             ui,
                             "Theme",
-                            "Glass uses charcoal panels and green accents.",
+                            "Dark uses neutral panels; Glass uses charcoal and green accents.",
                             |ui| {
                                 let previous = session.theme;
                                 egui::ComboBox::from_id_salt("native-theme-choice")
                                     .selected_text(session.theme.label())
                                     .show_ui(ui, |ui| {
-                                        for theme in [Theme::Ink, Theme::Glass] {
+                                        for theme in [Theme::Dark, Theme::Glass] {
                                             ui.selectable_value(
                                                 &mut session.theme,
                                                 theme,
@@ -1026,13 +1036,21 @@ impl Window {
                                     });
                                 if session.theme != previous {
                                     apply_theme(ui.ctx(), session.theme);
+                                    theme::set_transparency(
+                                        ui.ctx(),
+                                        if session.theme == Theme::Dark {
+                                            session.dark_transparency
+                                        } else {
+                                            session.transparency
+                                        },
+                                    );
                                     ui.ctx().request_repaint();
                                 }
                                 session.theme != previous
                             },
                             &mut changed,
                         );
-                        if session.theme == Theme::Glass {
+                        if session.theme == Theme::Glass || cfg!(windows) {
                             setting(
                                 ui,
                                 "Transparency",
@@ -1063,7 +1081,12 @@ impl Window {
                                     let done = response.drag_stopped()
                                         || (response.changed() && !response.dragged());
                                     if done {
-                                        session.transparency = 1.0 - theme::opacity(ui.ctx());
+                                        if session.theme == Theme::Dark {
+                                            session.dark_transparency =
+                                                1.0 - theme::opacity(ui.ctx());
+                                        } else {
+                                            session.transparency = 1.0 - theme::opacity(ui.ctx());
+                                        }
                                     }
                                     done
                                 },
@@ -1335,7 +1358,11 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
             .stroke(egui::Stroke::NONE);
     }
     // The frameless close cross takes the tab's height, so it shares the tab's centre.
-    let height = if glyph == "×" { TAB_HEIGHT } else { size };
+    let height = if glyph == "×" {
+        theme::tab_height(ui.ctx())
+    } else {
+        size
+    };
     // A button is otherwise at least as tall as the theme's controls, which would stretch a
     // small round button, such as the summary's, into a pill.
     let response = ui
@@ -1544,13 +1571,15 @@ fn preset_input(
     ui.data_mut(|d| d.insert_temp(state, (open && keep_open, list)));
     picked
 }
-/// The height of a tab's plate.
-const TAB_HEIGHT: f32 = 30.0;
 /// MonoCode's tab plates: a faint fill on every tab, a little more on hover. The open tab
-/// takes the accent, so it stands out from the rest at a glance.
+/// takes a neutral wash in Dark and the accent in Glass.
 fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
     if selected {
-        palette(ctx).accent.gamma_multiply(0.24)
+        if theme::current(ctx) == Theme::Dark {
+            palette(ctx).text.gamma_multiply(0.10)
+        } else {
+            palette(ctx).accent.gamma_multiply(0.24)
+        }
     } else if hovered {
         palette(ctx).text.gamma_multiply(0.07)
     } else {
@@ -1604,7 +1633,10 @@ fn fixed_tab(ui: &mut egui::Ui, label: &str, selected: bool, gear: bool) -> egui
         palette(ui.ctx()).soft
     });
     let response = ui.add_sized(
-        [if gear { 104.0 } else { 120.0 }, TAB_HEIGHT],
+        [
+            if gear { 104.0 } else { 120.0 },
+            theme::tab_height(ui.ctx()),
+        ],
         egui::Button::new(if selected { text.strong() } else { text }).frame(false),
     );
     ui.painter().set(
@@ -1667,7 +1699,7 @@ const SETTINGS_PAGES: [(&str, &str); 9] = [
     ),
     (
         "Appearance",
-        "The theme, Glass's transparency and the latency colours.",
+        "The theme, transparency and the latency colours.",
     ),
     (
         "Display",
