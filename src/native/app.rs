@@ -120,21 +120,25 @@ impl HistoryLoader {
                     let result = if request.cancel.load(Ordering::Relaxed) {
                         Err("Trace cancelled".into())
                     } else {
-                        read_history(
-                            request.config.session_id.clone(),
-                            request.config.interval_ms,
-                        )
-                        .map(|history| {
-                            Loaded::read(
-                                Started {
-                                    id: u32::MAX,
-                                    addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                                    history,
-                                },
-                                &request.config,
-                                true,
+                        // A corrupt history must not take a worker down for the rest of the run.
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            read_history(
+                                request.config.session_id.clone(),
+                                request.config.interval_ms,
                             )
-                        })
+                            .map(|history| {
+                                Loaded::read(
+                                    Started {
+                                        id: u32::MAX,
+                                        addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                        history,
+                                    },
+                                    &request.config,
+                                    true,
+                                )
+                            })
+                        }))
+                        .unwrap_or_else(|_| Err("Could not read the saved history".into()))
                     };
                     startup::mark("saved history replayed");
                     let _ = request.reply.send(result);
@@ -617,7 +621,13 @@ impl Controller {
                     .unwrap_or_else(|_| Err("History loader closed".into()));
                 match result {
                     Ok(mut loaded) => {
+                        // A closed tab's history is erased when its stale start arrives.
                         if cancel.load(Ordering::Relaxed) {
+                            let _ = send.send(Command::Started(
+                                id,
+                                generation,
+                                Err("Trace cancelled".into()),
+                            ));
                             return;
                         }
                         if config.paused {
@@ -642,7 +652,13 @@ impl Controller {
                 history
             };
             if config.paused {
-                let result = read_history(id.clone(), config.interval_ms).map(|history| Started {
+                // History already in memory needs no second read.
+                let saved = if history {
+                    read_history(id.clone(), config.interval_ms)
+                } else {
+                    Ok(Vec::new())
+                };
+                let result = saved.map(|history| Started {
                     id: u32::MAX,
                     addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     history,
