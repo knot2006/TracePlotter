@@ -1315,8 +1315,19 @@ pub(super) fn stretch_width(span: f64, width: usize, interval: f64) -> f64 {
 fn graph(hop: &Hop, from: f64, to: f64, width: f64, interval: f64, pixels: usize) -> GraphData {
     let range = hop.bounds(from, to);
     let times = &hop.times[range.clone()];
-    let rtts = &hop.rtts[range];
-    let jitters = logic::jitter(rtts);
+    let rtts = &hop.rtts[range.clone()];
+    // Warm up the running average before the visible window so scrolling does not
+    // reseed it with a different pair of replies. After 512 replies the seed's weight
+    // is negligible; count replies rather than probes so loss cannot shorten the warmup.
+    let warmup = hop.rtts[..range.start]
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, rtt)| rtt.is_some())
+        .nth(511)
+        .map_or(0, |(i, _)| i);
+    let jitters = logic::jitter(&hop.rtts[warmup..range.end]);
+    let jitters = &jitters[range.start - warmup..];
     let losses = logic::loss(
         times,
         rtts,
@@ -1516,7 +1527,7 @@ mod tests {
         assert!(c.snapshot.read().unwrap().plots[0].data.xs.len() <= 502);
     }
     #[test]
-    fn sparse_graphs_keep_each_probe_and_start_jitter_at_the_visible_window() {
+    fn sparse_graphs_keep_each_probe_and_warm_up_jitter_before_the_visible_window() {
         let hop = Hop {
             ttl: 1,
             times: vec![1.0, 2.0, 3.0, 4.0],
@@ -1526,7 +1537,31 @@ mod tests {
         let data = graph(&hop, 3.0, 4.0, 1.0, 1.0, 100);
         assert_eq!(data.xs, vec![3.0, 4.0]);
         assert_eq!(data.ys, vec![Some(5.0), Some(15.0)]);
-        assert_eq!(data.js, vec![None, Some(10.0)]);
+        assert_eq!(data.js, vec![Some(10.3125), Some(10.29296875)]);
+        let full = graph(&hop, 1.0, 4.0, 1.0, 1.0, 100);
+        assert_eq!(full.js[0], None);
+        assert_eq!(data.js, full.js[2..]);
+    }
+
+    #[test]
+    fn scrolling_jitter_keeps_the_same_values_for_overlapping_history_with_loss() {
+        let hop = Hop {
+            times: (0..3000).map(f64::from).collect(),
+            rtts: (0..3000)
+                .map(|i| (i % 3 == 0).then_some(f64::from((i * 37) % 101)))
+                .collect(),
+            ..Hop::default()
+        };
+        let full = logic::jitter(&hop.rtts);
+        for start in 2400..2410 {
+            let data = graph(&hop, f64::from(start), 2600.0, 1.0, 1.0, 1000);
+            for (&x, actual) in data.xs.iter().zip(&data.js) {
+                match (actual, full[x as usize]) {
+                    (Some(actual), Some(expected)) => assert!((actual - expected).abs() < 1e-9),
+                    (actual, expected) => assert_eq!(*actual, expected),
+                }
+            }
+        }
     }
 
     #[test]
