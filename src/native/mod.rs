@@ -2077,6 +2077,8 @@ impl eframe::App for Window {
             });
             if close
                 && self.background.close_to_tray
+                // Updates and elevation must release this process for its replacement.
+                && !self.needs_exit
                 && !tray.quitting.load(std::sync::atomic::Ordering::Relaxed)
             {
                 ui.ctx()
