@@ -106,6 +106,11 @@ On Linux the desktop needs system tray support. If the tray cannot be created, t
 normal window and closing behavior. Windows startup registration belongs to your Windows account; removing
 the portable data folder does not remove it. Switch it off in Settings before removing the exe.
 
+Starting TracePlotter again while it is running shows a warning. If its window is minimized
+or hidden, restore it from the taskbar or its tray icon. **Start anyway** opens an extra
+instance with separate sessions and history, stored under `instances` in the data folder.
+Demo mode runs separately from normal monitoring.
+
 Every tab is its own session, even when two tabs trace the same host. Closing a tab or restarting
 its trace erases that tab's history.
 

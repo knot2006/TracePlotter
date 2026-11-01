@@ -49,6 +49,10 @@ Historical graph and MCP range reads share up to four workers, leaving a core fr
 when possible. Their bounded queue prevents overlapping requests from creating a
 separate set of threads for every tab. Day results are merged in chronological order.
 
+Hidden and minimized windows keep probing, recording history and serving MCP, but do
+not rebuild display snapshots or request repaints for probe updates. Restoring the
+window refreshes its snapshot even when every trace is paused.
+
 ## Test
 
 ```bash

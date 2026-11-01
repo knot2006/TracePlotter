@@ -11,6 +11,7 @@ mod context;
 mod export;
 mod graphs;
 mod import;
+mod instance;
 mod layout;
 mod migration;
 mod model;
@@ -28,6 +29,48 @@ use theme::{Theme, apply_theme, palette};
 pub(super) fn run() {
     startup::mark("process entry");
     wait_for_predecessor();
+    let _instance = match instance::Instance::acquire() {
+        Ok(Some(instance)) => instance,
+        Ok(None) => {
+            let choice = rfd::MessageDialog::new()
+                .set_title("TracePlotter is already running")
+                .set_description("TracePlotter is already running. It may be minimized or hidden in the system tray. Restore it from the taskbar or click its tray icon to open it.\n\nStart anyway opens another window with separate sessions and history.")
+                .set_level(rfd::MessageLevel::Warning)
+                .set_buttons(rfd::MessageButtons::OkCancelCustom("Start anyway".into(), "Cancel".into()))
+                .show();
+            if choice == rfd::MessageDialogResult::Custom("Start anyway".into())
+                && let Err(error) = start_additional_instance()
+            {
+                rfd::MessageDialog::new()
+                    .set_title("TracePlotter could not start")
+                    .set_description(error)
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+            }
+            return;
+        }
+        Err(error) => {
+            rfd::MessageDialog::new()
+                .set_title("TracePlotter could not start")
+                .set_description(format!(
+                    "Could not check whether TracePlotter is already running: {error}"
+                ))
+                .set_level(rfd::MessageLevel::Error)
+                .show();
+            return;
+        }
+    };
+    if instance_id().is_some()
+        && !data_dir().join("native-state.json").exists()
+        && let Err(error) = Session::default().save()
+    {
+        rfd::MessageDialog::new()
+            .set_title("TracePlotter could not start")
+            .set_description(error)
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        return;
+    }
     let session_receive =
         preload_session(|| Session::load().map(|session| (session, tray::Options::load())));
     let (font_send, font_receive) = mpsc::channel();
@@ -308,10 +351,10 @@ impl Window {
         if start_hidden {
             // Sign-in launches need a working tray before hiding; a failed tray leaves
             // the window visible so monitoring is still accessible.
-            result.tray = tray::start(&cc.egui_ctx);
+            result.tray = tray::start(&cc.egui_ctx, result.runtime.visibility.clone());
             if result.tray.is_some() {
                 result.opening.finish();
-                tray::hide(&cc.egui_ctx);
+                tray::hide(&cc.egui_ctx, &result.runtime.visibility);
             }
         }
         #[cfg(feature = "dev-live")]
@@ -422,7 +465,7 @@ impl Window {
         }
         let setup = self.desktop_setup.take().unwrap();
         if setup.create_tray {
-            self.tray = tray::start(ctx);
+            self.tray = tray::start(ctx, self.runtime.visibility.clone());
         }
         self.startup = tray::startup();
         startup::mark("tray and startup registration ready");
@@ -884,7 +927,7 @@ impl Window {
                             .clicked()
                         {
                             self.save_window(ui.ctx());
-                            tray::hide(ui.ctx());
+                            tray::hide(ui.ctx(), &self.runtime.visibility);
                             ui.close();
                         }
                     });
@@ -1738,6 +1781,11 @@ impl eframe::App for Window {
         [0.0; 4]
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(viewport) = raw_input.viewports.get(&raw_input.viewport_id) {
+            self.runtime
+                .visibility
+                .update(viewport.visible().unwrap_or(true));
+        }
         release_pointer_after_compositor(ctx, raw_input);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2034,9 +2082,9 @@ impl eframe::App for Window {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.save_window(ui.ctx());
-                tray::hide(ui.ctx());
+                tray::hide(ui.ctx(), &self.runtime.visibility);
             } else if minimized && self.background.minimize_to_tray && !tray::wayland() {
-                tray::hide(ui.ctx());
+                tray::hide(ui.ctx(), &self.runtime.visibility);
             }
         }
         let settled = ui.input(|i| i.time > 2.0 && !i.pointer.any_down());

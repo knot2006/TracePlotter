@@ -695,6 +695,17 @@ fn demo() -> bool {
     *DEMO.get_or_init(|| std::env::args().any(|arg| arg == "--demo"))
 }
 
+fn instance_id() -> Option<&'static uuid::Uuid> {
+    static ID: OnceLock<Option<uuid::Uuid>> = OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::args()
+            .skip_while(|arg| arg != "--instance")
+            .nth(1)
+            .and_then(|id| uuid::Uuid::parse_str(&id).ok())
+    })
+    .as_ref()
+}
+
 /// The folder for everything the app stores: trace history, open tabs, settings and the
 /// window's size. On Windows it sits next to the exe, not in the
 /// user profile, so the app is portable: copy the exe with this folder and nothing is left
@@ -715,12 +726,20 @@ fn data_dir() -> &'static Path {
             .filter(|path| path.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")))
             .unwrap_or_else(|| ".".into());
-        base.join(if demo() {
+        let base = base.join(if demo() {
             "TracePlotter-demo-data"
         } else {
             "TracePlotter-data"
-        })
+        });
+        instance_data_dir(base, instance_id())
     })
+}
+
+fn instance_data_dir(base: PathBuf, id: Option<&uuid::Uuid>) -> PathBuf {
+    match id {
+        Some(id) => base.join("instances").join(id.to_string()),
+        None => base,
+    }
 }
 
 /// The history folder of one tab, and the single file earlier versions kept its
@@ -1218,7 +1237,7 @@ fn restart_args() -> Vec<String> {
     while let Some(arg) = original.next() {
         match arg.as_str() {
             "--demo" | "--mcp" => args.push(arg),
-            "--demo-days" => {
+            "--demo-days" | "--instance" => {
                 args.push(arg);
                 if let Some(days) = original.next() {
                     args.push(days);
@@ -1228,6 +1247,30 @@ fn restart_args() -> Vec<String> {
         }
     }
     args.extend([AFTER.to_string(), std::process::id().to_string()]);
+    args
+}
+
+/// An explicitly requested extra copy gets its own saved sessions and history.
+fn start_additional_instance() -> Result<(), String> {
+    let args = additional_instance_args(restart_args(), uuid::Uuid::new_v4());
+    std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+        .args(args)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn additional_instance_args(original: Vec<String>, id: uuid::Uuid) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut original = original.into_iter();
+    while let Some(arg) = original.next() {
+        if arg == "--instance" {
+            original.next();
+        } else {
+            args.push(arg);
+        }
+    }
+    args.extend(["--instance".into(), id.to_string()]);
     args
 }
 
@@ -1369,6 +1412,41 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extra_instances_have_separate_data_and_replace_the_previous_identity() {
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let base = PathBuf::from("TracePlotter-data");
+        assert_eq!(instance_data_dir(base.clone(), None), base);
+        let first_dir = instance_data_dir(base.clone(), Some(&first));
+        let second_dir = instance_data_dir(base.clone(), Some(&second));
+        assert_ne!(first_dir, second_dir);
+        assert!(first_dir.starts_with(base.join("instances")));
+        let args = additional_instance_args(
+            vec![
+                "--demo".into(),
+                "--demo-days".into(),
+                "7".into(),
+                "--instance".into(),
+                first.to_string(),
+                "--after".into(),
+                "123".into(),
+            ],
+            second,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--demo",
+                "--demo-days",
+                "7",
+                "--after",
+                "123",
+                "--instance",
+                &second.to_string()
+            ]
+        );
+    }
     use trippy_core::{CompletionReason, Flags, Probe, RoundId, Sequence, TimeToLive, TraceId};
 
     #[test]

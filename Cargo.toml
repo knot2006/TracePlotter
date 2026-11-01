@@ -1,6 +1,6 @@
 [package]
 name = "traceplotter"
-version = "0.2.3"
+version = "0.2.4"
 description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
@@ -39,7 +39,7 @@ egui_extras = { version = "0.37", default-features = false }
 egui_plot = { version = "0.38" }
 # The window's handle, for the blur behind Glass (see native/blur.rs).
 raw-window-handle = "0.6"
-rfd = { version = "0.17" }
+rfd = { version = "0.17", features = ["common-controls-v6"] }
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 chrono = { version = "0.4", features = ["unstable-locales"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -73,7 +73,9 @@ egui-winit = { version = "0.37", default-features = false }
 auto-launch = { version = "0.6" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_NetworkManagement_Dns",
     "Win32_NetworkManagement_IpHelper",
@@ -81,6 +83,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_IO",
     "Win32_System_Threading",
     "Win32_UI_Controls",
+    "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
 ] }

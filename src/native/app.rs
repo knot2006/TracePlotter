@@ -192,6 +192,7 @@ pub(super) enum Command {
     Select(String),
     Compare(Vec<String>),
     View(View),
+    Refresh,
     Agent(String, Value, SyncSender<Result<Value, String>>),
     Started(String, u64, Result<Loaded, String>),
     Restored(String, u64, Box<Trace>),
@@ -207,9 +208,45 @@ pub(super) enum Command {
 
 pub(super) struct Runtime {
     pub send: mpsc::Sender<Command>,
+    pub visibility: Visibility,
     pub snapshot: Arc<RwLock<Arc<Snapshot>>>,
     worker: Option<std::thread::JoinHandle<()>>,
     forwarder: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub(super) struct Visibility {
+    visible: Arc<AtomicBool>,
+    tray_hidden: Arc<AtomicBool>,
+    send: mpsc::Sender<Command>,
+}
+impl Visibility {
+    fn new(send: mpsc::Sender<Command>) -> Self {
+        Self {
+            visible: Arc::new(AtomicBool::new(true)),
+            tray_hidden: Arc::new(AtomicBool::new(false)),
+            send,
+        }
+    }
+    pub fn hide(&self, minimized: bool) {
+        // Wayland restores minimized windows through the desktop as well as the tray.
+        self.tray_hidden.store(!minimized, Ordering::Relaxed);
+        self.set_visible(false);
+    }
+    pub fn show(&self) {
+        self.tray_hidden.store(false, Ordering::Relaxed);
+        self.set_visible(true);
+    }
+    pub fn update(&self, visible: bool) {
+        self.set_visible(visible && !self.tray_hidden.load(Ordering::Relaxed));
+    }
+    fn set_visible(&self, visible: bool) {
+        let previous = self.visible.swap(visible, Ordering::Relaxed);
+        if visible && !previous {
+            // A paused trace has no incoming samples to refresh its restored window.
+            let _ = self.send.send(Command::Refresh);
+        }
+    }
 }
 impl Runtime {
     pub fn start(session: Session, ctx: eframe::egui::Context) -> Self {
@@ -229,8 +266,11 @@ impl Runtime {
                 }
             }
         });
+        let visibility = Visibility::new(outgoing.clone());
+        let visible = Arc::clone(&visibility.visible);
         let mut runtime = Self {
             send: outgoing,
+            visibility,
             snapshot: Arc::clone(&snapshot),
             worker: None,
             forwarder: Some(forwarder),
@@ -247,6 +287,7 @@ impl Runtime {
                 snapshot,
                 ctx,
                 view: None,
+                visible,
                 mcp: mcp::Mcp::default(),
                 mcp_url: None,
                 error: None,
@@ -269,6 +310,7 @@ impl Runtime {
         let (send, receive) = mpsc::channel();
         (
             Self {
+                visibility: Visibility::new(send.clone()),
                 send,
                 snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
                 worker: None,
@@ -300,6 +342,7 @@ impl Drop for Runtime {
 }
 
 struct Controller {
+    visible: Arc<AtomicBool>,
     history: HistoryLoader,
     session: Session,
     mcp_choice: bool,
@@ -466,6 +509,7 @@ impl Controller {
                     self.save();
                 }
                 Command::View(view) => self.view = Some(view),
+                Command::Refresh => {}
                 Command::Started(id, generation, result) => self.started(&id, generation, result),
                 Command::Restored(id, generation, replay) => {
                     self.restored(&id, generation, *replay)
@@ -852,6 +896,9 @@ impl Controller {
         }
     }
     fn publish(&mut self) {
+        if !self.visible.load(Ordering::Relaxed) {
+            return;
+        }
         let mut snapshot = Snapshot {
             session: self.session.clone(),
             error: self.error.clone(),
@@ -1388,6 +1435,7 @@ mod tests {
     fn controller() -> Controller {
         let (send, receive) = mpsc::sync_channel(1024);
         Controller {
+            visible: Arc::new(AtomicBool::new(true)),
             history: HistoryLoader::new(),
             session: Session::default(),
             mcp_choice: false,
@@ -1422,6 +1470,70 @@ mod tests {
             }],
         })
     }
+    #[test]
+    fn visibility_restores_paused_windows_and_ignores_stale_visible_input_in_the_tray() {
+        let (send, receive) = mpsc::channel();
+        let visibility = Visibility::new(send);
+        visibility.hide(false);
+        visibility.update(true);
+        assert!(!visibility.visible.load(Ordering::Relaxed));
+        assert!(receive.try_recv().is_err());
+        visibility.clone().show();
+        assert!(visibility.visible.load(Ordering::Relaxed));
+        assert!(matches!(receive.try_recv(), Ok(Command::Refresh)));
+        visibility.update(true);
+        assert!(receive.try_recv().is_err());
+
+        // A Wayland window can also be restored through the desktop's task switcher.
+        visibility.hide(true);
+        visibility.update(false);
+        assert!(!visibility.visible.load(Ordering::Relaxed));
+        visibility.update(true);
+        assert!(matches!(receive.try_recv(), Ok(Command::Refresh)));
+        assert!(visibility.visible.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn hidden_windows_keep_samples_and_mcp_current_without_preparing_snapshots() {
+        let mut c = controller();
+        let (send, receive) = mpsc::channel();
+        let visibility = Visibility::new(send);
+        c.visible = Arc::clone(&visibility.visible);
+        c.traces.push(Trace::new(Config {
+            session_id: "one".into(),
+            ..Config::default()
+        }));
+        c.view = Some(View {
+            session: "one".into(),
+            hops: vec![0],
+            end: None,
+            width: 500,
+        });
+        c.sample("one", 0, sample(1000));
+        c.publish();
+        let shown = c.snapshot.read().unwrap().clone();
+        assert_eq!(shown.traces[0].total.sent, 1);
+        assert!(!shown.plots.is_empty());
+
+        visibility.hide(false);
+        c.sample("one", 0, sample(2000));
+        c.publish();
+        assert!(Arc::ptr_eq(&shown, &c.snapshot.read().unwrap()));
+        assert!(c.range_pending.is_empty() && c.details_pending.is_empty());
+        let answer = agent::read(&c.traces, "list_targets", &json!({})).unwrap();
+        assert_eq!(answer["targets"][0]["round_trip"]["sent"], 2);
+        assert_eq!(c.traces[0].target.times, vec![1.0, 2.0]);
+
+        c.traces[0].paused = true;
+        visibility.show();
+        assert!(matches!(receive.try_recv(), Ok(Command::Refresh)));
+        c.publish();
+        let restored = c.snapshot.read().unwrap().clone();
+        assert_eq!(restored.traces[0].total.sent, 2);
+        assert_eq!(restored.plots[0].data.xs, vec![1.0, 2.0]);
+        assert_eq!(c.view.as_ref().unwrap().hops, vec![0]);
+    }
+
     #[test]
     fn restored_history_is_visible_before_probing_and_survives_a_start_error() {
         let mut c = controller();

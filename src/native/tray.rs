@@ -4,6 +4,9 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+#[cfg(windows)]
+#[path = "tray_style.rs"]
+mod style;
 
 /// Kept in the same file as the legacy interface's, so the choice carries over.
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
@@ -26,6 +29,8 @@ impl Options {
 }
 
 pub(super) struct Tray {
+    #[cfg(windows)]
+    _style: Option<style::Style>,
     _icon: TrayIcon,
     /// Set by the tray's exit item and File > Exit: the next close request really closes.
     pub quitting: Arc<AtomicBool>,
@@ -36,7 +41,8 @@ pub(super) fn wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-pub(super) fn hide(ctx: &egui::Context) {
+pub(super) fn hide(ctx: &egui::Context, visibility: &app::Visibility) {
+    visibility.hide(wayland());
     ctx.send_viewport_cmd(if wayland() {
         egui::ViewportCommand::Minimized(true)
     } else {
@@ -44,7 +50,8 @@ pub(super) fn hide(ctx: &egui::Context) {
     });
 }
 
-pub(super) fn show(ctx: &egui::Context) {
+pub(super) fn show(ctx: &egui::Context, visibility: &app::Visibility) {
+    visibility.show();
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -53,7 +60,7 @@ pub(super) fn show(ctx: &egui::Context) {
 
 /// Creates the tray icon, or `None` on a desktop without a tray: the window then keeps its
 /// normal closing behaviour. On Windows this must run on the thread of the event loop.
-pub(super) fn start(ctx: &egui::Context) -> Option<Tray> {
+pub(super) fn start(ctx: &egui::Context, visibility: app::Visibility) -> Option<Tray> {
     let image = image::load_from_memory(include_bytes!("../../icons/128x128.png"))
         .ok()?
         .to_rgba8();
@@ -70,7 +77,7 @@ pub(super) fn start(ctx: &egui::Context) -> Option<Tray> {
         } else {
             "TracePlotter — monitoring"
         })
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         .with_menu_on_left_click(false)
         .build()
         .map_err(|e| eprintln!("No tray icon: {e}"))
@@ -79,9 +86,10 @@ pub(super) fn start(ctx: &egui::Context) -> Option<Tray> {
     // The handlers run on the tray's thread, also while the window is hidden and draws nothing.
     let (show_id, exit_id) = (show_item.id().clone(), exit_item.id().clone());
     let (menu_ctx, menu_quitting) = (ctx.clone(), quitting.clone());
+    let menu_visibility = visibility.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id == show_id {
-            show(&menu_ctx);
+            show(&menu_ctx, &menu_visibility);
         } else if event.id == exit_id {
             menu_quitting.store(true, Ordering::Relaxed);
             menu_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -98,10 +106,12 @@ pub(super) fn start(ctx: &egui::Context) -> Option<Tray> {
                 ..
             }
         ) {
-            show(&click_ctx);
+            show(&click_ctx, &visibility);
         }
     }));
     Some(Tray {
+        #[cfg(windows)]
+        _style: style::Style::new(tray.window_handle(), &menu, ctx),
         _icon: tray,
         quitting,
     })

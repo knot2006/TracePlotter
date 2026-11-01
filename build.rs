@@ -5,6 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=windows.manifest");
     #[cfg(windows)]
     tauri_winres::WindowsResource::new()
+        .set("FileDescription", "TracePlotter")
+        .set("ProductName", "TracePlotter")
         .set_icon("icons/icon.ico")
         .set_manifest(&include_str!("windows.manifest").replace(
             "@VERSION@",

@@ -1,5 +1,28 @@
 use super::*;
 use egui_kittest::{Harness, kittest::Queryable};
+
+#[test]
+fn minimized_viewports_resume_display_updates_when_restored() {
+    let (runtime, commands) = Runtime::fixture(fixture("demo-one"));
+    let mut window = Window::with_runtime(runtime);
+    let ctx = egui::Context::default();
+    let mut input = egui::RawInput::default();
+    let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+    viewport.minimized = Some(true);
+    viewport.occluded = Some(false);
+    eframe::App::raw_input_hook(&mut window, &ctx, &mut input);
+    assert!(commands.try_recv().is_err());
+    input
+        .viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .minimized = Some(false);
+    eframe::App::raw_input_hook(&mut window, &ctx, &mut input);
+    assert!(matches!(commands.try_recv(), Ok(Command::Refresh)));
+    eframe::App::raw_input_hook(&mut window, &ctx, &mut input);
+    assert!(commands.try_recv().is_err());
+}
+
 fn fixture(active: &str) -> Snapshot {
     let config = Config {
         session_id: "demo-one".into(),
