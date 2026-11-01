@@ -243,6 +243,9 @@ hour of history already filled in; each host name gets its own latency and loss.
 `--demo-days 7` to start new tabs with a week of history instead. Demo data goes to a separate
 `TracePlotter-demo-data` folder, so real tabs and history are left alone.
 
+Add `--demo-update` to preview the available-update banner. Its **Update now** button shows a
+demo message without installing an update.
+
 On Windows:
 
 ```powershell

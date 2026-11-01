@@ -315,6 +315,9 @@ impl Window {
         if session.check_updates && !demo() {
             result.update_check(&cc.egui_ctx);
         }
+        if demo() && std::env::args().any(|arg| arg == "--demo-update") {
+            result.update = Some(env!("CARGO_PKG_VERSION").into());
+        }
         Ok(result)
     }
     fn with_runtime(runtime: Runtime) -> Self {
@@ -964,21 +967,6 @@ impl Window {
                             ui.close();
                         }
                     });
-                    if let Some(version) = self.update.clone() {
-                        ui.label(format!("TracePlotter {version} is available."));
-                        if small_button(ui, "Update now").clicked() && !self.busy {
-                            // Only Windows has a signed installer; elsewhere the releases page has the update.
-                            if cfg!(windows) {
-                                self.install_update(ui.ctx());
-                            } else if let Err(e) = open_project_page() {
-                                self.error = Some(e);
-                            }
-                            self.update = None;
-                        }
-                        if small_button(ui, "Dismiss").clicked() {
-                            self.update = None;
-                        }
-                    }
                     if self.busy {
                         ui.spinner();
                         ui.weak("Working…");
@@ -991,6 +979,54 @@ impl Window {
             });
         ui.spacing_mut().interact_size.y = control_height;
         changed
+    }
+    fn update_notice(&mut self, ui: &mut egui::Ui) {
+        let Some(version) = self.update.clone() else {
+            return;
+        };
+        let p = *palette(ui.ctx());
+        egui::Frame::new()
+            .fill(p.accent.gamma_multiply(0.12))
+            .stroke(egui::Stroke::new(1.0, p.accent.gamma_multiply(0.6)))
+            .corner_radius(6)
+            .outer_margin(egui::Margin::symmetric(8, 4))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.spacing_mut().item_spacing = egui::vec2(12.0, 6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!("TracePlotter {version} is available."))
+                            .strong()
+                            .color(p.text),
+                    );
+                    if ui
+                        .add_enabled(
+                            !self.busy,
+                            egui::Button::new(
+                                RichText::new("Update now").strong().color(p.surface),
+                            )
+                            .fill(p.accent)
+                            .min_size(egui::vec2(104.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        // Only Windows has a signed installer; elsewhere the releases page has the update.
+                        if demo() {
+                            self.message =
+                                Some("This is a demo update; no update was installed.".into());
+                        } else if cfg!(windows) {
+                            self.install_update(ui.ctx());
+                        } else if let Err(e) = open_project_page() {
+                            self.error = Some(e);
+                        }
+                        self.update = None;
+                    }
+                    if ui.button("Dismiss").clicked() {
+                        self.update = None;
+                    }
+                });
+            });
     }
     fn table(
         &mut self,
@@ -1793,6 +1829,7 @@ impl eframe::App for Window {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 changed |= self.menus(ui, &snapshot, &mut session);
+                self.update_notice(ui);
                 changed |= self.tabs(ui, &snapshot, &mut session);
                 changed |= self.toolbar(ui, &snapshot, &mut session);
             });
