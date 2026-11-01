@@ -4,16 +4,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Theme {
-    Ink,
+    #[serde(alias = "ink")]
+    Dark,
     #[default]
     #[serde(other)]
     Glass,
 }
 
 impl Theme {
+    pub fn is_glass(self) -> bool {
+        self == Self::Glass
+    }
+
     pub fn label(self) -> &'static str {
         match self {
-            Self::Ink => "Ink",
+            Self::Dark => "Dark",
             Self::Glass => "Glass",
         }
     }
@@ -51,10 +56,10 @@ pub(super) struct Palette {
 const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
-/// MonoCode's Ink theme.
-// Ink's greys come from MonoCode's default neutral shell, hsl(240, 0%, 9%), and its inset
+/// MonoCode's neutral dark theme.
+// Dark's greys come from MonoCode's default neutral shell, hsl(240, 0%, 9%), and its inset
 // pane at 45% of that lightness.
-const INK: Palette = Palette {
+const DARK: Palette = Palette {
     surface: rgb(0x000000),
     shell: rgb(0x171717),
     inset: rgb(0x0a0a0a),
@@ -62,17 +67,16 @@ const INK: Palette = Palette {
     input: rgb(0x0f0f0f),
     line: rgb(0x2a2a2a),
     edge: rgb(0x646464),
-    text: rgb(0xf5f5f5),
-    soft: rgb(0xd6d6d6),
-    muted: rgb(0x8f8f8f),
-    accent: rgb(0x4d8dff),
-    accent_light: rgb(0x70a6ff),
+    text: rgb(0xebebeb),
+    soft: rgb(0xb6b6b6),
+    muted: rgb(0x969696),
+    accent: rgb(0x4da3f5),
+    accent_light: rgb(0x79b9f8),
     good: rgb(0x3ddc84),
     warn: rgb(0xffb020),
     bad: rgb(0xff4d4d),
 };
 
-/// Glass: cool charcoal panels, soft borderless controls and a vivid green for what is on.
 const GLASS: Palette = Palette {
     surface: rgb(0x101410),
     shell: rgb(0x2a2e33),
@@ -94,7 +98,7 @@ const GLASS: Palette = Palette {
 /// The colours the interface paints with.
 pub(super) fn palette(ctx: &egui::Context) -> &'static Palette {
     match current(ctx) {
-        Theme::Ink => &INK,
+        Theme::Dark => &DARK,
         Theme::Glass => &GLASS,
     }
 }
@@ -133,6 +137,27 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     }
     w.inactive.bg_stroke = egui::Stroke::new(1.0, palette(ctx).edge);
     w.hovered.bg_stroke = egui::Stroke::new(1.0, palette(ctx).muted);
+    if theme == Theme::Dark {
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
+        visuals.menu_corner_radius = egui::CornerRadius::same(8);
+        visuals.slider_trailing_fill = true;
+        visuals.handle_shape = egui::style::HandleShape::Circle;
+        visuals.selection.bg_fill = palette(ctx).text.gamma_multiply(0.10);
+        for (state, fill, edge) in [
+            (&mut w.inactive, 0.04, 0.10),
+            (&mut w.hovered, 0.10, 0.20),
+            (&mut w.active, 0.14, 0.20),
+            (&mut w.open, 0.10, 0.20),
+        ] {
+            state.corner_radius = egui::CornerRadius::same(6);
+            state.bg_fill = palette(ctx).text.gamma_multiply(fill);
+            state.weak_bg_fill = state.bg_fill;
+            state.bg_stroke = egui::Stroke::new(1.0, palette(ctx).text.gamma_multiply(edge));
+        }
+        // The accent stays on the control in use, including keyboard focus.
+        w.active.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
+        w.open.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
+    }
     if theme == Theme::Glass {
         visuals.window_corner_radius = egui::CornerRadius::same(12);
         visuals.menu_corner_radius = egui::CornerRadius::same(10);
@@ -177,9 +202,12 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     ctx.set_visuals(visuals);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
-        s.spacing.interact_size.y = 32.0;
-        s.spacing.slider_rail_height = if theme == Theme::Glass { 4.0 } else { 8.0 };
-        s.spacing.menu_margin = egui::Margin::same(if theme == Theme::Glass { 8 } else { 6 });
+        s.spacing.interact_size.y = match theme {
+            Theme::Glass => 30.0,
+            Theme::Dark => 28.0,
+        };
+        s.spacing.slider_rail_height = 4.0;
+        s.spacing.menu_margin = egui::Margin::same(if theme.is_glass() { 8 } else { 6 });
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
         s.text_styles
@@ -191,14 +219,14 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     });
 }
 
-/// How opaque the window's panels are: Glass lets some of the desktop through, as its
-/// transparency setting asks, while other themes are solid.
+/// How opaque the window's panels are. Dark stays solid outside Windows.
 pub(super) fn opacity(ctx: &egui::Context) -> f32 {
-    if current(ctx) != Theme::Glass {
+    let theme = current(ctx);
+    if theme == Theme::Dark && !cfg!(windows) {
         return 1.0;
     }
     let transparency = ctx
-        .data(|d| d.get_temp::<f32>(egui::Id::unique("native-transparency")))
+        .data(|d| d.get_temp::<f32>(transparency_id(theme)))
         .unwrap_or(0.0);
     1.0 - transparency
 }
@@ -209,24 +237,43 @@ pub(super) fn set_transparency(ctx: &egui::Context, transparency: f32) {
     } else {
         0.0
     };
-    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("native-transparency"), transparency));
+    let id = transparency_id(current(ctx));
+    ctx.data_mut(|d| d.insert_temp(id, transparency));
     let fill = palette(ctx).shell.gamma_multiply(opacity(ctx));
     ctx.style_mut_of(egui::Theme::Dark, |s| s.visuals.panel_fill = fill);
 }
 
-/// A quiet light across the charcoal surface gives the cards depth without desktop blur.
-pub(super) fn glass_surface(ui: &egui::Ui) {
-    if current(ui.ctx()) != Theme::Glass {
+fn transparency_id(theme: Theme) -> egui::Id {
+    egui::Id::unique(match theme {
+        Theme::Dark => "native-dark-transparency",
+        Theme::Glass => "native-transparency",
+    })
+}
+
+pub(super) fn tab_height(ctx: &egui::Context) -> f32 {
+    match current(ctx) {
+        Theme::Dark => 27.0,
+        Theme::Glass => 28.0,
+    }
+}
+
+/// Cool blue light gives Glass depth even where the desktop compositor cannot blur it.
+pub(super) fn glass_surface(ui: &egui::Ui, margin: egui::Margin) {
+    if !current(ui.ctx()).is_glass() {
         return;
     }
-    let rect = ui.max_rect();
+    let rect = egui::Rect::from_min_max(
+        ui.max_rect().min - egui::vec2(f32::from(margin.left), f32::from(margin.top)),
+        ui.max_rect().max + egui::vec2(f32::from(margin.right), f32::from(margin.bottom)),
+    );
     let mut mesh = egui::Mesh::default();
-    for (pos, color) in [
+    let colours = [
         (rect.left_top(), rgb(0x2c3136)),
         (rect.right_top(), rgb(0x23272b)),
         (rect.left_bottom(), rgb(0x181b1e)),
         (rect.right_bottom(), rgb(0x1d2125)),
-    ] {
+    ];
+    for (pos, color) in colours {
         mesh.colored_vertex(pos, color.gamma_multiply(opacity(ui.ctx())));
     }
     mesh.add_triangle(0, 1, 2);
@@ -246,11 +293,11 @@ mod tests {
     #[test]
     fn themes_are_isolated_per_window_and_switch_back_completely() {
         let glass = egui::Context::default();
-        let ink = egui::Context::default();
+        let dark = egui::Context::default();
         apply_theme(&glass, Theme::Glass);
-        apply_theme(&ink, Theme::Ink);
+        apply_theme(&dark, Theme::Dark);
         assert_eq!(palette(&glass).accent, GLASS.accent);
-        assert_eq!(palette(&ink).accent, INK.accent);
+        assert_eq!(palette(&dark).accent, DARK.accent);
         assert!(
             glass
                 .style_of(egui::Theme::Dark)
@@ -258,16 +305,16 @@ mod tests {
                 .slider_trailing_fill
         );
 
-        apply_theme(&glass, Theme::Ink);
-        assert_eq!(palette(&glass).accent, INK.accent);
+        apply_theme(&glass, Theme::Dark);
+        assert_eq!(palette(&glass).accent, DARK.accent);
         let switched = glass.style_of(egui::Theme::Dark);
-        let original = ink.style_of(egui::Theme::Dark);
+        let original = dark.style_of(egui::Theme::Dark);
         assert_eq!(switched.visuals, original.visuals);
         assert_eq!(switched.spacing, original.spacing);
     }
 
     #[test]
-    fn only_glass_lets_the_desktop_through_and_never_entirely() {
+    fn transparency_is_bounded_and_independent_for_each_theme() {
         let ctx = egui::Context::default();
         apply_theme(&ctx, Theme::Glass);
         set_transparency(&ctx, 5.0);
@@ -276,11 +323,15 @@ mod tests {
         set_transparency(&ctx, f32::NAN);
         assert_eq!(opacity(&ctx), 1.0);
         set_transparency(&ctx, 0.5);
-        apply_theme(&ctx, Theme::Ink);
+        apply_theme(&ctx, Theme::Dark);
         assert_eq!(opacity(&ctx), 1.0);
         assert_eq!(
             ctx.style_of(egui::Theme::Dark).visuals.panel_fill,
-            INK.shell
+            DARK.shell
         );
+        set_transparency(&ctx, 0.15);
+        assert_eq!(opacity(&ctx), if cfg!(windows) { 0.85 } else { 1.0 });
+        apply_theme(&ctx, Theme::Glass);
+        assert_eq!(opacity(&ctx), 0.5);
     }
 }

@@ -410,7 +410,7 @@ pub(super) fn show(
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
-        let glass = theme::current(ui.ctx()) == Theme::Glass;
+        let glass = theme::current(ui.ctx()).is_glass();
         ui.visuals_mut().extreme_bg_color = chart_surface(ui.ctx());
         let jitter_response = if with_jitter {
             ui.vertical_centered(|ui| {
@@ -830,11 +830,7 @@ pub(super) fn same_event(a: &Value, b: &Value) -> bool {
 /// One neutral step above the black page, as a chart's own surface; the hop table's latency
 /// bars sit on it too.
 pub(super) fn chart_surface(ctx: &egui::Context) -> Color32 {
-    if theme::current(ctx) == Theme::Glass {
-        palette(ctx).inset.gamma_multiply(theme::opacity(ctx))
-    } else {
-        Color32::from_rgb(0x10, 0x10, 0x10)
-    }
+    palette(ctx).inset.gamma_multiply(theme::opacity(ctx))
 }
 
 /// Dashed marks with a tab at the top; the selected event is drawn last, solid, over a band.

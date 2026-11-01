@@ -91,7 +91,7 @@ fn fixture(active: &str) -> Snapshot {
     }
 }
 fn harness(active: &str, size: [f32; 2]) -> (Harness<'static, Window>, mpsc::Receiver<Command>) {
-    themed_harness(active, size, Theme::Ink)
+    themed_harness(active, size, Theme::Dark)
 }
 fn themed_harness(
     active: &str,
@@ -103,6 +103,7 @@ fn themed_harness(
     let (runtime, commands) = Runtime::fixture(snapshot);
     let h = Harness::builder().with_size(size).build_eframe(|cc| {
         apply_theme(&cc.egui_ctx, theme);
+        theme::set_transparency(&cc.egui_ctx, if theme == Theme::Dark { 0.15 } else { 0.45 });
         let mut window = Window::with_runtime(runtime);
         window.placed = true;
         window.window_state = None;
@@ -134,13 +135,13 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     h.run();
     assert!(h.query_all_by_label("User interface").next().is_none());
     assert!(h.query_by_label("Apply and restart").is_none());
-    let ink_accent = palette(&h.ctx).accent;
+    let dark_accent = palette(&h.ctx).accent;
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
         .click();
     h.run();
     h.get_by_label("Glass").click();
     h.run();
-    assert_ne!(palette(&h.ctx).accent, ink_accent);
+    assert_ne!(palette(&h.ctx).accent, dark_accent);
     assert!(!h.state().busy && !h.state().needs_exit);
     assert!(
         commands
@@ -151,32 +152,48 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
         .click();
     h.run();
-    h.get_by_label("Ink").click();
+    h.get_by_label("Dark").click();
     h.run();
-    assert_eq!(palette(&h.ctx).accent, ink_accent);
+    assert_eq!(palette(&h.ctx).accent, dark_accent);
+    assert_eq!(
+        theme::opacity(&h.ctx),
+        if cfg!(windows) { 0.85 } else { 1.0 }
+    );
 }
 
 #[test]
-fn glass_transparency_slider_applies_and_sends_a_saved_preference() {
-    let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], Theme::Glass);
-    h.state_mut().settings_page = 1;
-    h.run();
-    let rail = h
-        .get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency")
-        .rect();
-    h.hover_at(rail.left_center());
-    h.drag_at(rail.left_center());
-    h.run();
-    h.hover_at(rail.center());
-    h.run();
-    h.drop_at(rail.center());
-    h.run();
-    assert!(theme::opacity(&h.ctx) < 1.0);
-    assert!(
-        commands
-            .try_iter()
-            .any(|c| matches!(c, Command::Preferences(s) if s.transparency > 0.0))
-    );
+fn transparency_slider_applies_and_sends_each_themes_saved_preference() {
+    for &theme in if cfg!(windows) {
+        &[Theme::Dark, Theme::Glass][..]
+    } else {
+        &[Theme::Glass][..]
+    } {
+        let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], theme);
+        h.state_mut().settings_page = 1;
+        h.run();
+        let rail = h
+            .get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency")
+            .rect();
+        h.hover_at(rail.left_center());
+        h.drag_at(rail.left_center());
+        h.run();
+        h.hover_at(rail.center());
+        h.run();
+        h.drop_at(rail.center());
+        h.run();
+        assert!(theme::opacity(&h.ctx) < 1.0);
+        assert!(
+            commands
+                .try_iter()
+                .any(|c| matches!(c, Command::Preferences(s) if
+                    if theme == Theme::Dark {
+                        s.dark_transparency > 0.15 && s.transparency == 0.45
+                    } else {
+                        s.transparency > 0.0 && s.dark_transparency == 0.15
+                    }
+                ))
+        );
+    }
 }
 
 #[test]
@@ -192,6 +209,63 @@ fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
         assert!(h.get_by_label("Close").rect().bottom() <= size[1]);
     }
 }
+#[test]
+fn slider_fills_stop_at_the_handle_centre() {
+    for theme in [Theme::Dark, Theme::Glass] {
+        for label in ["History position", "Transparency"] {
+            if label == "Transparency" && theme == Theme::Dark && !cfg!(windows) {
+                continue;
+            }
+            let (mut h, _) = themed_harness(
+                if label == "Transparency" {
+                    "settings"
+                } else {
+                    "demo-one"
+                },
+                [1100.0, 720.0],
+                theme,
+            );
+            h.state_mut().settings_page = 1;
+            h.run();
+            let bounds = h
+                .get_by_role_and_label(egui::accesskit::Role::Slider, label)
+                .rect();
+            let handle = h
+                .output()
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle) if bounds.contains(circle.center) => {
+                        Some(circle.center)
+                    }
+                    _ => None,
+                })
+                .expect("Slider handle");
+            let fill_end = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if bounds.contains(rect.rect.center())
+                            && rect.rect.height() <= 4.1
+                            && rect.rect.width() > 10.0 =>
+                    {
+                        Some(rect.rect.right())
+                    }
+                    _ => None,
+                })
+                .reduce(f32::min)
+                .expect("Slider fill");
+            assert!(
+                (fill_end - handle.x).abs() < 0.01,
+                "{theme:?} {label}: fill ends at {fill_end}, handle at {}",
+                handle.x
+            );
+        }
+    }
+}
+
 #[test]
 fn trace_controls_emit_typed_commands() {
     let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
@@ -606,8 +680,8 @@ fn render_native_scenarios() {
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
     export::render_fixture(&gpu, &fixture("demo-one"), &output).unwrap();
-    for theme in [Theme::Ink, Theme::Glass] {
-        if theme == Theme::Glass {
+    for theme in [Theme::Dark, Theme::Glass] {
+        if theme.is_glass() {
             let mut snapshot = fixture("demo-one");
             snapshot.session.theme = theme;
             let exports = output.join("glass");
@@ -656,7 +730,10 @@ fn render_native_scenarios() {
                 .unwrap()
                 .save(output.join(format!(
                     "{}{name}.png",
-                    if theme == Theme::Glass { "glass-" } else { "" }
+                    match theme {
+                        Theme::Glass => "glass-",
+                        Theme::Dark => "",
+                    }
                 )))
                 .unwrap();
         }
@@ -840,6 +917,29 @@ fn settings_tab_closes_back_to_the_tab_it_came_from() {
             .try_iter()
             .any(|c| matches!(c, Command::Select(id) if id == "demo-one"))
     );
+}
+
+#[test]
+fn settings_interval_arrow_stays_to_the_right_of_the_input() {
+    let (mut h, commands) = harness("settings", [1100.0, 720.0]);
+    h.run();
+    let field = h
+        .query_all_by_role_and_label(egui::accesskit::Role::TextInput, "Interval")
+        .last()
+        .expect("Settings interval input")
+        .rect();
+    let arrow = h
+        .query_all_by_label("Presets")
+        .find(|node| (node.rect().center().y - field.center().y).abs() < 1.0)
+        .expect("Interval preset arrow");
+    assert!(arrow.rect().left() >= field.right());
+    arrow.click();
+    h.run();
+    h.get_by_label("5 seconds").click();
+    h.run();
+    assert!(commands.try_iter().any(
+        |command| matches!(command, Command::Preferences(s) if s.settings.interval_ms == 5000)
+    ));
 }
 
 #[test]
