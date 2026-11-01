@@ -99,6 +99,61 @@ impl Loaded {
     }
 }
 
+struct HistoryRequest {
+    config: Config,
+    cancel: Arc<AtomicBool>,
+    reply: mpsc::Sender<Result<Loaded, String>>,
+}
+
+/// History replay is CPU and disk work; DNS must not occupy its two workers.
+struct HistoryLoader(mpsc::Sender<HistoryRequest>);
+impl HistoryLoader {
+    fn new() -> Self {
+        let (send, receive) = mpsc::channel::<HistoryRequest>();
+        let receive = Arc::new(Mutex::new(receive));
+        for _ in 0..2 {
+            let receive = Arc::clone(&receive);
+            std::thread::spawn(move || {
+                loop {
+                    let request = receive.lock().unwrap().recv();
+                    let Ok(request) = request else { break };
+                    let result = if request.cancel.load(Ordering::Relaxed) {
+                        Err("Trace cancelled".into())
+                    } else {
+                        read_history(
+                            request.config.session_id.clone(),
+                            request.config.interval_ms,
+                        )
+                        .map(|history| {
+                            Loaded::read(
+                                Started {
+                                    id: u32::MAX,
+                                    addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                    history,
+                                },
+                                &request.config,
+                                true,
+                            )
+                        })
+                    };
+                    startup::mark("saved history replayed");
+                    let _ = request.reply.send(result);
+                }
+            });
+        }
+        Self(send)
+    }
+    fn load(&self, config: Config, cancel: Arc<AtomicBool>) -> Receiver<Result<Loaded, String>> {
+        let (reply, receive) = mpsc::channel();
+        let _ = self.0.send(HistoryRequest {
+            config,
+            cancel,
+            reply,
+        });
+        receive
+    }
+}
+
 /// Exact statistics for a period older than memory: its scope, the period and its hops.
 type Details = (String, (f64, f64), Vec<Detail>);
 #[derive(Clone, PartialEq)]
@@ -135,6 +190,7 @@ pub(super) enum Command {
     View(View),
     Agent(String, Value, SyncSender<Result<Value, String>>),
     Started(String, u64, Result<Loaded, String>),
+    Restored(String, u64, Box<Trace>),
     Sample(String, u64, TraceEvent),
     Name(IpAddr, Option<String>),
     Range(RangeKey, Result<Range, String>),
@@ -180,6 +236,7 @@ impl Runtime {
                 session,
                 mcp_choice,
                 traces: vec![],
+                history: HistoryLoader::new(),
                 probes: Traces::default(),
                 send,
                 receive,
@@ -239,6 +296,7 @@ impl Drop for Runtime {
 }
 
 struct Controller {
+    history: HistoryLoader,
     session: Session,
     mcp_choice: bool,
     traces: Vec<Trace>,
@@ -264,8 +322,18 @@ struct Controller {
 impl Controller {
     fn run(mut self) {
         set_history_days(self.session.settings.history_days);
-        for config in self.session.targets.clone() {
-            self.open(config);
+        self.traces = self
+            .session
+            .targets
+            .iter()
+            .cloned()
+            .map(Trace::new)
+            .collect();
+        let mut order: Vec<usize> = (0..self.traces.len()).collect();
+        order.sort_by_key(|&i| self.traces[i].config.session_id != self.session.active);
+        // Queue the visible tab first without changing the saved tab order.
+        for i in order {
+            self.launch(i);
         }
         self.save();
         if self.session.mcp || mcp::mcp_flag() {
@@ -394,6 +462,9 @@ impl Controller {
                 }
                 Command::View(view) => self.view = Some(view),
                 Command::Started(id, generation, result) => self.started(&id, generation, result),
+                Command::Restored(id, generation, replay) => {
+                    self.restored(&id, generation, *replay)
+                }
                 Command::Sample(id, generation, event) => self.sample(&id, generation, event),
                 Command::Name(addr, name) => {
                     self.names.insert(addr, (name.clone(), now_ms()));
@@ -532,11 +603,43 @@ impl Controller {
         let previous = self.stopped.remove(&config.session_id);
         let send = self.send.clone();
         let probes = self.probes.clone();
+        let restored =
+            (history && !demo()).then(|| self.history.load(config.clone(), Arc::clone(&cancel)));
         std::thread::spawn(move || {
             let id = config.session_id.clone();
             if let Some(previous) = previous {
                 let _ = previous.join();
             }
+            let history = if let Some(restored) = restored {
+                let result = restored
+                    .recv()
+                    .unwrap_or_else(|_| Err("History loader closed".into()));
+                match result {
+                    Ok(mut loaded) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if config.paused {
+                            let _ = send.send(Command::Started(id, generation, Ok(loaded)));
+                            return;
+                        }
+                        if let Some(replay) = loaded.replay.take()
+                            && send
+                                .send(Command::Restored(id.clone(), generation, replay))
+                                .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = send.send(Command::Started(id, generation, Err(e)));
+                        return;
+                    }
+                }
+                false
+            } else {
+                history
+            };
             if config.paused {
                 let result = read_history(id.clone(), config.interval_ms).map(|history| Started {
                     id: u32::MAX,
@@ -574,6 +677,14 @@ impl Controller {
                 }
             }
         });
+    }
+    fn restored(&mut self, id: &str, generation: u64, replay: Trace) {
+        if let Some(i) = self
+            .index(id)
+            .filter(|i| self.traces[*i].generation == generation)
+        {
+            self.traces[i].restore(replay);
+        }
     }
     fn started(&mut self, id: &str, generation: u64, result: Result<Loaded, String>) {
         let Some(i) = self
@@ -1249,6 +1360,7 @@ mod tests {
     fn controller() -> Controller {
         let (send, receive) = mpsc::sync_channel(1024);
         Controller {
+            history: HistoryLoader::new(),
             session: Session::default(),
             mcp_choice: false,
             traces: vec![],
@@ -1282,6 +1394,51 @@ mod tests {
             }],
         })
     }
+    #[test]
+    fn restored_history_is_visible_before_probing_and_survives_a_start_error() {
+        let mut c = controller();
+        let config = Config {
+            session_id: "saved".into(),
+            ..Config::default()
+        };
+        let mut trace = Trace::new(config.clone());
+        trace.generation = 2;
+        c.traces.push(trace);
+        let replay = || {
+            let mut trace = Trace::new(config.clone());
+            if let TraceEvent::Sample(sample) = sample(1000) {
+                trace.apply(sample, false);
+            }
+            trace
+        };
+        c.restored("saved", 1, replay());
+        assert!(!c.traces[0].loaded);
+        c.restored("saved", 2, replay());
+        c.publish();
+        assert!(c.traces[0].loaded);
+        assert_eq!(c.snapshot.read().unwrap().traces[0].total.sent, 1);
+        c.started("saved", 2, Err("cannot resolve host".into()));
+        assert_eq!(c.traces[0].target.times, vec![1.0]);
+        assert_eq!(c.traces[0].error.as_deref(), Some("cannot resolve host"));
+        c.traces.clear();
+        c.restored("saved", 2, replay());
+        assert!(c.traces.is_empty());
+    }
+
+    #[test]
+    fn cancelled_history_requests_do_not_read_files() {
+        let loader = HistoryLoader::new();
+        let config = Config {
+            session_id: "../invalid".into(),
+            ..Config::default()
+        };
+        let result = loader
+            .load(config, Arc::new(AtomicBool::new(true)))
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(result, Err(e) if e == "Trace cancelled"));
+    }
+
     #[test]
     fn hops_take_names_already_in_the_cache() {
         let mut c = controller();

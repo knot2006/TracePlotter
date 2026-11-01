@@ -23,7 +23,13 @@ use model::{Config, Session};
 use theme::{Theme, apply_theme, palette};
 
 pub(super) fn run() {
+    startup::mark("process entry");
     wait_for_predecessor();
+    let (font_send, font_receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = font_send.send(fonts().clone());
+        startup::mark("system fonts read");
+    });
     let title = if demo() {
         "TracePlotter (demo)"
     } else {
@@ -63,7 +69,11 @@ pub(super) fn run() {
             wgpu_options: blur::wgpu_options(),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(Window::new(cc).map_err(std::io::Error::other)?))),
+        Box::new(move |cc| {
+            Ok(Box::new(
+                Window::new(cc, font_receive).map_err(std::io::Error::other)?,
+            ))
+        }),
     );
     if let Err(e) = result {
         let message = format!("TracePlotter could not open: {e}");
@@ -101,6 +111,8 @@ enum Job {
     Restart(Result<(), String>),
 }
 struct Window {
+    pending_fonts: Option<mpsc::Receiver<egui::FontDefinitions>>,
+    first_frame: bool,
     runtime: Runtime,
     host: String,
     toolbar_protocol: String,
@@ -166,12 +178,19 @@ struct Window {
     live: Option<blaze_live::Live>,
 }
 impl Window {
-    fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        font_receive: mpsc::Receiver<egui::FontDefinitions>,
+    ) -> Result<Self, String> {
+        startup::mark("GPU and window created");
         let session = Session::load()?;
+        startup::mark("settings loaded");
         apply_theme(&cc.egui_ctx, session.theme);
         theme::set_transparency(&cc.egui_ctx, session.transparency);
         let runtime = Runtime::start(session.clone(), cc.egui_ctx.clone());
         let mut result = Self::with_runtime(runtime);
+        result.pending_fonts = Some(font_receive);
+        result.poll_fonts(&cc.egui_ctx);
         result.blur = blur::request(cc);
         result.gpu = cc.wgpu_render_state.clone();
         result.window_state = load_window_state();
@@ -212,6 +231,8 @@ impl Window {
         };
         let host = config.host.clone();
         Self {
+            pending_fonts: None,
+            first_frame: true,
             runtime,
             host,
             toolbar_protocol: config.protocol,
@@ -270,6 +291,22 @@ impl Window {
             blur: blur::Blur::default(),
             #[cfg(feature = "dev-live")]
             live: None,
+        }
+    }
+    fn poll_fonts(&mut self, ctx: &egui::Context) {
+        let Some(receive) = &self.pending_fonts else {
+            return;
+        };
+        match receive.try_recv() {
+            Ok(fonts) => {
+                ctx.set_fonts(fonts);
+                self.pending_fonts = None;
+                startup::mark("system fonts installed");
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.pending_fonts = None,
         }
     }
     fn preferences(&self, session: Session) {
@@ -1506,6 +1543,11 @@ impl eframe::App for Window {
         release_pointer_after_compositor(ctx, raw_input);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.first_frame {
+            self.first_frame = false;
+            startup::mark("first UI frame");
+        }
+        self.poll_fonts(ui.ctx());
         self.blur.update(ui.ctx());
         #[cfg(feature = "dev-live")]
         if let Some(live) = self.live.as_mut() {

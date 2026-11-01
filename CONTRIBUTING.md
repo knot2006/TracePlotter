@@ -32,6 +32,15 @@ for that run. [AGENTS.md](AGENTS.md) has more for coding agents.
 Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need extra rights. Use
 **Tools > Restart as Administrator…** on Windows, or **Allow raw sockets…** on Linux.
 
+To log elapsed startup milestones to stderr, set `TRACEPLOTTER_STARTUP_TIMINGS=1`
+before launching the app. The timings include window and GPU creation, settings,
+system fonts, the first UI frame and each saved history replay. Use an optimized
+`fast` build for launch measurements; `cargo run` also includes build time.
+
+The window uses bundled fonts until system fonts finish loading. Saved tabs restore
+their history with two workers, with the active tab queued first. History is shown
+before hostname resolution, so a DNS failure does not hide an existing capture.
+
 ## Test
 
 ```bash

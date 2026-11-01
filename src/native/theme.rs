@@ -1,4 +1,3 @@
-use super::fonts;
 use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
@@ -103,9 +102,6 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     let previous = ctx.data(|d| d.get_temp::<Theme>(egui::Id::unique("native-theme")));
     if previous == Some(theme) {
         return;
-    }
-    if previous.is_none() {
-        ctx.set_fonts(fonts().clone());
     }
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("native-theme"), theme));
     let mut visuals = egui::Visuals::dark();

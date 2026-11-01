@@ -21,6 +21,7 @@ use probe::*;
 mod insights;
 #[cfg(target_os = "linux")]
 mod pingsock;
+mod startup;
 #[cfg(windows)]
 mod winicmp;
 
@@ -259,23 +260,56 @@ fn write_lines<'a>(dir: &Path, lines: impl IntoIterator<Item = &'a str>) -> std:
 /// fallen out of it. Only the newest days that hold them are read. Unreadable lines are skipped.
 fn load_history(dir: &Path, max: usize) -> Vec<Sample> {
     trim_days(dir);
-    let mut texts = Vec::new();
-    let mut count = 0;
+    let mut lines = Vec::new();
     for (_, path) in day_files(dir).iter().rev() {
-        if count >= max {
+        if lines.len() >= max {
             break;
         }
-        let Ok(text) = fs::read_to_string(path) else {
+        let Ok(mut file) = fs::File::open(path) else {
             continue;
         };
-        count += text.lines().count();
-        texts.push(text);
+        if let Ok(recent) = newest_lines(&mut file, max - lines.len(), |line| {
+            serde_json::from_str::<Sample>(line).ok()
+        }) {
+            lines.extend(recent);
+        }
     }
-    let lines: Vec<&str> = texts.iter().rev().flat_map(|text| text.lines()).collect();
-    lines[lines.len().saturating_sub(max)..]
-        .iter()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
+    lines.into_iter().rev().flatten().collect()
+}
+
+/// Reads only the end of a growing day file, returning its newest lines first.
+fn newest_lines<T>(
+    reader: &mut (impl Read + Seek),
+    max: usize,
+    parse: impl FnMut(&str) -> T,
+) -> std::io::Result<Vec<T>> {
+    if max == 0 {
+        return Ok(Vec::new());
+    }
+    let mut position = reader.seek(SeekFrom::End(0))?;
+    let mut chunks = Vec::new();
+    let mut newlines = 0;
+    while position > 0 && newlines <= max {
+        let size = position.min(64 * 1024) as usize;
+        position -= size as u64;
+        reader.seek(SeekFrom::Start(position))?;
+        let mut chunk = vec![0; size];
+        reader.read_exact(&mut chunk)?;
+        newlines += chunk.iter().filter(|&&b| b == b'\n').count();
+        chunks.push(chunk);
+    }
+    let bytes: Vec<u8> = chunks.into_iter().rev().flatten().collect();
+    // The first chunk may start inside a UTF-8 character or JSON record.
+    let start = if position == 0 {
+        0
+    } else {
+        bytes
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    };
+    let text = std::str::from_utf8(&bytes[start..]).map_err(std::io::Error::other)?;
+    Ok(text.lines().rev().take(max).map(parse).collect())
 }
 
 /// The probes of one hop over a stretch of time. Stretches add up, so a long period is
@@ -1427,6 +1461,67 @@ mod tests {
         assert_eq!(history_rounds(1000), 86_400);
         assert_eq!(history_rounds(10_000), 8640);
         assert_eq!(history_rounds(200), MAX_HISTORY);
+    }
+
+    #[test]
+    fn history_tail_matches_lines_across_chunks_and_line_endings() {
+        for ending in ["\n", "\r\n"] {
+            let text = format!(
+                "{}{}{}tail",
+                "界".repeat(70_000),
+                ending,
+                "reply\n\n".repeat(20_000)
+            );
+            for max in [0, 1, 2, 100, 40_002, 50_000] {
+                let expected: Vec<_> = text.lines().rev().take(max).collect();
+                assert_eq!(
+                    newest_lines(
+                        &mut std::io::Cursor::new(text.as_bytes()),
+                        max,
+                        str::to_owned
+                    )
+                    .unwrap(),
+                    expected
+                );
+            }
+        }
+        for text in ["", "\n", "one\n", "one\r\ntwo\r\n", "one\n\n", "one\ntwo"] {
+            for max in 0..5 {
+                assert_eq!(
+                    newest_lines(&mut std::io::Cursor::new(text), max, str::to_owned).unwrap(),
+                    text.lines().rev().take(max).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn history_tail_does_not_read_the_whole_day_for_recent_samples() {
+        struct Counted {
+            data: std::io::Cursor<Vec<u8>>,
+            read: usize,
+        }
+        impl Read for Counted {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.data.read(bytes)?;
+                self.read += n;
+                Ok(n)
+            }
+        }
+        impl Seek for Counted {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                self.data.seek(from)
+            }
+        }
+        let mut reader = Counted {
+            data: std::io::Cursor::new("old record\n".repeat(100_000).into_bytes()),
+            read: 0,
+        };
+        assert_eq!(
+            newest_lines(&mut reader, 3, str::to_owned).unwrap().len(),
+            3
+        );
+        assert_eq!(reader.read, 64 * 1024);
     }
 
     #[test]

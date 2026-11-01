@@ -112,6 +112,22 @@ fn themed_harness(
 }
 
 #[test]
+fn the_window_accepts_fonts_after_its_first_frame() {
+    let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
+    let (send, receive) = mpsc::channel();
+    h.state_mut().pending_fonts = Some(receive);
+    h.run();
+    assert!(h.state().pending_fonts.is_some());
+    assert!(!h.state().first_frame);
+    assert!(!h.state().busy);
+    send.send(egui::FontDefinitions::default()).unwrap();
+    h.run();
+    assert!(h.state().pending_fonts.is_none());
+    assert_eq!(theme::current(&h.ctx), Theme::Ink);
+    assert!(h.query_by_label("example.com  ICMP").is_some());
+}
+
+#[test]
 fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     let (mut h, commands) = harness("settings", [1100.0, 720.0]);
     h.state_mut().settings_page = 1;
