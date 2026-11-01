@@ -17,7 +17,8 @@ TracePlotter traces a route over and over and draws the latency and loss of ever
 the manner of PingPlotter, WinMTR or mtr. It is free and open source, and it can let AI agents read
 its traces and answer questions about your connection.
 
-![TracePlotter tracing a route: the hop table with loss, latency and jitter per hop, above the jitter, latency and packet-loss graphs of the selected hop](docs/screenshot-glass.png)
+<img width="1763" height="1140" alt="image" src="https://github.com/user-attachments/assets/36d9fbf5-9fbd-4bce-aec9-dc3674f45fc9" />
+
 
 ## Download
 
