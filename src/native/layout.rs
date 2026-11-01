@@ -608,8 +608,7 @@ impl Window {
                                     self.events_open = true;
                                     ui.close();
                                 }
-                                changed |= ui
-                                    .checkbox(&mut session.show_events, "Show events")
+                                changed |= theme::menu_checkbox(ui, &mut session.show_events, "Show events")
                                     .on_hover_text("Mark route changes, alerts and recoveries on the latency graph")
                                     .changed();
                             });

@@ -14,6 +14,9 @@ mod import;
 mod layout;
 mod migration;
 mod model;
+mod opening;
+#[cfg(windows)]
+mod placement;
 mod report;
 mod theme;
 mod time;
@@ -49,7 +52,8 @@ pub(super) fn run() {
         });
     // The window opens at its saved size: resizing it once it is shown leaves KWin's blur
     // behind the window stale, and moving it then leaves trails of old screen content.
-    let size = load_window_state()
+    let window_state = load_window_state();
+    let size = window_state
         .and_then(|s| s.size)
         .filter(|size| size.iter().all(|v| v.is_finite() && *v > 0.0))
         .unwrap_or([1100.0, 720.0]);
@@ -73,7 +77,8 @@ pub(super) fn run() {
         },
         Box::new(move |cc| {
             Ok(Box::new(
-                Window::new(cc, font_receive, session_receive).map_err(std::io::Error::other)?,
+                Window::new(cc, font_receive, session_receive, window_state)
+                    .map_err(std::io::Error::other)?,
             ))
         }),
     );
@@ -197,6 +202,7 @@ struct Window {
     desktop_setup: Option<DeferredDesktop>,
     pending_fonts: Option<mpsc::Receiver<egui::FontDefinitions>>,
     first_frame: bool,
+    opening: opening::Opening,
     runtime: Runtime,
     host: String,
     toolbar_protocol: String,
@@ -266,6 +272,7 @@ impl Window {
         cc: &eframe::CreationContext<'_>,
         font_receive: mpsc::Receiver<egui::FontDefinitions>,
         session_receive: mpsc::Receiver<StartupSession>,
+        window_state: Option<WindowState>,
     ) -> Result<Self, String> {
         startup::mark("GPU and window created");
         let (session, background) = session_receive
@@ -286,7 +293,11 @@ impl Window {
         result.poll_fonts(&cc.egui_ctx);
         result.blur = blur::request(cc);
         result.gpu = cc.wgpu_render_state.clone();
-        result.window_state = load_window_state();
+        result.window_state = window_state;
+        #[cfg(windows)]
+        {
+            result.placed = placement::restore(cc, window_state);
+        }
         result.remember_window = true;
         result.background = background;
         let start_hidden = std::env::args().any(|a| a == "--background");
@@ -299,6 +310,7 @@ impl Window {
             // the window visible so monitoring is still accessible.
             result.tray = tray::start(&cc.egui_ctx);
             if result.tray.is_some() {
+                result.opening.finish();
                 tray::hide(&cc.egui_ctx);
             }
         }
@@ -337,6 +349,7 @@ impl Window {
             desktop_setup: None,
             pending_fonts: None,
             first_frame: true,
+            opening: opening::Opening::default(),
             runtime,
             host,
             toolbar_protocol: config.protocol,
@@ -684,8 +697,9 @@ impl Window {
                     // egui pads menu-bar buttons by only 2 px, which hugs the fill to the word;
                     // wider padding with tighter spacing keeps the words where they were.
                     let spacing = ui.spacing_mut();
-                    spacing.button_padding = egui::vec2(8.0, 4.0);
-                    spacing.item_spacing.x = 0.0;
+                    spacing.interact_size.y = 28.0;
+                    spacing.button_padding = egui::vec2(10.0, 6.0);
+                    spacing.item_spacing.x = 2.0;
                     ui.menu_button("File", |ui| {
                         menu_rows(ui);
                         if ui
@@ -817,7 +831,10 @@ impl Window {
                                 ui.close();
                             }
                         } else {
-                            ui.weak("Open a target's tab for its commands.");
+                            menu_note(
+                                ui,
+                                RichText::new("Open a target's tab for its commands.").weak(),
+                            );
                         }
                         ui.separator();
                         if ui
@@ -874,11 +891,15 @@ impl Window {
                     ui.menu_button("Tools", |ui| {
                         menu_rows(ui);
                         menu_heading(ui, "AI agents");
-                        changed |= ui
-                            .checkbox(&mut session.mcp, "Allow AI agents to connect (MCP)")
-                            .changed();
+                        changed |= theme::menu_checkbox(
+                            ui,
+                            &mut session.mcp,
+                            "Allow AI agents to connect (MCP)",
+                        )
+                        .changed();
                         if let Some(url) = &snapshot.mcp_url {
-                            ui.label(
+                            menu_note(
+                                ui,
                                 RichText::new(url)
                                     .monospace()
                                     .small()
@@ -891,11 +912,15 @@ impl Window {
                         }
                         ui.separator();
                         menu_heading(ui, "Raw sockets");
-                        ui.weak(if is_elevated() {
-                            "TracePlotter may open raw sockets."
-                        } else {
-                            "Raw sockets need additional rights."
-                        });
+                        menu_note(
+                            ui,
+                            RichText::new(if is_elevated() {
+                                "TracePlotter may open raw sockets."
+                            } else {
+                                "Raw sockets need additional rights."
+                            })
+                            .weak(),
+                        );
                         if ui
                             .add_enabled(
                                 !self.busy && !is_elevated() && can_elevate(),
@@ -932,12 +957,28 @@ impl Window {
                     });
                     ui.menu_button("Help", |ui| {
                         menu_rows(ui);
-                        ui.label(
-                            RichText::new(concat!("TracePlotter ", env!("CARGO_PKG_VERSION")))
-                                .strong(),
-                        );
-                        ui.weak("Built with egui");
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let p = palette(ui.ctx());
+                                    theme::menu_icon(ui);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.label(RichText::new("TracePlotter").size(16.0).strong());
+                                        ui.label(
+                                            RichText::new(concat!(
+                                                "Version ",
+                                                env!("CARGO_PKG_VERSION")
+                                            ))
+                                            .small()
+                                            .color(p.muted),
+                                        );
+                                    });
+                                });
+                            });
                         ui.separator();
+                        menu_heading(ui, "Updates");
                         if ui
                             .add_enabled(!self.busy, egui::Button::new("Check for updates"))
                             .clicked()
@@ -956,9 +997,12 @@ impl Window {
                             self.install_update(ui.ctx());
                             ui.close();
                         }
-                        changed |= ui
-                            .checkbox(&mut session.check_updates, "Check for updates at startup")
-                            .changed();
+                        changed |= theme::menu_checkbox(
+                            ui,
+                            &mut session.check_updates,
+                            "Check for updates at startup",
+                        )
+                        .changed();
                         ui.separator();
                         if ui.button("Project page and releases").clicked() {
                             if let Err(e) = open_project_page() {
@@ -1737,6 +1781,7 @@ impl eframe::App for Window {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.restore_window(ui.ctx());
+        let opening = self.opening.begin(ui);
         let snapshot = self.runtime.read();
         let mut session = snapshot.session.clone();
         session.theme = theme::current(ui.ctx());
@@ -2003,6 +2048,7 @@ impl eframe::App for Window {
         }
         #[cfg(debug_assertions)]
         if demo()
+            && opening.is_none()
             && !snapshot.history_loading
             && !self.captured
             && snapshot
@@ -2040,6 +2086,9 @@ impl eframe::App for Window {
         }
         window_edges(ui.ctx());
         focus_ring(ui.ctx());
+        if let Some(progress) = opening {
+            opening::sweep(ui.ctx(), progress);
+        }
     }
 }
 /// A ring around whichever control has keyboard focus, drawn once for all of them: egui's
@@ -2073,25 +2122,28 @@ fn focus_ring(ctx: &egui::Context) {
 /// Menu rows sized for reading down a list; the toolbar's controls would leave them
 /// sparse and hard to scan.
 fn menu_rows(ui: &mut egui::Ui) {
-    // Glass gives its menus the roomier rows of its other controls.
-    let theme = theme::current(ui.ctx());
-    let spacing = ui.spacing_mut();
-    spacing.interact_size.y = match theme {
-        Theme::Glass => 28.0,
-        Theme::Dark => 26.0,
-    };
-    spacing.item_spacing.y = 2.0;
-    spacing.button_padding = if theme.is_glass() {
-        egui::vec2(10.0, 5.0)
-    } else {
-        egui::vec2(8.0, 4.0)
-    };
-    ui.set_min_width(230.0);
+    theme::menu_rows(ui);
 }
 /// A group's name inside a menu: small and muted, so it reads as a label, not a command.
 fn menu_heading(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(2.0);
-    ui.label(RichText::new(text).small().color(palette(ui.ctx()).muted));
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(12, 4))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .small()
+                    .strong()
+                    .color(palette(ui.ctx()).muted),
+            );
+        });
+}
+
+fn menu_note(ui: &mut egui::Ui, text: RichText) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(12, 4))
+        .show(ui, |ui| {
+            ui.label(text);
+        });
 }
 /// A compact button that still meets the 24 px minimum target size.
 fn small_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {

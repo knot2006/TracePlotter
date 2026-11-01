@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Theme {
-    #[serde(alias = "ink")]
-    Dark,
-    #[default]
-    #[serde(other)]
     Glass,
+    #[default]
+    #[serde(alias = "ink")]
+    #[serde(other)]
+    Dark,
 }
 
 impl Theme {
@@ -114,6 +114,12 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     visuals.extreme_bg_color = palette(ctx).input;
     visuals.faint_bg_color = palette(ctx).raised;
     visuals.window_stroke = egui::Stroke::new(1.0, palette(ctx).line);
+    visuals.popup_shadow = egui::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(120),
+    };
     visuals.hyperlink_color = palette(ctx).accent_light;
     visuals.warn_fg_color = palette(ctx).warn;
     visuals.error_fg_color = palette(ctx).bad;
@@ -207,7 +213,7 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
             Theme::Dark => 28.0,
         };
         s.spacing.slider_rail_height = 4.0;
-        s.spacing.menu_margin = egui::Margin::same(if theme.is_glass() { 8 } else { 6 });
+        s.spacing.menu_margin = egui::Margin::same(8);
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
         s.text_styles
@@ -217,6 +223,88 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
         s.text_styles
             .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
     });
+}
+
+/// Applied after egui's menu defaults, which otherwise replace the control styling.
+pub(super) fn menu_rows(ui: &mut egui::Ui) {
+    let p = *palette(ui.ctx());
+    let glass = current(ui.ctx()).is_glass();
+    let style = ui.style_mut();
+    style.override_text_style = Some(egui::TextStyle::Body);
+    style.spacing.interact_size.y = 32.0;
+    style.spacing.item_spacing = egui::vec2(8.0, 2.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.visuals.button_frame = true;
+    let widgets = &mut style.visuals.widgets;
+    for (state, fill, text) in [
+        (&mut widgets.inactive, 0.0, p.soft),
+        (
+            &mut widgets.hovered,
+            if glass { 0.15 } else { 0.10 },
+            p.text,
+        ),
+        (&mut widgets.active, if glass { 0.20 } else { 0.14 }, p.text),
+        (&mut widgets.open, if glass { 0.15 } else { 0.10 }, p.text),
+    ] {
+        state.corner_radius = egui::CornerRadius::same(6);
+        state.bg_fill = p.text.gamma_multiply(fill);
+        state.weak_bg_fill = state.bg_fill;
+        state.bg_stroke = egui::Stroke::NONE;
+        state.fg_stroke = egui::Stroke::new(1.5, text);
+        state.expansion = 0.0;
+    }
+    ui.set_min_width(260.0);
+}
+
+pub(super) fn menu_icon(ui: &mut egui::Ui) {
+    let id = egui::Id::unique("help-app-icon");
+    let texture = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id));
+    let texture = texture.or_else(|| {
+        let image = image::load_from_memory(include_bytes!("../../icons/128x128.png"))
+            .ok()?
+            .to_rgba8();
+        let texture = ui.ctx().load_texture(
+            "TracePlotter icon",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            ),
+            egui::TextureOptions::LINEAR,
+        );
+        ui.ctx().data_mut(|d| d.insert_temp(id, texture.clone()));
+        Some(texture)
+    });
+    if let Some(texture) = texture {
+        ui.image((texture.id(), egui::vec2(32.0, 32.0)));
+    }
+}
+
+/// Menu toggles share the commands' full row, padding and keyboard behavior.
+pub(super) fn menu_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
+    let selected = *checked;
+    let mark = egui::Atom::paint(egui::vec2(16.0, 16.0), move |ui, args| {
+        if selected {
+            let rect = args.rect.shrink(3.0);
+            ui.painter().add(egui::Shape::line(
+                vec![rect.left_center(), rect.center_bottom(), rect.right_top()],
+                egui::Stroke::new(1.5, args.fallback_text_color),
+            ));
+        }
+    });
+    let mut response = ui.add(egui::Button::new(label).right_text(mark));
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::accesskit::Role::CheckBox,
+            ui.is_enabled(),
+            *checked,
+            label,
+        )
+    });
+    response
 }
 
 /// How opaque the window's panels are. Dark stays solid outside Windows.

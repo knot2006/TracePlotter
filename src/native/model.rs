@@ -478,16 +478,18 @@ mod tests {
     #[test]
     fn native_theme_survives_session_roundtrip_and_defaults_for_older_sessions() {
         let older = Session::decode(r#"{"version":1}"#).unwrap();
-        assert_eq!(older.theme, Theme::Glass);
+        assert_eq!(older.theme, Theme::Dark);
         assert_eq!(older.transparency, 0.45);
         assert_eq!(older.dark_transparency, 0.15);
         let ink = Session::decode(r#"{"version":1,"theme":"ink"}"#).unwrap();
         assert_eq!(ink.theme, Theme::Dark);
+        let glass = Session::decode(r#"{"version":1,"theme":"glass"}"#).unwrap();
+        assert_eq!(glass.theme, Theme::Glass);
         assert_eq!(
             Session::decode(r#"{"version":1,"theme":"future"}"#)
                 .unwrap()
                 .theme,
-            Theme::Glass
+            Theme::Dark
         );
         let session = Session {
             theme: Theme::Dark,
@@ -502,7 +504,7 @@ mod tests {
         assert_eq!(back.dark_transparency, 0.2);
         let removed =
             Session::decode(r#"{"version":1,"theme":"glassNew","transparency":0.3}"#).unwrap();
-        assert_eq!((removed.theme, removed.transparency), (Theme::Glass, 0.3));
+        assert_eq!((removed.theme, removed.transparency), (Theme::Dark, 0.3));
     }
     #[test]
     fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {

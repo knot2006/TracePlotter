@@ -115,9 +115,9 @@ history, the columns of the hop table, the port of the MCP server, the update ch
 a switch for desktop notifications.
 
 The app uses the native egui interface. Its **Glass** and **Dark** themes are under
-**Settings > Appearance**, with the latency colours. Glass, at 45 % transparency, is the default.
+**Settings > Appearance**, with the latency colours. Dark is the default.
 Glass uses charcoal panels, green accents and compact controls. Theme changes apply immediately
-and are remembered. Its Transparency slider lets the desktop show
+and are remembered. Glass starts at 45 % transparency. Its Transparency slider lets the desktop show
 through; Windows 11 and KDE Plasma on Wayland blur what shows through, other systems do not.
 Dark follows MonoCode Native's neutral surfaces, soft controls and blue accents. On Windows
 it starts at 15 % transparency, adjustable separately from Glass; on Linux it stays opaque.

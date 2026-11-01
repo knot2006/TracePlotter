@@ -62,8 +62,7 @@ fn menu(
             ui.close();
         }
         ui.separator();
-        if ui
-            .checkbox(&mut loss_by_target, "Loss bars in each target's colour")
+        if theme::menu_checkbox(ui, &mut loss_by_target, "Loss bars in each target's colour")
             .changed()
         {
             *action = Some(Action::LossColors(loss_by_target));

@@ -67,6 +67,8 @@ wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 # The Windows ICMP API, for ICMP traces that need no raw socket (see winicmp.rs), and
 # reverse DNS without NetBIOS. Also the check for Administrator rights and the restart with them.
 [target.'cfg(windows)'.dependencies]
+# Restore placement through the native window before its first frame is shown.
+egui-winit = { version = "0.37", default-features = false }
 # Start at sign-in, keeping the registration used by earlier releases.
 auto-launch = { version = "0.6" }
 windows-sys = { version = "0.61", features = [

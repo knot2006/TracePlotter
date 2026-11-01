@@ -8,8 +8,7 @@ impl Window {
         session: &mut Session,
         key: Option<&str>,
     ) -> bool {
-        ui.spacing_mut().interact_size.y = 22.0;
-        ui.spacing_mut().item_spacing.y = 2.0;
+        menu_rows(ui);
         let mut changed = false;
         let mut order = ordered_columns(session);
         if let Some(at) = key.and_then(|key| order.iter().position(|id| id == key)) {
@@ -33,7 +32,7 @@ impl Window {
         }
         for (id, label) in COLUMNS {
             let mut visible = !session.hidden_columns.iter().any(|column| column == id);
-            if ui.checkbox(&mut visible, label).changed() {
+            if theme::menu_checkbox(ui, &mut visible, label).changed() {
                 session.hidden_columns.retain(|column| column != id);
                 if !visible {
                     session.hidden_columns.push(id.into());

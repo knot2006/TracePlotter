@@ -692,6 +692,9 @@ fn render_native_scenarios() {
             ("demo-one", "trace", [1100.0, 720.0]),
             ("demo-one", "trace-hover", [1100.0, 720.0]),
             ("demo-one", "trace-menu", [1100.0, 720.0]),
+            ("demo-one", "help-menu", [1100.0, 720.0]),
+            ("demo-one", "file-menu", [1100.0, 720.0]),
+            ("demo-one", "tools-menu", [1100.0, 720.0]),
             ("demo-one", "columns-menu", [1440.0, 900.0]),
             ("demo-one", "trace-wide", [1440.0, 900.0]),
             ("demo-one", "trace-small", [640.0, 420.0]),
@@ -709,6 +712,24 @@ fn render_native_scenarios() {
                 h.state_mut().editing = Some((fixture(active).session.targets[0].clone(), false));
             }
             h.run();
+            if let Some(menu) = match name {
+                "help-menu" => Some("Help"),
+                "file-menu" => Some("File"),
+                "tools-menu" => Some("Tools"),
+                _ => None,
+            } {
+                h.get_by_label(menu).click();
+                h.run();
+                let item = if menu == "Help" {
+                    "Check for updates at startup"
+                } else if menu == "Tools" {
+                    "Allow AI agents to connect (MCP)"
+                } else {
+                    "New target"
+                };
+                h.hover_at(h.get_by_label(item).rect().center());
+                h.run();
+            }
             if name == "trace-hover" {
                 let history = h.get_by_label("History position").rect();
                 h.hover_at(egui::pos2(500.0, history.top() - 70.0));
