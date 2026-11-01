@@ -124,7 +124,7 @@ fn the_window_accepts_fonts_after_its_first_frame() {
     send.send(egui::FontDefinitions::default()).unwrap();
     h.run();
     assert!(h.state().pending_fonts.is_none());
-    assert_eq!(theme::current(&h.ctx), Theme::Ink);
+    assert_eq!(theme::current(&h.ctx), Theme::Dark);
     assert!(h.query_by_label("example.com  ICMP").is_some());
 }
 

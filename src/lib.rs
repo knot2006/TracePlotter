@@ -24,6 +24,7 @@ mod pingsock;
 mod startup;
 #[cfg(windows)]
 mod winicmp;
+mod workers;
 
 /// ICMP echo through the system, which needs no raw socket: the Windows ICMP API, or Linux
 /// ping sockets.
@@ -511,8 +512,8 @@ struct Range {
 
 /// What a tab's history holds from `from` to before `to` (Unix ms), per hop number (0 for
 /// the round trip): a tally over the whole period, and for the hops in `graphed` one per
-/// `width` ms. The day files the period touches are read by as many threads as there are
-/// cores. With a width of whole minutes they are tallied by the minute and kept (see
+/// `width` ms. Day files are read by shared workers, bounded across UI and MCP requests.
+/// With a width of whole minutes they are tallied by the minute and kept (see
 /// `DayTally`); such stretches can reach up to a minute past the period's ends.
 fn history_range(
     session: String,
@@ -522,9 +523,19 @@ fn history_range(
     graphed: Vec<u8>,
 ) -> Result<Range, String> {
     let dir = history_dir(&session)?;
+    history_range_in(&dir, from, to, width, graphed)
+}
+
+fn history_range_in(
+    dir: &Path,
+    from: u64,
+    to: u64,
+    width: u64,
+    graphed: Vec<u8>,
+) -> Result<Range, String> {
     let width = width.max(1);
     let by_minute = width.is_multiple_of(MINUTE_MS);
-    let all = day_files(&dir);
+    let all = day_files(dir);
     let start = all.first().and_then(|(_, path)| first_time(path));
     let days: Vec<PathBuf> = all
         .into_iter()
@@ -534,51 +545,32 @@ fn history_range(
     let cache = DAY_TALLIES.get_or_init(Default::default);
     cache.lock().unwrap().retain(|path, _| path.exists());
 
-    let tally_day = |path: &Path| -> Tallies {
+    let parts = workers::history_map(days, move |path| {
         if !by_minute {
             return tally_rounds(
-                &fs::read_to_string(path).unwrap_or_default(),
+                &fs::read_to_string(&path).unwrap_or_default(),
                 width,
                 from,
                 to,
             );
         }
-        let day = cache
+        let day = DAY_TALLIES
+            .get_or_init(Default::default)
             .lock()
             .unwrap()
             .entry(path.to_path_buf())
             .or_default()
             .clone();
         let mut day = day.lock().unwrap();
-        day.catch_up(path);
+        day.catch_up(&path);
         let mut tallies = Tallies::new();
         rebucket(&mut tallies, &day.tallies, MINUTE_MS, width, from, to);
         tallies
-    };
-    // A pool rather than a thread per day: each thread holds a whole day file in memory.
-    let next = AtomicUsize::new(0);
-    let parts: Mutex<Vec<Option<Tallies>>> = Mutex::new(vec![None; days.len()]);
-    let threads = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(days.len());
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(path) = days.get(i) else {
-                        return;
-                    };
-                    let tallies = tally_day(path);
-                    parts.lock().unwrap()[i] = Some(tallies);
-                }
-            });
-        }
-    });
+    })?;
 
     // Days in order, so that each hop's last probe is the latest one.
     let mut hops: BTreeMap<u8, RangeHop> = BTreeMap::new();
-    for part in parts.into_inner().unwrap().into_iter().flatten() {
+    for part in parts {
         let mut ttls: Vec<&u8> = part.keys().collect();
         ttls.sort();
         for ttl in ttls {
@@ -1606,6 +1598,80 @@ mod tests {
                 .map(|t| t.sent)
                 .sum::<u32>(),
             2
+        );
+    }
+
+    #[test]
+    fn concurrent_history_ranges_keep_day_order_and_refresh_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = 20_000 * DAY_MS;
+        let to = from + 2 * DAY_MS;
+        let line = |t, rtt| {
+            serde_json::to_string(&Sample {
+                t,
+                hops: vec![HopSample {
+                    ttl: 1,
+                    addr: None,
+                    rtt,
+                }],
+            })
+            .unwrap()
+        };
+        let lines = [
+            line(from + 1000, Some(10.0)),
+            line(from + 2000, Some(20.0)),
+            line(from + DAY_MS + 1000, None),
+            line(from + DAY_MS + 2000, Some(30.0)),
+        ];
+        write_lines(dir.path(), lines.iter().map(String::as_str)).unwrap();
+        let raw = history_range_in(dir.path(), from, to, 1000, vec![0, 1]).unwrap();
+        std::thread::scope(|scope| {
+            let requests: Vec<_> = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        history_range_in(dir.path(), from, to, 2 * DAY_MS, vec![0, 1]).unwrap()
+                    })
+                })
+                .collect();
+            for request in requests {
+                let range = request.join().unwrap();
+                assert_eq!(range.start, Some(from + 1000));
+                for (hop, expected) in range.hops.iter().zip(&raw.hops) {
+                    assert_eq!(
+                        serde_json::to_value(hop.total).unwrap(),
+                        serde_json::to_value(expected.total).unwrap()
+                    );
+                    assert_eq!(hop.total.sent, 4);
+                    assert_eq!(hop.total.received, 3);
+                    assert_eq!(hop.total.last, Some(30.0));
+                    assert_eq!(hop.stretches.len(), 1);
+                    assert_eq!(hop.stretches[0].tally.sent, 4);
+                }
+            }
+        });
+        let mut writer = HistoryWriter::new(dir.path().to_path_buf());
+        writer
+            .append(
+                from + DAY_MS + 3000,
+                &line(from + DAY_MS + 3000, Some(40.0)),
+            )
+            .unwrap();
+        let raw = history_range_in(dir.path(), from, to, 1000, vec![0, 1]).unwrap();
+        let cached = history_range_in(dir.path(), from, to, MINUTE_MS, vec![0, 1]).unwrap();
+        for (hop, expected) in cached.hops.iter().zip(&raw.hops) {
+            assert_eq!(
+                serde_json::to_value(hop.total).unwrap(),
+                serde_json::to_value(expected.total).unwrap()
+            );
+            assert_eq!(hop.total.sent, 5);
+            assert_eq!(hop.total.last, Some(40.0));
+            assert!(hop.stretches.windows(2).all(|s| s[0].t < s[1].t));
+        }
+        assert!(
+            history_range_in(dir.path(), to, to + DAY_MS, MINUTE_MS, vec![])
+                .unwrap()
+                .hops
+                .is_empty()
         );
     }
 

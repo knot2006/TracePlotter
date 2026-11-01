@@ -41,6 +41,10 @@ The window uses bundled fonts until system fonts finish loading. Saved tabs rest
 their history with two workers, with the active tab queued first. History is shown
 before hostname resolution, so a DNS failure does not hide an existing capture.
 
+Historical graph and MCP range reads share up to four workers, leaving a core free
+when possible. Their bounded queue prevents overlapping requests from creating a
+separate set of threads for every tab. Day results are merged in chronological order.
+
 ## Test
 
 ```bash
