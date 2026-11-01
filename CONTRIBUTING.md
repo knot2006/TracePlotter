@@ -34,8 +34,12 @@ Only traces through raw sockets (ICMP (raw socket), UDP, TCP) need extra rights.
 
 To log elapsed startup milestones to stderr, set `TRACEPLOTTER_STARTUP_TIMINGS=1`
 before launching the app. The timings include window and GPU creation, settings,
-system fonts, the first UI frame and each saved history replay. Use an optimized
+system fonts, the first UI frame, deferred tray setup and each saved history replay. Use an optimized
 `fast` build for launch measurements; `cargo run` also includes build time.
+
+Settings load alongside GPU initialization. Normal launches create the tray and check
+startup registration after the first frame; sign-in launches create the tray before
+hiding, so a failed tray still leaves a visible window.
 
 The window uses bundled fonts until system fonts finish loading. Saved tabs restore
 their history with two workers, with the active tab queued first. History is shown

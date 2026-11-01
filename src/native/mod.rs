@@ -25,6 +25,8 @@ use theme::{Theme, apply_theme, palette};
 pub(super) fn run() {
     startup::mark("process entry");
     wait_for_predecessor();
+    let session_receive =
+        preload_session(|| Session::load().map(|session| (session, tray::Options::load())));
     let (font_send, font_receive) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = font_send.send(fonts().clone());
@@ -71,7 +73,7 @@ pub(super) fn run() {
         },
         Box::new(move |cc| {
             Ok(Box::new(
-                Window::new(cc, font_receive).map_err(std::io::Error::other)?,
+                Window::new(cc, font_receive, session_receive).map_err(std::io::Error::other)?,
             ))
         }),
     );
@@ -83,6 +85,87 @@ pub(super) fn run() {
             .set_description(message)
             .set_level(rfd::MessageLevel::Error)
             .show();
+    }
+}
+
+type StartupSession = Result<(Session, tray::Options), String>;
+
+fn preload_session(
+    load: impl FnOnce() -> StartupSession + Send + 'static,
+) -> mpsc::Receiver<StartupSession> {
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = load();
+        startup::mark("settings loaded");
+        let _ = send.send(result);
+    });
+    receive
+}
+
+struct DeferredDesktop {
+    first_frame: Option<u64>,
+    create_tray: bool,
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn settings_preload_returns_while_io_is_waiting_and_keeps_preferences() {
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let receive = preload_session(move || {
+            entered.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok((
+                Session {
+                    active: "saved-tab".into(),
+                    theme: Theme::Dark,
+                    ..Session::default()
+                },
+                tray::Options {
+                    close_to_tray: true,
+                    minimize_to_tray: false,
+                },
+            ))
+        });
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        let (session, background) = receive
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.active, "saved-tab");
+        assert_eq!(session.theme, Theme::Dark);
+        assert!(background.close_to_tray);
+        assert!(!background.minimize_to_tray);
+    }
+
+    #[test]
+    fn invalid_settings_are_returned_instead_of_replaced_with_defaults() {
+        let receive = preload_session(|| Err("invalid native session".into()));
+        assert!(
+            matches!(receive.recv_timeout(Duration::from_secs(5)).unwrap(), Err(e) if e == "invalid native session")
+        );
+    }
+
+    #[test]
+    fn desktop_setup_waits_for_another_frame_including_discarded_layout_passes() {
+        let mut setup = DeferredDesktop {
+            first_frame: None,
+            create_tray: true,
+        };
+        assert!(!setup.ready(5));
+        assert!(!setup.ready(5));
+        assert!(setup.ready(6));
+    }
+}
+
+impl DeferredDesktop {
+    fn ready(&mut self, frame: u64) -> bool {
+        frame > *self.first_frame.get_or_insert(frame)
     }
 }
 const COLUMNS: [(&str, &str); 16] = [
@@ -111,6 +194,7 @@ enum Job {
     Restart(Result<(), String>),
 }
 struct Window {
+    desktop_setup: Option<DeferredDesktop>,
     pending_fonts: Option<mpsc::Receiver<egui::FontDefinitions>>,
     first_frame: bool,
     runtime: Runtime,
@@ -181,10 +265,12 @@ impl Window {
     fn new(
         cc: &eframe::CreationContext<'_>,
         font_receive: mpsc::Receiver<egui::FontDefinitions>,
+        session_receive: mpsc::Receiver<StartupSession>,
     ) -> Result<Self, String> {
         startup::mark("GPU and window created");
-        let session = Session::load()?;
-        startup::mark("settings loaded");
+        let (session, background) = session_receive
+            .recv()
+            .map_err(|_| "The settings loader closed before returning a session".to_string())??;
         apply_theme(&cc.egui_ctx, session.theme);
         theme::set_transparency(
             &cc.egui_ctx,
@@ -202,12 +288,19 @@ impl Window {
         result.gpu = cc.wgpu_render_state.clone();
         result.window_state = load_window_state();
         result.remember_window = true;
-        result.tray = tray::start(&cc.egui_ctx);
-        result.background = tray::Options::load();
-        result.startup = tray::startup();
-        // Started at sign-in: monitor from the tray without showing the window.
-        if result.tray.is_some() && std::env::args().any(|a| a == "--background") {
-            tray::hide(&cc.egui_ctx);
+        result.background = background;
+        let start_hidden = std::env::args().any(|a| a == "--background");
+        result.desktop_setup = Some(DeferredDesktop {
+            first_frame: None,
+            create_tray: !start_hidden,
+        });
+        if start_hidden {
+            // Sign-in launches need a working tray before hiding; a failed tray leaves
+            // the window visible so monitoring is still accessible.
+            result.tray = tray::start(&cc.egui_ctx);
+            if result.tray.is_some() {
+                tray::hide(&cc.egui_ctx);
+            }
         }
         #[cfg(feature = "dev-live")]
         if cfg!(debug_assertions) && demo() {
@@ -238,6 +331,7 @@ impl Window {
         };
         let host = config.host.clone();
         Self {
+            desktop_setup: None,
             pending_fonts: None,
             first_frame: true,
             runtime,
@@ -299,6 +393,23 @@ impl Window {
             #[cfg(feature = "dev-live")]
             live: None,
         }
+    }
+    fn finish_desktop_setup(&mut self, ctx: &egui::Context) {
+        let Some(setup) = &mut self.desktop_setup else {
+            return;
+        };
+        if !setup.ready(ctx.cumulative_frame_nr()) {
+            // A discarded layout pass belongs to the same frame, so a second call
+            // to ui alone does not mean that the first frame has been painted.
+            ctx.request_repaint();
+            return;
+        }
+        let setup = self.desktop_setup.take().unwrap();
+        if setup.create_tray {
+            self.tray = tray::start(ctx);
+        }
+        self.startup = tray::startup();
+        startup::mark("tray and startup registration ready");
     }
     fn poll_fonts(&mut self, ctx: &egui::Context) {
         let Some(receive) = &self.pending_fonts else {
@@ -1554,6 +1665,7 @@ impl eframe::App for Window {
             self.first_frame = false;
             startup::mark("first UI frame");
         }
+        self.finish_desktop_setup(ui.ctx());
         self.poll_fonts(ui.ctx());
         self.blur.update(ui.ctx());
         #[cfg(feature = "dev-live")]
