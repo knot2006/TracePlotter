@@ -1004,13 +1004,13 @@ impl Window {
                         setting(
                             ui,
                             "Theme",
-                            "Glass is the original charcoal theme; Glass (new) uses brighter blue slate and vivid green accents.",
+                            "Dark uses neutral panels; Glass uses charcoal and green accents.",
                             |ui| {
                                 let previous = session.theme;
                                 egui::ComboBox::from_id_salt("native-theme-choice")
                                     .selected_text(session.theme.label())
                                     .show_ui(ui, |ui| {
-                                        for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
+                                        for theme in [Theme::Dark, Theme::Glass] {
                                             ui.selectable_value(
                                                 &mut session.theme,
                                                 theme,
@@ -1584,13 +1584,7 @@ fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
         if theme::current(ctx) == Theme::Dark {
             palette(ctx).text.gamma_multiply(0.10)
         } else {
-            palette(ctx)
-                .accent
-                .gamma_multiply(if theme::current(ctx) == Theme::Glass {
-                    0.24
-                } else {
-                    0.22
-                })
+            palette(ctx).accent.gamma_multiply(0.24)
         }
     } else if hovered {
         palette(ctx).text.gamma_multiply(0.07)
@@ -1634,16 +1628,7 @@ fn plate_shape(
     hovered: bool,
 ) -> egui::Shape {
     let stroke = if selected && theme::current(ctx).is_glass() {
-        egui::Stroke::new(
-            1.0,
-            palette(ctx)
-                .accent
-                .gamma_multiply(if theme::current(ctx) == Theme::Glass {
-                    0.7
-                } else {
-                    0.55
-                }),
-        )
+        egui::Stroke::new(1.0, palette(ctx).accent.gamma_multiply(0.7))
     } else {
         egui::Stroke::NONE
     };
@@ -1767,8 +1752,6 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     let fill = if selected {
         if theme::current(ui.ctx()) == Theme::Glass {
             ui.visuals().selection.bg_fill
-        } else if theme::current(ui.ctx()) == Theme::GlassNew {
-            palette(ui.ctx()).accent.gamma_multiply(0.14)
         } else {
             palette(ui.ctx()).text.gamma_multiply(0.10)
         }
@@ -1779,26 +1762,12 @@ fn nav_row(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
     };
     let glass = theme::current(ui.ctx()).is_glass();
     let stroke = if selected && glass {
-        if theme::current(ui.ctx()) == Theme::Glass {
-            egui::Stroke::new(1.0, palette(ui.ctx()).accent.gamma_multiply(0.7))
-        } else {
-            egui::Stroke::new(1.0, palette(ui.ctx()).text.gamma_multiply(0.10))
-        }
+        egui::Stroke::new(1.0, palette(ui.ctx()).accent.gamma_multiply(0.7))
     } else {
         egui::Stroke::NONE
     };
     ui.painter()
         .rect(rect, 6.0, fill, stroke, egui::StrokeKind::Inside);
-    if selected && theme::current(ui.ctx()) == Theme::GlassNew {
-        ui.painter().rect_filled(
-            egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 2.0, rect.center().y),
-                egui::vec2(3.0, 14.0),
-            ),
-            1.5,
-            palette(ui.ctx()).accent,
-        );
-    }
     ui.painter().text(
         rect.left_center() + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
@@ -1855,8 +1824,6 @@ fn settings_group(ui: &mut egui::Ui, title: &str, note: &str, rows: impl FnOnce(
         // Glass sinks its groups a shade below the panel, as cards set into a frosted pane.
         .fill(if theme::current(ui.ctx()) == Theme::Glass {
             Color32::from_black_alpha(56)
-        } else if theme::current(ui.ctx()) == Theme::GlassNew {
-            Color32::from_black_alpha(32)
         } else {
             palette(ui.ctx()).text.gamma_multiply(0.03)
         })

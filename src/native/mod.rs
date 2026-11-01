@@ -1886,7 +1886,7 @@ fn menu_rows(ui: &mut egui::Ui) {
     let theme = theme::current(ui.ctx());
     let spacing = ui.spacing_mut();
     spacing.interact_size.y = match theme {
-        Theme::Glass | Theme::GlassNew => 28.0,
+        Theme::Glass => 28.0,
         Theme::Dark => 26.0,
     };
     spacing.item_spacing.y = 2.0;
@@ -1934,8 +1934,6 @@ fn window_controls(ui: &mut egui::Ui) {
                     6.0,
                     if close && original_glass {
                         palette(ui.ctx()).bad.gamma_multiply(0.8)
-                    } else if close && theme::current(ui.ctx()) == Theme::GlassNew {
-                        palette(ui.ctx()).bad.gamma_multiply(0.18)
                     } else {
                         palette(ui.ctx()).text.gamma_multiply(0.1)
                     },

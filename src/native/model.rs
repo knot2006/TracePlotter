@@ -500,12 +500,9 @@ mod tests {
         let back = Session::decode(&saved).unwrap();
         assert_eq!((back.theme, back.transparency), (Theme::Dark, 0.0));
         assert_eq!(back.dark_transparency, 0.2);
-        let new_glass = Session {
-            theme: Theme::GlassNew,
-            ..session
-        };
-        let saved = serde_json::to_string(&new_glass).unwrap();
-        assert_eq!(Session::decode(&saved).unwrap().theme, Theme::GlassNew);
+        let removed =
+            Session::decode(r#"{"version":1,"theme":"glassNew","transparency":0.3}"#).unwrap();
+        assert_eq!((removed.theme, removed.transparency), (Theme::Glass, 0.3));
     }
     #[test]
     fn sessions_from_before_the_detailed_columns_get_them_hidden_once() {

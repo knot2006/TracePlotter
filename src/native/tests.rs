@@ -136,17 +136,6 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
         .click();
     h.run();
-    h.get_by_label("Glass (new)").click();
-    h.run();
-    assert_eq!(theme::current(&h.ctx), Theme::GlassNew);
-    assert!(
-        commands
-            .try_iter()
-            .any(|c| matches!(c, Command::Preferences(s) if s.theme == Theme::GlassNew))
-    );
-    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Theme")
-        .click();
-    h.run();
     h.get_by_label("Dark").click();
     h.run();
     assert_eq!(palette(&h.ctx).accent, dark_accent);
@@ -159,9 +148,9 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
 #[test]
 fn transparency_slider_applies_and_sends_each_themes_saved_preference() {
     for &theme in if cfg!(windows) {
-        &[Theme::Dark, Theme::Glass, Theme::GlassNew][..]
+        &[Theme::Dark, Theme::Glass][..]
     } else {
-        &[Theme::Glass, Theme::GlassNew][..]
+        &[Theme::Glass][..]
     } {
         let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], theme);
         h.state_mut().settings_page = 1;
@@ -206,7 +195,7 @@ fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
 }
 #[test]
 fn slider_fills_stop_at_the_handle_centre() {
-    for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
+    for theme in [Theme::Dark, Theme::Glass] {
         for label in ["History position", "Transparency"] {
             if label == "Transparency" && theme == Theme::Dark && !cfg!(windows) {
                 continue;
@@ -675,7 +664,7 @@ fn render_native_scenarios() {
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
     export::render_fixture(&gpu, &fixture("demo-one"), &output).unwrap();
-    for theme in [Theme::Dark, Theme::Glass, Theme::GlassNew] {
+    for theme in [Theme::Dark, Theme::Glass] {
         if theme.is_glass() {
             let mut snapshot = fixture("demo-one");
             snapshot.session.theme = theme;
@@ -727,7 +716,6 @@ fn render_native_scenarios() {
                     "{}{name}.png",
                     match theme {
                         Theme::Glass => "glass-",
-                        Theme::GlassNew => "glass-new-",
                         Theme::Dark => "",
                     }
                 )))

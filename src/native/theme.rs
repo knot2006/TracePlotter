@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 pub(super) enum Theme {
     #[serde(alias = "ink")]
     Dark,
-    GlassNew,
     #[default]
     #[serde(other)]
     Glass,
@@ -15,14 +14,13 @@ pub(super) enum Theme {
 
 impl Theme {
     pub fn is_glass(self) -> bool {
-        matches!(self, Self::Glass | Self::GlassNew)
+        self == Self::Glass
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Dark => "Dark",
             Self::Glass => "Glass",
-            Self::GlassNew => "Glass (new)",
         }
     }
 }
@@ -98,31 +96,11 @@ const GLASS: Palette = Palette {
     bad: rgb(0xff7777),
 };
 
-/// Glass (new): bright slate panes with cool blue depth and a vivid lime accent.
-const GLASS_NEW: Palette = Palette {
-    surface: rgb(0x101410),
-    shell: rgb(0x35424c),
-    inset: rgb(0x25333f),
-    raised: rgb(0x40515f),
-    input: rgb(0x23313b),
-    line: rgb(0x586f80),
-    edge: rgb(0x9badbc),
-    text: rgb(0xf4faff),
-    soft: rgb(0xd4e3ed),
-    muted: rgb(0xa8bfce),
-    accent: rgb(0x8fdb00),
-    accent_light: rgb(0xb5ff39),
-    good: rgb(0x55ed98),
-    warn: rgb(0xffc34d),
-    bad: rgb(0xff667f),
-};
-
 /// The colours the interface paints with.
 pub(super) fn palette(ctx: &egui::Context) -> &'static Palette {
     match current(ctx) {
         Theme::Dark => &DARK,
         Theme::Glass => &GLASS,
-        Theme::GlassNew => &GLASS_NEW,
     }
 }
 pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
@@ -224,51 +202,12 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
             color: Color32::from_black_alpha(110),
         };
     }
-    if theme == Theme::GlassNew {
-        visuals.window_corner_radius = egui::CornerRadius::same(12);
-        visuals.menu_corner_radius = egui::CornerRadius::same(10);
-        // Menus and dialogs are frosted panes of their own: a step lighter than the panels,
-        // rimmed with light rather than a dark line, and lifted by a soft shadow.
-        visuals.window_fill = palette(ctx).raised;
-        visuals.window_stroke = egui::Stroke::new(1.0, palette(ctx).text.gamma_multiply(0.16));
-        visuals.popup_shadow = egui::Shadow {
-            offset: [0, 4],
-            blur: 18,
-            spread: 0,
-            color: Color32::from_black_alpha(100),
-        };
-        visuals.slider_trailing_fill = true;
-        visuals.handle_shape = egui::style::HandleShape::Circle;
-        // A lime wash makes selected controls stand out against the blue slate.
-        visuals.selection.bg_fill = palette(ctx).accent.gamma_multiply(0.22);
-        visuals.selection.stroke = egui::Stroke::new(1.0, palette(ctx).text);
-        // Controls are soft plates without outlines; only the one in use takes the accent.
-        for (state, fill, edge) in [
-            (&mut w.inactive, 0.08, 0.12),
-            (&mut w.hovered, 0.14, 0.22),
-            (&mut w.active, 0.18, 0.24),
-            (&mut w.open, 0.14, 0.24),
-        ] {
-            state.corner_radius = egui::CornerRadius::same(8);
-            state.bg_fill = palette(ctx).text.gamma_multiply(fill);
-            state.weak_bg_fill = state.bg_fill;
-            state.bg_stroke = egui::Stroke::new(1.0, palette(ctx).text.gamma_multiply(edge));
-        }
-        w.active.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
-        w.open.bg_stroke = egui::Stroke::new(1.0, palette(ctx).accent);
-        visuals.window_shadow = egui::Shadow {
-            offset: [0, 8],
-            blur: 24,
-            spread: 0,
-            color: Color32::from_black_alpha(110),
-        };
-    }
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_visuals(visuals);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
         s.spacing.interact_size.y = match theme {
-            Theme::Glass | Theme::GlassNew => 30.0,
+            Theme::Glass => 30.0,
             Theme::Dark => 28.0,
         };
         s.spacing.slider_rail_height = 4.0;
@@ -311,14 +250,14 @@ pub(super) fn set_transparency(ctx: &egui::Context, transparency: f32) {
 fn transparency_id(theme: Theme) -> egui::Id {
     egui::Id::unique(match theme {
         Theme::Dark => "native-dark-transparency",
-        Theme::Glass | Theme::GlassNew => "native-transparency",
+        Theme::Glass => "native-transparency",
     })
 }
 
 pub(super) fn tab_height(ctx: &egui::Context) -> f32 {
     match current(ctx) {
         Theme::Dark => 27.0,
-        Theme::Glass | Theme::GlassNew => 28.0,
+        Theme::Glass => 28.0,
     }
 }
 
@@ -332,21 +271,12 @@ pub(super) fn glass_surface(ui: &egui::Ui, margin: egui::Margin) {
         ui.max_rect().max + egui::vec2(f32::from(margin.right), f32::from(margin.bottom)),
     );
     let mut mesh = egui::Mesh::default();
-    let colours = if current(ui.ctx()) == Theme::GlassNew {
-        [
-            (rect.left_top(), rgb(0x445d70)),
-            (rect.right_top(), rgb(0x354c5e)),
-            (rect.left_bottom(), rgb(0x293c49)),
-            (rect.right_bottom(), rgb(0x2e4352)),
-        ]
-    } else {
-        [
-            (rect.left_top(), rgb(0x2c3136)),
-            (rect.right_top(), rgb(0x23272b)),
-            (rect.left_bottom(), rgb(0x181b1e)),
-            (rect.right_bottom(), rgb(0x1d2125)),
-        ]
-    };
+    let colours = [
+        (rect.left_top(), rgb(0x2c3136)),
+        (rect.right_top(), rgb(0x23272b)),
+        (rect.left_bottom(), rgb(0x181b1e)),
+        (rect.right_bottom(), rgb(0x1d2125)),
+    ];
     for (pos, color) in colours {
         mesh.colored_vertex(pos, color.gamma_multiply(opacity(ui.ctx())));
     }
@@ -377,19 +307,6 @@ mod tests {
                 .style_of(egui::Theme::Dark)
                 .visuals
                 .slider_trailing_fill
-        );
-
-        let original_glass = glass.style_of(egui::Theme::Dark);
-        apply_theme(&glass, Theme::GlassNew);
-        assert_eq!(palette(&glass).accent, GLASS_NEW.accent);
-        apply_theme(&glass, Theme::Glass);
-        assert_eq!(
-            glass.style_of(egui::Theme::Dark).visuals,
-            original_glass.visuals
-        );
-        assert_eq!(
-            glass.style_of(egui::Theme::Dark).spacing,
-            original_glass.spacing
         );
 
         apply_theme(&glass, Theme::Dark);
