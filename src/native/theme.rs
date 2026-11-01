@@ -307,12 +307,9 @@ pub(super) fn menu_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) 
     response
 }
 
-/// How opaque the window's panels are. Dark stays solid outside Windows.
+/// How opaque the window's panels are.
 pub(super) fn opacity(ctx: &egui::Context) -> f32 {
     let theme = current(ctx);
-    if theme == Theme::Dark && !cfg!(windows) {
-        return 1.0;
-    }
     let transparency = ctx
         .data(|d| d.get_temp::<f32>(transparency_id(theme)))
         .unwrap_or(0.0);
@@ -418,7 +415,7 @@ mod tests {
             DARK.shell
         );
         set_transparency(&ctx, 0.15);
-        assert_eq!(opacity(&ctx), if cfg!(windows) { 0.85 } else { 1.0 });
+        assert_eq!(opacity(&ctx), 0.85);
         apply_theme(&ctx, Theme::Glass);
         assert_eq!(opacity(&ctx), 0.5);
     }

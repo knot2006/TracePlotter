@@ -178,19 +178,12 @@ fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     h.get_by_label("Dark").click();
     h.run();
     assert_eq!(palette(&h.ctx).accent, dark_accent);
-    assert_eq!(
-        theme::opacity(&h.ctx),
-        if cfg!(windows) { 0.85 } else { 1.0 }
-    );
+    assert_eq!(theme::opacity(&h.ctx), 0.85);
 }
 
 #[test]
 fn transparency_slider_applies_and_sends_each_themes_saved_preference() {
-    for &theme in if cfg!(windows) {
-        &[Theme::Dark, Theme::Glass][..]
-    } else {
-        &[Theme::Glass][..]
-    } {
+    for theme in [Theme::Dark, Theme::Glass] {
         let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], theme);
         h.state_mut().settings_page = 1;
         h.run();
@@ -236,9 +229,6 @@ fn glass_keeps_controls_visible_at_normal_and_minimum_sizes() {
 fn slider_fills_stop_at_the_handle_centre() {
     for theme in [Theme::Dark, Theme::Glass] {
         for label in ["History position", "Transparency"] {
-            if label == "Transparency" && theme == Theme::Dark && !cfg!(windows) {
-                continue;
-            }
             let (mut h, _) = themed_harness(
                 if label == "Transparency" {
                     "settings"

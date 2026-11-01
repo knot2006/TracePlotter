@@ -1041,50 +1041,47 @@ impl Window {
                             },
                             &mut changed,
                         );
-                        if session.theme.is_glass() || cfg!(windows) {
-                            setting(
-                                ui,
-                                "Transparency",
-                                "How much of the desktop shows through. Windows 11 and KDE Plasma blur it.",
-                                |ui| {
-                                    ui.spacing_mut().slider_width = 160.0;
-                                    // The slider follows the value already applied, not the
-                                    // saved session, which catches up only after a save.
-                                    let mut percent = (1.0 - theme::opacity(ui.ctx())) * 100.0;
-                                    // The setting's row lays out from the right: the value, then the slider.
-                                    ui.label(format!("{percent:.0} %"));
-                                    let response = filled_slider(
-                                        ui,
-                                        egui::Slider::new(&mut percent, 0.0..=70.0),
+                        setting(
+                            ui,
+                            "Transparency",
+                            "How much of the desktop shows through. Windows 11 and KDE Plasma blur it.",
+                            |ui| {
+                                ui.spacing_mut().slider_width = 160.0;
+                                // The slider follows the value already applied, not the
+                                // saved session, which catches up only after a save.
+                                let mut percent = (1.0 - theme::opacity(ui.ctx())) * 100.0;
+                                // The setting's row lays out from the right: the value, then the slider.
+                                ui.label(format!("{percent:.0} %"));
+                                let response = filled_slider(
+                                    ui,
+                                    egui::Slider::new(&mut percent, 0.0..=70.0),
+                                    true,
+                                    palette(ui.ctx()).accent,
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::Role::Slider,
                                         true,
-                                        palette(ui.ctx()).accent,
-                                    );
-                                    response.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::Slider,
-                                            true,
-                                            "Transparency",
-                                        )
-                                    });
-                                    if response.changed() {
-                                        theme::set_transparency(ui.ctx(), percent / 100.0);
+                                        "Transparency",
+                                    )
+                                });
+                                if response.changed() {
+                                    theme::set_transparency(ui.ctx(), percent / 100.0);
+                                }
+                                // A drag is saved once, when it ends, rather than every frame.
+                                let done = response.drag_stopped()
+                                    || (response.changed() && !response.dragged());
+                                if done {
+                                    if session.theme == Theme::Dark {
+                                        session.dark_transparency = 1.0 - theme::opacity(ui.ctx());
+                                    } else {
+                                        session.transparency = 1.0 - theme::opacity(ui.ctx());
                                     }
-                                    // A drag is saved once, when it ends, rather than every frame.
-                                    let done = response.drag_stopped()
-                                        || (response.changed() && !response.dragged());
-                                    if done {
-                                        if session.theme == Theme::Dark {
-                                            session.dark_transparency =
-                                                1.0 - theme::opacity(ui.ctx());
-                                        } else {
-                                            session.transparency = 1.0 - theme::opacity(ui.ctx());
-                                        }
-                                    }
-                                    done
-                                },
-                                &mut changed,
-                            );
-                        }
+                                }
+                                done
+                            },
+                            &mut changed,
+                        );
                     },
                 );
                 settings_group(
