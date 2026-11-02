@@ -34,7 +34,8 @@ base64 = "0.23"
 # A small HTTP server for the MCP server (see mcp.rs).
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland", "accesskit"] }
+# Text fields and copy commands need the system clipboard backend.
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "wgpu", "x11", "wayland", "accesskit"] }
 egui_extras = { version = "0.37", default-features = false }
 egui_plot = { version = "0.38" }
 # The window's handle, for the blur behind Glass (see native/blur.rs).
