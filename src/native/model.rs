@@ -97,6 +97,26 @@ impl Config {
 /// Optional hop-table columns with the detailed statistics added in 0.1.13.
 pub(super) const EXTRA_COLUMNS: [&str; 4] = ["median", "p95", "p99", "lossBurst"];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum GraphStyle {
+    Straight,
+    Dots,
+    #[default]
+    #[serde(other)]
+    Steps,
+}
+
+impl GraphStyle {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Steps => "Steps",
+            Self::Straight => "Straight",
+            Self::Dots => "Dots",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct Session {
@@ -122,6 +142,7 @@ pub(super) struct Session {
     pub extra_columns_added: bool,
     /// Whether the latency graph marks route changes, alerts and recoveries.
     pub show_events: bool,
+    pub graph_style: GraphStyle,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -150,6 +171,7 @@ impl Default for Session {
             mcp: false,
             extra_columns_added: true,
             show_events: false,
+            graph_style: GraphStyle::default(),
         }
     }
 }
@@ -475,6 +497,29 @@ impl Trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn graph_styles_survive_saving_and_old_sessions_keep_steps() {
+        assert_eq!(
+            Session::decode(r#"{"version":1}"#).unwrap().graph_style,
+            GraphStyle::Steps
+        );
+        assert_eq!(
+            Session::decode(r#"{"graphStyle":"future"}"#)
+                .unwrap()
+                .graph_style,
+            GraphStyle::Steps
+        );
+        let dir = tempfile::tempdir().unwrap();
+        for style in [GraphStyle::Steps, GraphStyle::Straight, GraphStyle::Dots] {
+            let session = Session {
+                graph_style: style,
+                ..Session::default()
+            };
+            session.save_in(dir.path()).unwrap();
+            assert_eq!(Session::load_in(dir.path()).unwrap().graph_style, style);
+        }
+    }
+
     #[test]
     fn native_theme_survives_session_roundtrip_and_defaults_for_older_sessions() {
         let older = Session::decode(r#"{"version":1}"#).unwrap();

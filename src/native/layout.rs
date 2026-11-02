@@ -1082,6 +1082,39 @@ impl Window {
                             },
                             &mut changed,
                         );
+                        setting(
+                            ui,
+                            "Graph style",
+                            "How latency and jitter samples are drawn, including exports.",
+                            |ui| {
+                                let previous = session.graph_style;
+                                egui::ComboBox::from_id_salt("native-graph-style")
+                                    .selected_text(session.graph_style.label())
+                                    .show_ui(ui, |ui| {
+                                        for style in [
+                                            model::GraphStyle::Steps,
+                                            model::GraphStyle::Straight,
+                                            model::GraphStyle::Dots,
+                                        ] {
+                                            ui.selectable_value(
+                                                &mut session.graph_style,
+                                                style,
+                                                style.label(),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::ComboBox,
+                                            true,
+                                            "Graph style",
+                                        )
+                                    });
+                                session.graph_style != previous
+                            },
+                            &mut changed,
+                        );
                     },
                 );
                 settings_group(
@@ -1712,7 +1745,7 @@ const SETTINGS_PAGES: [(&str, &str); 9] = [
     ),
     (
         "Appearance",
-        "The theme, transparency and the latency colours.",
+        "The theme, transparency, graph style and latency colours.",
     ),
     (
         "Display",

@@ -152,6 +152,28 @@ fn the_window_accepts_fonts_after_its_first_frame() {
 }
 
 #[test]
+fn appearance_graph_style_sends_the_shared_saved_preference() {
+    for theme in [Theme::Dark, Theme::Glass] {
+        for style in [model::GraphStyle::Straight, model::GraphStyle::Dots] {
+            let (mut h, commands) = themed_harness("settings", [1100.0, 720.0], theme);
+            h.state_mut().settings_page = 1;
+            h.run();
+            h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Graph style")
+                .click();
+            h.run();
+            for label in ["Steps", "Straight", "Dots"] {
+                assert!(h.query_by_label(label).is_some());
+            }
+            h.get_by_label(style.label()).click();
+            h.run();
+            assert!(commands.try_iter().any(|c| matches!(c,
+                Command::Preferences(session) if session.graph_style == style
+            )));
+        }
+    }
+}
+
+#[test]
 fn theme_choice_applies_without_restart_and_sends_a_saved_preference() {
     let (mut h, commands) = harness("settings", [1100.0, 720.0]);
     h.state_mut().settings_page = 1;
@@ -528,6 +550,41 @@ fn hover_readout_is_a_floating_tooltip_without_moving_the_graph() {
 }
 
 #[test]
+fn graph_styles_are_separate_choices_in_view_and_context_menus() {
+    for active in ["demo-one", "summary"] {
+        for (label, style) in [
+            ("Straight", model::GraphStyle::Straight),
+            ("Dots", model::GraphStyle::Dots),
+        ] {
+            for context in [false, true] {
+                let (mut h, commands) = harness(active, [1100.0, 720.0]);
+                h.run();
+                if context {
+                    let history = h.get_by_label("History position").rect();
+                    secondary_click(&h, egui::pos2(500.0, history.top() - 85.0));
+                } else {
+                    h.get_by_label("View").click();
+                }
+                h.run();
+                h.get_by_label("Graph style").click();
+                h.run();
+                for choice in ["Steps", "Straight", "Dots"] {
+                    assert!(h.query_by_label(choice).is_some(), "Missing {choice}");
+                }
+                h.get_by_label(label).click();
+                h.run();
+                assert!(
+                    commands.try_iter().any(|c| matches!(c,
+                        Command::Preferences(session) if session.graph_style == style
+                    )),
+                    "{active}, context={context}: save {label}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn graph_context_menu_restores_live_and_comparison_options() {
     let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
     h.state_mut().end = Some(1500.0);
@@ -656,6 +713,62 @@ fn row_header_and_tab_context_menus_use_the_existing_actions() {
             .try_iter()
             .any(|c| matches!(c, Command::Pause(id) if id == "demo-one"))
     );
+}
+
+#[test]
+fn graph_styles_render_distinct_paths_and_keep_loss_gaps() {
+    fn marks(shape: &egui::Shape, paths: &mut Vec<usize>, dots: &mut usize) {
+        match shape {
+            egui::Shape::Path(path) if path.stroke.width == 1.5 => paths.push(path.points.len()),
+            egui::Shape::Circle(_) => *dots += 1,
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    marks(shape, paths, dots);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (style, expected_path, expected_dots) in [
+        (model::GraphStyle::Steps, vec![5, 5], 2),
+        (model::GraphStyle::Straight, vec![3, 3], 2),
+        (model::GraphStyle::Dots, vec![], 8),
+    ] {
+        let mut snapshot = fixture("demo-one");
+        snapshot.session.graph_style = style;
+        snapshot.plots[0].data = logic::GraphData {
+            xs: vec![1100.0, 1200.0, 1300.0, 1400.0, 1500.0],
+            ys: vec![Some(20.0), Some(200.0), Some(20.0), None, Some(40.0)],
+            js: vec![Some(20.0), Some(200.0), Some(20.0), None, Some(40.0)],
+            ls: vec![Some(0.0), Some(0.0), Some(0.0), Some(100.0), Some(0.0)],
+            lo: vec![Some(20.0); 5],
+            hi: vec![Some(200.0); 5],
+        };
+        let ctx = egui::Context::default();
+        apply_theme(&ctx, Theme::Dark);
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                graphs::show(ui, &snapshot, &mut None, &mut None, &mut 600.0, false, None);
+            },
+        );
+        output.textures_delta.clear();
+        let (mut paths, mut dots) = (vec![], 0);
+        for shape in &output.shapes {
+            marks(&shape.shape, &mut paths, &mut dots);
+        }
+        assert_eq!(
+            paths, expected_path,
+            "{style:?}: preserve each reply and split at loss"
+        );
+        assert_eq!(dots, expected_dots, "{style:?}: only mark recorded replies");
+    }
 }
 
 #[test]

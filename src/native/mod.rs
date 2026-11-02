@@ -907,6 +907,7 @@ impl Window {
                             self.columns_open = true;
                             ui.close();
                         }
+                        changed |= graphs::style_menu(ui, &mut session.graph_style);
                         if ui
                             .add_enabled(
                                 self.end.is_some(),
@@ -2022,6 +2023,10 @@ impl eframe::App for Window {
                         }
                         graphs::Action::LossColors(value) => {
                             session.settings.loss_by_target = value;
+                            changed = true;
+                        }
+                        graphs::Action::Style(style) => {
+                            session.graph_style = style;
                             changed = true;
                         }
                         graphs::Action::Export(kind, scope) => {

@@ -3,6 +3,7 @@ use super::*;
 use crate::logic::{GraphData, latency_axis};
 use app::Snapshot;
 use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Line, Plot, PlotPoint, VLine};
+use model::GraphStyle;
 use serde_json::Value;
 
 pub(super) enum Action {
@@ -12,16 +13,38 @@ pub(super) enum Action {
     Export(export::Kind, Option<(String, u8)>),
     Close(u8),
     LossColors(bool),
+    Style(GraphStyle),
 }
+
+pub(super) fn style_menu(ui: &mut egui::Ui, style: &mut GraphStyle) -> bool {
+    let mut changed = false;
+    ui.menu_button("Graph style", |ui| {
+        menu_rows(ui);
+        for value in [GraphStyle::Steps, GraphStyle::Straight, GraphStyle::Dots] {
+            if ui.selectable_value(style, value, value.label()).changed() {
+                changed = true;
+                ui.close();
+            }
+        }
+    });
+    changed
+}
+
 fn menu(
     ui: &mut egui::Ui,
     compare: bool,
     series: &app::PlotView,
     closeable: bool,
-    mut loss_by_target: bool,
+    session: &Session,
     action: &mut Option<Action>,
 ) {
     menu_rows(ui);
+    let mut style = session.graph_style;
+    if style_menu(ui, &mut style) {
+        *action = Some(Action::Style(style));
+        ui.close();
+    }
+    ui.separator();
     if !compare {
         if ui.button("Back to live").clicked() {
             *action = Some(Action::Live);
@@ -57,6 +80,7 @@ fn menu(
     }
     ui.separator();
     if compare {
+        let mut loss_by_target = session.settings.loss_by_target;
         if ui.button("Save stretches as CSV…").clicked() {
             *action = Some(Action::Export(export::Kind::Stretches, None));
             ui.close();
@@ -127,6 +151,7 @@ fn points(
     data: &GraphData,
     color: Color32,
     style: egui_plot::LineStyle,
+    graph_style: GraphStyle,
 ) {
     let mut band = vec![];
     let flush = |plot: &mut egui_plot::PlotUi<'_>, band: &mut Vec<usize>| {
@@ -163,14 +188,18 @@ fn points(
     }
     flush(plot, &mut band);
     for run in runs(&data.xs, &data.ys) {
-        let run = step_run(&run);
-        if run.len() == 1 {
+        if graph_style == GraphStyle::Dots || run.len() == 1 {
             plot.points(
                 egui_plot::Points::new("Latency", run)
                     .color(color)
                     .radius(3.0),
             );
         } else {
+            let run = if graph_style == GraphStyle::Steps {
+                step_run(&run)
+            } else {
+                run
+            };
             plot.line(
                 Line::new("Latency", run)
                     .color(color)
@@ -453,13 +482,27 @@ pub(super) fn show(
                     p.set_plot_bounds_y(0.0..=jitter_max);
                     for (index, series) in series.iter().enumerate() {
                         for run in runs(&series.data.xs, &series.data.js) {
+                            let color = if glass && !compare {
+                                theme_colors.accent_light
+                            } else {
+                                series_color(index)
+                            };
+                            if snapshot.session.graph_style == GraphStyle::Dots || run.len() == 1 {
+                                p.points(
+                                    egui_plot::Points::new("Jitter", run)
+                                        .color(color)
+                                        .radius(2.0),
+                                );
+                                continue;
+                            }
+                            let run = if snapshot.session.graph_style == GraphStyle::Steps {
+                                step_run(&run)
+                            } else {
+                                run
+                            };
                             p.line(
-                                Line::new("Jitter", step_run(&run))
-                                    .color(if glass && !compare {
-                                        theme_colors.accent_light
-                                    } else {
-                                        series_color(index)
-                                    })
+                                Line::new("Jitter", run)
+                                    .color(color)
                                     .allow_band(false)
                                     .fill(0.0),
                             );
@@ -593,6 +636,7 @@ pub(super) fn show(
                         } else {
                             egui_plot::LineStyle::Solid
                         },
+                        snapshot.session.graph_style,
                     );
                 }
                 if let Some(x) = *pinned {
@@ -719,7 +763,7 @@ pub(super) fn show(
                     compare,
                     series[0],
                     groups > 1,
-                    snapshot.session.settings.loss_by_target,
+                    &snapshot.session,
                     &mut action,
                 )
             });

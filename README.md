@@ -61,6 +61,9 @@ To try the interface without probing anything, start it in [demo mode](#demo-mod
 
 - Per-hop loss, last/avg/min/max latency and jitter, and MOS (estimated call quality)
 - Latency, jitter and packet-loss graphs for any hop, with a slider to scroll back in time
+- Choose Steps, Straight or Dots under **Settings > Appearance**, **View > Graph style**
+  or by right-clicking a graph.
+  The choice is remembered and applies to latency and jitter graphs, including exports.
 - Route changes, alerts and recoveries marked on graphs; click a mark or an event's time to inspect it
 - A selected event stays highlighted on its button and graph. Click it again or use the strip's ×
   button to clear the selection without moving the period; **Back to live** clears it as well.

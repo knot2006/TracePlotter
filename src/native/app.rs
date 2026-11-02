@@ -481,6 +481,7 @@ impl Controller {
 
                     self.session.check_updates = s.check_updates;
                     self.session.show_events = s.show_events;
+                    self.session.graph_style = s.graph_style;
                     if self.session.mcp != s.mcp {
                         self.mcp_choice = s.mcp;
                     }
