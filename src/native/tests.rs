@@ -23,7 +23,7 @@ fn minimized_viewports_resume_display_updates_when_restored() {
     assert!(commands.try_recv().is_err());
 }
 
-fn fixture(active: &str) -> Snapshot {
+pub(super) fn fixture(active: &str) -> Snapshot {
     let config = Config {
         session_id: "demo-one".into(),
         host: "example.com".into(),
@@ -791,6 +791,36 @@ fn stepped_probe_lines_do_not_turn_into_opaque_bands() {
             "{active}: render probe steps as thin paths, never opaque bands"
         );
     }
+}
+
+#[test]
+#[ignore = "requires a working GPU or software Vulkan adapter"]
+fn render_pdf_tables() {
+    let output = std::env::var_os("TRACEPLOTTER_QA_IMAGES").map_or_else(
+        || std::env::temp_dir().join("traceplotter-pdf-images"),
+        PathBuf::from,
+    );
+    fs::create_dir_all(&output).unwrap();
+    let gpu = egui_kittest::wgpu::create_render_state(
+        egui_kittest::wgpu::default_wgpu_setup(),
+        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    let mut snapshot = fixture("demo-one");
+    export::render_fixture(&gpu, &snapshot, &output).unwrap();
+    snapshot.session.hidden_columns.clear();
+    let row = snapshot.traces[0].rows[0].clone();
+    snapshot.traces[0].rows = (1..=64)
+        .map(|ttl| {
+            let mut row = row.clone();
+            row.ttl = ttl;
+            row.addr = "2001:db8:1234:5678:abcd:ef01:2345:6789".into();
+            row.name = "a-long-router-name-with-several-labels.backbone.example.net".into();
+            row
+        })
+        .collect();
+    let expanded = output.join("all-columns");
+    fs::create_dir_all(&expanded).unwrap();
+    export::render_fixture(&gpu, &snapshot, &expanded).unwrap();
 }
 
 #[test]

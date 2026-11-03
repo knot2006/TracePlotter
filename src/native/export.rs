@@ -200,6 +200,7 @@ fn paint(
     size: [u32; 2],
     pixels_per_point: f32,
     theme: Theme,
+    paper: bool,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> Result<image::RgbaImage, String> {
     use eframe::{
@@ -239,7 +240,11 @@ fn paint(
     let mut last = None;
     for _ in 0..3 {
         let mut output = ctx.run_ui(raw.clone(), |ui| {
-            egui::CentralPanel::default().show(ui, |ui| draw(ui));
+            let mut panel = egui::CentralPanel::default();
+            if paper {
+                panel = panel.frame(egui::Frame::NONE.fill(egui::Color32::WHITE));
+            }
+            panel.show(ui, |ui| draw(ui));
         });
         for (id, images) in output.textures_delta.set.drain() {
             for delta in images {
@@ -329,6 +334,7 @@ fn graph_image(
         [1100, height],
         pixels_per_point,
         snapshot.session.theme,
+        false,
         |ui| {
             ui.heading(format!("TracePlotter — {}", host(snapshot)));
             ui.label(format!(
@@ -341,17 +347,149 @@ fn graph_image(
         },
     )
 }
-fn report_row_height(hop: Option<&app::Row>) -> usize {
-    hop.map_or(20, |h| {
-        h.name
-            .chars()
-            .count()
-            .div_ceil(29)
-            .max(h.addr.len().div_ceil(30))
-            .max(1)
-            * 16
-            + 6
-    })
+const REPORT_WIDTH: f32 = 1040.0;
+const REPORT_BOTTOM: f32 = 650.0;
+
+fn report_text(ui: &egui::Ui, text: &str, size: f32, width: f32) -> Arc<egui::Galley> {
+    ui.painter().layout(
+        text.to_owned(),
+        egui::FontId::proportional(size),
+        egui::Color32::from_rgb(30, 41, 59),
+        width,
+    )
+}
+
+struct ReportTable {
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    widths: Vec<f32>,
+    heights: Vec<f32>,
+    left: Vec<bool>,
+    header_height: f32,
+}
+
+impl ReportTable {
+    fn new(ui: &egui::Ui, shown: &[String], trace: &TraceView) -> Self {
+        let headers = std::iter::once("Hop".to_owned())
+            .chain(shown.iter().map(|id| {
+                COLUMNS
+                    .iter()
+                    .find(|c| c.0 == id)
+                    .map_or("", |c| c.1)
+                    .to_owned()
+            }))
+            .collect::<Vec<_>>();
+        let rows = trace
+            .rows
+            .iter()
+            .map(Some)
+            .chain([None])
+            .map(|hop| {
+                std::iter::once(hop.map_or_else(|| "RT".into(), |h| h.ttl.to_string()))
+                    .chain(shown.iter().map(|id| {
+                        cell(
+                            id,
+                            hop,
+                            hop.map_or(trace.total, |h| h.stats),
+                            hop.map_or(trace.total_extras, |h| h.extras),
+                        )
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let left = std::iter::once(true)
+            .chain(shown.iter().map(|id| ["ip", "name"].contains(&id.as_str())))
+            .collect::<Vec<_>>();
+        let mut widths = headers
+            .iter()
+            .enumerate()
+            .map(|(i, header)| {
+                let natural = std::iter::once(header)
+                    .chain(rows.iter().map(|r| &r[i]))
+                    .map(|s| report_text(ui, s, 14.0, f32::INFINITY).size().x)
+                    .fold(0.0, f32::max)
+                    + 20.0;
+                natural.clamp(44.0, if left[i] { 270.0 } else { 120.0 })
+            })
+            .collect::<Vec<_>>();
+        let total: f32 = widths.iter().sum();
+        if total > REPORT_WIDTH {
+            // Keep numbers and short headers intact; addresses can wrap at any character.
+            let flexible: f32 = widths
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i > 0 && left[*i])
+                .map(|(_, w)| w)
+                .sum();
+            let available = REPORT_WIDTH - (total - flexible);
+            for (i, width) in widths.iter_mut().enumerate() {
+                if i > 0 && left[i] {
+                    *width *= available / flexible;
+                }
+            }
+        } else {
+            let flexible = left.iter().skip(1).filter(|v| **v).count();
+            for (i, width) in widths.iter_mut().enumerate() {
+                if (flexible > 0 && i > 0 && left[i]) || flexible == 0 {
+                    *width += (REPORT_WIDTH - total)
+                        / if flexible > 0 {
+                            flexible as f32
+                        } else {
+                            headers.len() as f32
+                        };
+                }
+            }
+        }
+        let height = |row: &[String]| {
+            row.iter()
+                .zip(&widths)
+                .map(|(s, w)| report_text(ui, s, 14.0, w - 20.0).size().y + 16.0)
+                .fold(34.0, f32::max)
+        };
+        let header_height = height(&headers);
+        let heights = rows.iter().map(|r| height(r)).collect();
+        Self {
+            headers,
+            rows,
+            widths,
+            heights,
+            left,
+            header_height,
+        }
+    }
+
+    fn chunks(&self, top: f32) -> Vec<std::ops::Range<usize>> {
+        let mut chunks = Vec::new();
+        let (mut start, mut y) = (0, top + self.header_height);
+        for (i, height) in self.heights.iter().enumerate() {
+            if y + height > REPORT_BOTTOM && i > start {
+                chunks.push(start..i);
+                start = i;
+                y = top + self.header_height;
+            }
+            y += height;
+        }
+        chunks.push(start..self.rows.len());
+        chunks
+    }
+
+    fn draw_row(&self, ui: &egui::Ui, row: &[String], y: f32, height: f32) {
+        let mut x = 30.0;
+        for (i, (text, width)) in row.iter().zip(&self.widths).enumerate() {
+            let galley = report_text(ui, text, 14.0, width - 20.0);
+            let tx = if self.left[i] {
+                x + 10.0
+            } else {
+                x + width - 10.0 - galley.size().x
+            };
+            ui.painter().galley(
+                egui::pos2(tx, y + (height - galley.size().y) / 2.0),
+                galley,
+                egui::Color32::BLACK,
+            );
+            x += width;
+        }
+    }
 }
 fn report_pages(
     gpu: &eframe::egui_wgpu::RenderState,
@@ -364,79 +502,67 @@ fn report_pages(
         .collect::<Vec<_>>();
     let mut pages = vec![];
     for trace in traces(snapshot) {
-        let rows = trace
-            .rows
-            .iter()
-            .map(Some)
-            .chain([None])
-            .collect::<Vec<_>>();
-        let mut chunks = Vec::new();
-        let (mut start, mut height) = (0, 0);
-        for (i, row) in rows.iter().enumerate() {
-            let h = report_row_height(*row);
-            if height + h > 590 && i > start {
-                chunks.push(start..i);
-                start = i;
-                height = 0;
-            }
-            height += h;
-        }
-        chunks.push(start..rows.len());
-        for range in chunks {
-            let chunk = &rows[range];
+        let title = if trace.config.host == trace.addr || trace.addr.is_empty() {
+            trace.config.host.clone()
+        } else {
+            format!("{} ({})", trace.config.host, trace.addr)
+        };
+        // Use the same font metrics for pagination and painting, including wrapped IPv6 addresses.
+        let ctx = egui::Context::default();
+        let mut measured = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let title_height = report_text(ui, &title, 24.0, REPORT_WIDTH).size().y;
+            measured = Some((ReportTable::new(ui, &shown, trace), 122.0 + title_height));
+        });
+        output.textures_delta.clear();
+        let (table, top) = measured.expect("report measured in a UI pass");
+        let chunks = table.chunks(top);
+        for (page, range) in chunks.iter().enumerate() {
             pages.push(paint(
                 gpu,
                 [1100, 740],
-                pixels_per_point,
+                pixels_per_point.max(2.0),
                 snapshot.session.theme,
+                true,
                 |ui| {
-                    ui.heading(format!(
-                        "TracePlotter — {} ({})",
-                        trace.config.host, trace.addr
-                    ));
-                    ui.label(format!(
-                        "{} to {}",
-                        time::date_time(snapshot.plot_range[0]),
-                        time::date_time(snapshot.plot_range[1])
-                    ));
-                    ui.label(format!(
-                        "{} · {} ms interval · {} bytes",
-                        trace.config.protocol, trace.config.interval_ms, trace.config.packet_size
-                    ));
-                    ui.separator();
-                    egui::Grid::new("report-table")
-                        .striped(true)
-                        .spacing([8.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.strong("Hop");
-                            for id in &shown {
-                                ui.strong(COLUMNS.iter().find(|c| c.0 == id).map_or("", |c| c.1));
-                            }
-                            ui.end_row();
-                            for &hop in chunk {
-                                let stats = hop.map_or(trace.total, |h| h.stats);
-                                ui.monospace(
-                                    hop.map_or_else(|| "RT".into(), |h| h.ttl.to_string()),
-                                );
-                                for id in &shown {
-                                    let text = cell(
-                                        id,
-                                        hop,
-                                        stats,
-                                        hop.map_or(trace.total_extras, |h| h.extras),
-                                    );
-                                    if ["ip", "name"].contains(&id.as_str()) {
-                                        ui.add_sized(
-                                            [230.0, (report_row_height(hop) - 6) as f32],
-                                            egui::Label::new(text).wrap(),
-                                        );
-                                    } else {
-                                        ui.add(egui::Label::new(text).extend());
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
+                    let painter = ui.painter();
+                    painter.rect_filled(ui.max_rect(), 0.0, egui::Color32::WHITE);
+                    let muted = egui::Color32::from_rgb(83, 99, 119);
+                    let accent = egui::Color32::from_rgb(32, 87, 148);
+                    painter.text(egui::pos2(30.0, 24.0), egui::Align2::LEFT_TOP,
+                        "TRACEPLOTTER / ROUTE REPORT", egui::FontId::proportional(13.0), accent);
+                    let heading = report_text(ui, &title, 24.0, REPORT_WIDTH);
+                    let heading_bottom = 50.0 + heading.size().y;
+                    painter.galley(egui::pos2(30.0, 50.0), heading, egui::Color32::BLACK);
+                    painter.text(egui::pos2(30.0, heading_bottom + 10.0), egui::Align2::LEFT_TOP,
+                        format!("{} to {}", time::date_time(snapshot.plot_range[0]), time::date_time(snapshot.plot_range[1])),
+                        egui::FontId::proportional(14.0), muted);
+                    painter.text(egui::pos2(30.0, heading_bottom + 34.0), egui::Align2::LEFT_TOP,
+                        format!("{}  /  {} ms interval  /  {} bytes", layout::short_protocol(&trace.config), trace.config.interval_ms, trace.config.packet_size),
+                        egui::FontId::proportional(13.0), muted);
+                    let band = |y: f32, h: f32, color| {
+                        painter.rect_filled(egui::Rect::from_min_size(egui::pos2(30.0, y), egui::vec2(REPORT_WIDTH, h)), 0.0, color);
+                    };
+                    band(top, table.header_height, egui::Color32::from_rgb(225, 232, 240));
+                    table.draw_row(ui, &table.headers, top, table.header_height);
+                    let mut y = top + table.header_height;
+                    for i in range.clone() {
+                        let total = i == table.rows.len() - 1;
+                        if total {
+                            band(y, table.heights[i], egui::Color32::from_rgb(225, 237, 249));
+                            painter.hline(30.0..=1070.0, y, egui::Stroke::new(1.0, accent));
+                        } else if i % 2 == 0 {
+                            band(y, table.heights[i], egui::Color32::from_rgb(245, 247, 250));
+                        }
+                        table.draw_row(ui, &table.rows[i], y, table.heights[i]);
+                        y += table.heights[i];
+                    }
+                    painter.hline(30.0..=1070.0, 678.0, egui::Stroke::new(1.0, egui::Color32::from_gray(215)));
+                    painter.text(egui::pos2(30.0, 692.0), egui::Align2::LEFT_TOP,
+                        "Latency and jitter in ms. RT = round trip. Intermediate hops may limit replies.",
+                        egui::FontId::proportional(12.0), muted);
+                    painter.text(egui::pos2(1070.0, 692.0), egui::Align2::RIGHT_TOP,
+                        format!("Table {} / {}", page + 1, chunks.len()), egui::FontId::proportional(12.0), muted);
                 },
             )?);
         }
@@ -682,6 +808,10 @@ pub(super) fn render_fixture(
         .save(path.join("graphs-export.png"))
         .map_err(|e| e.to_string())?;
     let pages = report_pages(gpu, snapshot, pixels_per_point)?;
+    for (i, page) in pages.iter().enumerate() {
+        page.save(path.join(format!("report-page-{}.png", i + 1)))
+            .map_err(|e| e.to_string())?;
+    }
     fs::write(path.join("report-export.pdf"), pdf_images(&pages)).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -689,6 +819,57 @@ pub(super) fn render_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ui-tests")]
+    #[test]
+    fn report_fits_all_columns_and_paginates_wrapped_addresses() {
+        let mut snapshot = super::super::tests::fixture("demo-one");
+        let trace = &mut snapshot.traces[0];
+        let mut row = trace.rows[0].clone();
+        row.addr = "2001:db8:1234:5678:abcd:ef01:2345:6789".into();
+        row.name = "a-long-router-name-with-several-labels.backbone.example.net".into();
+        trace.rows = vec![row; 64];
+        let shown = COLUMNS
+            .iter()
+            .filter(|c| c.0 != "bar")
+            .map(|c| c.0.to_owned())
+            .collect::<Vec<_>>();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let table = ReportTable::new(ui, &shown, trace);
+            assert!((table.widths.iter().sum::<f32>() - REPORT_WIDTH).abs() < 0.01);
+            for (i, width) in table.widths.iter().enumerate() {
+                assert!(*width > 20.0);
+                if !table.left[i] || i == 0 {
+                    assert_eq!(
+                        report_text(ui, &table.headers[i], 14.0, width - 20.0)
+                            .rows
+                            .len(),
+                        1
+                    );
+                    assert_eq!(
+                        report_text(ui, &table.rows[0][i], 14.0, width - 20.0)
+                            .rows
+                            .len(),
+                        1
+                    );
+                }
+            }
+            let top = 150.0;
+            let chunks = table.chunks(top);
+            assert!(chunks.len() > 1);
+            assert_eq!(
+                chunks.iter().cloned().flatten().collect::<Vec<_>>(),
+                (0..65).collect::<Vec<_>>()
+            );
+            for range in chunks {
+                assert!(
+                    top + table.header_height + table.heights[range].iter().sum::<f32>()
+                        <= REPORT_BOTTOM
+                );
+            }
+        });
+        output.textures_delta.clear();
+    }
     #[test]
     fn pdf_contains_image_with_matching_dimensions() {
         let bytes =
