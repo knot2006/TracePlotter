@@ -526,15 +526,21 @@ impl Controller {
                         }
                     }
                 }
-                Command::Agent(tool, args, reply) => match self.agent(&tool, args, &reply) {
-                    Ok(Some(value)) => {
-                        let _ = reply.send(Ok(value));
+                Command::Agent(tool, args, reply) => {
+                    let read_only = agent::is_read(&tool);
+                    match self.agent(&tool, args, &reply) {
+                        Ok(Some(value)) => {
+                            let _ = reply.send(Ok(value));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                        }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        let _ = reply.send(Err(e));
+                    if read_only {
+                        continue;
                     }
-                },
+                }
                 Command::Range(key, result) => {
                     self.range_pending.remove(&key.id);
                     match result {
@@ -1153,7 +1159,15 @@ impl Controller {
                         let loss_seconds =
                             ((10.0 * interval).max((end - start) / 120.0) / interval).ceil()
                                 * interval;
-                        let data = if let Some(disk) = disk {
+                        let stretches = disk
+                            .and_then(|d| d.hops.iter().find(|h| h.ttl == ttl))
+                            .map_or_else(
+                                || stretches(hop, start, end, width),
+                                |h| h.stretches.clone(),
+                            );
+                        let data = if summary {
+                            logic::range_graph(&stretches, width, loss_seconds, 0, interval)
+                        } else if let Some(disk) = disk {
                             disk.hops.iter().find(|h| h.ttl == ttl).map_or_else(
                                 GraphData::default,
                                 |h| {
@@ -1175,17 +1189,6 @@ impl Controller {
                                 interval,
                                 view.as_ref().map_or(800, |v| v.width),
                             )
-                        };
-                        let stretches = disk
-                            .and_then(|d| d.hops.iter().find(|h| h.ttl == ttl))
-                            .map_or_else(
-                                || stretches(hop, start, end, width),
-                                |h| h.stretches.clone(),
-                            );
-                        let data = if summary {
-                            logic::range_graph(&stretches, width, loss_seconds, 0, interval)
-                        } else {
-                            data
                         };
                         let label = if view.as_ref().is_some_and(|v| v.session == "summary") {
                             trace.config.host.clone()
@@ -1234,12 +1237,9 @@ impl Controller {
         args: Value,
         reply: &SyncSender<Result<Value, String>>,
     ) -> Result<Option<Value>, String> {
-        if matches!(
-            tool,
-            "list_targets" | "get_hops" | "get_route_changes" | "get_latency_history"
-        ) {
+        if agent::is_read(tool) {
             // Tool requests may read files; keep them off both the UI and probe controller.
-            let traces = self.traces.clone();
+            let traces = agent::snapshot(&self.traces, tool, &args)?;
             let tool = tool.to_owned();
             let reply = reply.clone();
             std::thread::spawn(move || {

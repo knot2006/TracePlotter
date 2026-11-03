@@ -146,30 +146,33 @@ pub(super) fn thin(
             continue;
         }
         let mut end = start;
-        let mut values = Vec::new();
-        let mut jitters = Vec::new();
+        let (mut sum, mut count) = (0.0, 0usize);
+        let (mut jitter_sum, mut jitter_count) = (0.0, 0usize);
+        let (mut min, mut max): (Option<f64>, Option<f64>) = (None, None);
         while end < data.xs.len()
             && (data.xs[end] / width).floor() == (x / width).floor()
             && !breaks.contains(&data.xs[end].to_bits())
         {
             if let Some(v) = data.ys[end] {
-                values.push(v);
+                sum += v;
+                count += 1;
+                min = Some(min.map_or(v, |m| m.min(v)));
+                max = Some(max.map_or(v, |m| m.max(v)));
             }
             if let Some(v) = data.js[end] {
-                jitters.push(v);
+                jitter_sum += v;
+                jitter_count += 1;
             }
             end += 1;
         }
         out.xs.push(x);
-        out.ys
-            .push((!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64));
-        out.js.push(
-            (!jitters.is_empty()).then(|| jitters.iter().sum::<f64>() / jitters.len() as f64),
-        );
+        out.ys.push((count > 0).then(|| sum / count as f64));
+        out.js
+            .push((jitter_count > 0).then(|| jitter_sum / jitter_count as f64));
         out.ls.push(data.ls[start]);
-        out.lo.push(values.iter().copied().reduce(f64::min));
-        out.hi.push(values.iter().copied().reduce(f64::max));
-        counts.push(values.len());
+        out.lo.push(min);
+        out.hi.push(max);
+        counts.push(count);
         start = end;
     }
     blend(&mut out, &counts, breaks, radius);
@@ -836,6 +839,24 @@ pub(super) fn whois_facts(text: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
+
+    #[test]
+    fn thinning_keeps_extrema_and_independent_jitter_counts_across_gaps() {
+        let data = super::GraphData {
+            xs: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            ys: vec![Some(2.0), None, Some(10.0), None, None, None, Some(7.0)],
+            js: vec![None, None, Some(4.0), None, Some(6.0), None, None],
+            ls: vec![Some(0.0); 7],
+            ..Default::default()
+        };
+        let out = super::thin(&data, &[3.0f64.to_bits()].into(), 3.0, 0);
+        assert_eq!(out.xs, vec![0.0, 3.0, 4.0, 6.0]);
+        assert_eq!(out.ys, vec![Some(6.0), None, None, Some(7.0)]);
+        assert_eq!(out.js, vec![Some(4.0), None, Some(6.0), None]);
+        assert_eq!(out.lo, vec![Some(2.0), None, None, Some(7.0)]);
+        assert_eq!(out.hi, vec![Some(10.0), None, None, Some(7.0)]);
+        assert_eq!(out.ls, vec![Some(0.0), None, Some(0.0), Some(0.0)]);
+    }
 
     fn compare(got: &Value, expected: &Value, context: &str) {
         match (got, expected) {

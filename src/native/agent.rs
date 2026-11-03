@@ -140,6 +140,22 @@ pub(super) fn describe(trace: &Trace, span: f64, disk: Option<&Range>) -> Value 
 fn slice(from: f64, to: f64, s: Stats) -> Value {
     json!({"from":iso(from),"to":iso(to),"sent":s.sent,"loss_pct":round(s.loss_pct),"avg_ms":s.avg.map(round),"min_ms":s.min.map(round),"max_ms":s.max.map(round),"jitter_ms":s.jitter.map(round)})
 }
+pub(super) fn is_read(tool: &str) -> bool {
+    matches!(
+        tool,
+        "list_targets" | "get_hops" | "get_route_changes" | "get_latency_history"
+    )
+}
+
+pub(super) fn snapshot(traces: &[Trace], tool: &str, args: &Value) -> Result<Vec<Trace>, String> {
+    // Resolve against every tab before narrowing, so ambiguous hosts remain errors.
+    if tool == "list_targets" {
+        Ok(traces.to_vec())
+    } else {
+        Ok(vec![traces[find(traces, &args["target"])?].clone()])
+    }
+}
+
 pub(super) fn read(traces: &[Trace], tool: &str, args: &Value) -> Result<Value, String> {
     let span = seconds(
         args,
@@ -309,6 +325,10 @@ mod tests {
                 .map(trace)
                 .collect::<Vec<_>>();
             let result = read(&traces, case["tool"].as_str().unwrap(), &case["args"]);
+            let tool = case["tool"].as_str().unwrap();
+            let narrowed = snapshot(&traces, tool, &case["args"])
+                .and_then(|traces| read(&traces, tool, &case["args"]));
+            assert_eq!(result, narrowed, "snapshot case {index}");
             if let Some(error) = case["error"].as_str() {
                 assert_eq!(result.unwrap_err(), error, "case {index}");
             } else {
@@ -319,6 +339,28 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn targeted_snapshots_keep_one_tab_and_reject_ambiguous_hosts() {
+        let traces = ["one", "two"].map(|id| {
+            Trace::new(model::Config {
+                session_id: id.into(),
+                host: "example.com".into(),
+                ..model::Config::default()
+            })
+        });
+        for tool in ["get_hops", "get_route_changes", "get_latency_history"] {
+            let selected = snapshot(&traces, tool, &json!({"target":"two"})).unwrap();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].config.session_id, "two");
+            assert!(snapshot(&traces, tool, &json!({"target":"example.com"})).is_err());
+            assert!(snapshot(&traces, tool, &json!({})).is_err());
+        }
+        assert_eq!(
+            snapshot(&traces, "list_targets", &json!({})).unwrap().len(),
+            2
+        );
+    }
+
     #[test]
     fn oversized_minutes_do_not_panic_a_tool_worker() {
         assert_eq!(
