@@ -91,6 +91,26 @@ Use it for screenshots and for interface work:
 cargo native -- --demo
 ```
 
+### Opening the Windows UI for the user
+
+When asked to run or show the app, launch the built exe outside the execution sandbox
+using the tool's `require_escalated` permission mode. In this environment a sandboxed
+process can keep recording samples without showing its window on the user's desktop.
+This is a desktop visibility requirement, not a request to run TracePlotter as Administrator.
+For an interactive demo, use a visible window explicitly:
+
+```powershell
+Start-Process -FilePath (Resolve-Path 'target/fast/traceplotter.exe').Path -ArgumentList '--demo' -WindowStyle Normal -PassThru
+```
+
+Keep builds and headless tests in the sandbox. Preserve any requested demo switches and
+use a separate `--instance <UUID>` when the demo needs isolated settings and history.
+Do not report that the UI is open merely because a process started or history is updating.
+Check that the launched process has a nonzero `MainWindowHandle`, a window title and
+`Responding = True`; inspect the window with the computer-use tools when available.
+If visual inspection is unavailable, say so. When retrying a hidden launch, stop only
+the process started for that attempt and relaunch it outside the sandbox.
+
 ## The MCP server
 
 The app has a built-in MCP server so that agents can read its traces. People turn it on under
