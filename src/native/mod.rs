@@ -2552,7 +2552,7 @@ fn spark(ui: &mut egui::Ui, values: &[Option<f64>]) {
 
 /// How strongly the good, slow and bad zones tint the chart surface: in the hop graph, the
 /// table's latency bars and their legend alike.
-const ZONE_TINTS: [f32; 3] = [0.24, 0.24, 0.26];
+const ZONE_TINTS: [f32; 3] = [0.10, 0.10, 0.12];
 
 fn latency_bar(
     ui: &mut egui::Ui,

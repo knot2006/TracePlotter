@@ -105,17 +105,14 @@ pub(super) struct Output {
     pub action: Option<Action>,
 }
 
-/// Series colours in a fixed order, the dark steps of the dataviz reference palette with
-/// its green and red left out, as those mean good and bad here. Checked with its validator
-/// on the plot surface: lightness band, CVD separation (worst adjacent 8.4), normal-vision
-/// separation (19.3) and 3:1 contrast all pass.
+/// Bright series colours keep overlapping traces visible over the latency zones.
 const SERIES_COLORS: [Color32; 6] = [
-    Color32::from_rgb(0x39, 0x87, 0xe5),
-    Color32::from_rgb(0xd9, 0x59, 0x26),
-    Color32::from_rgb(0x19, 0x9e, 0x70),
-    Color32::from_rgb(0xc9, 0x85, 0x00),
-    Color32::from_rgb(0xd5, 0x51, 0x81),
-    Color32::from_rgb(0x90, 0x85, 0xe9),
+    Color32::from_rgb(0x69, 0xb4, 0xff),
+    Color32::from_rgb(0xff, 0x99, 0x66),
+    Color32::from_rgb(0x52, 0xd6, 0xaa),
+    Color32::from_rgb(0xf5, 0xc4, 0x53),
+    Color32::from_rgb(0xf5, 0x8f, 0xb4),
+    Color32::from_rgb(0xb6, 0xa8, 0xff),
 ];
 /// Nulls end a path; a missing reply must never become a line through the gap.
 fn runs(xs: &[f64], ys: &[Option<f64>]) -> Vec<Vec<[f64; 2]>> {
@@ -203,7 +200,7 @@ fn points(
             plot.line(
                 Line::new("Latency", run)
                     .color(color)
-                    .width(1.5)
+                    .width(2.0)
                     // Equal-x step edges must remain strokes, not opaque line bands.
                     .allow_band(false)
                     .style(style),
@@ -480,7 +477,7 @@ pub(super) fn show(
                 .allow_boxed_zoom(false)
                 .allow_axis_zoom_drag(false)
                 .allow_double_click_reset(false)
-                .grid_color(theme_colors.edge)
+                .grid_color(theme_colors.line)
                 .link_axis(egui::Id::unique("trace-time"), [true, false])
                 .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
                 .custom_y_axes(axes(0.0, jitter_max, false))
@@ -511,6 +508,7 @@ pub(super) fn show(
                             p.line(
                                 Line::new("Jitter", run)
                                     .color(color)
+                                    .width(2.0)
                                     .allow_band(false)
                                     .fill(0.0),
                             );
@@ -545,7 +543,7 @@ pub(super) fn show(
             .allow_boxed_zoom(false)
             .allow_axis_zoom_drag(false)
             .allow_double_click_reset(false)
-            .grid_color(theme_colors.edge)
+            .grid_color(theme_colors.line)
             .link_axis(egui::Id::unique("trace-time"), [true, false])
             .link_cursor(egui::Id::unique("trace-cursor"), [true, false])
             .custom_y_axes(axes(ymin, ymax, true))

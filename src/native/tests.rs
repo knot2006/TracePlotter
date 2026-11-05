@@ -719,7 +719,7 @@ fn row_header_and_tab_context_menus_use_the_existing_actions() {
 fn graph_styles_render_distinct_paths_and_keep_loss_gaps() {
     fn marks(shape: &egui::Shape, paths: &mut Vec<usize>, dots: &mut usize) {
         match shape {
-            egui::Shape::Path(path) if path.stroke.width == 1.5 => paths.push(path.points.len()),
+            egui::Shape::Path(path) if path.stroke.width == 2.0 => paths.push(path.points.len()),
             egui::Shape::Circle(_) => *dots += 1,
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {
