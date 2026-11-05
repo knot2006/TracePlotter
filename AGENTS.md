@@ -57,6 +57,28 @@ do not hand out a `fast` build as a release.
 - The version is in `Cargo.toml` only.
 - Documentation and pull request descriptions are plain prose, in the voice of the existing docs.
 
+## Rust guidance and skills
+
+Use the project-local [BeautifulRust skills](.agents/skills/README.md):
+
+- Read [rust-best-practices](.agents/skills/rust-best-practices/SKILL.md) when writing,
+  debugging or refactoring Rust, including Cargo changes, tests and rustdoc.
+- For a Rust review, also read [rust-review](.agents/skills/rust-review/SKILL.md).
+  Keep findings within the requested scope, cite locations and rules, and suggest
+  the smallest useful fixes.
+- When porting another language to Rust, also read
+  [rust-port](.agents/skills/rust-port/SKILL.md). Preserve observable behavior and
+  test it; extend the existing PORTING.md when porting notes belong there.
+
+These skills supplement this file and CONTRIBUTING.md; the project instructions take
+precedence. TracePlotter is an application even though it has a lib.rs. Keep concrete
+types and the existing module layout, and keep pure logic tests beside their modules.
+Cloning display snapshots is intentional: the controller owns the live data. Preserve
+the documented trippy-core unwind-based stop mechanism and release panic strategy.
+Use the native checks above rather than replacing them with a skill's generic commands.
+Adopt additional lints incrementally, with a clean build on Windows and Linux, rather
+than enabling the full upstream library lint set across the application.
+
 ## Demo mode
 
 `--demo` replaces probing with a made-up nine-hop route built from documentation addresses, with a

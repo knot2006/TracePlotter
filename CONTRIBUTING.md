@@ -110,6 +110,32 @@ data folder elsewhere to keep them.
 
 [PORTING.md](PORTING.md) describes saved-session compatibility and remaining platform checks.
 
+## Rust guidelines
+
+We use [BeautifulRust](https://github.com/morganlinton/BeautifulRust) as supplementary
+Rust guidance. The [project-local copy](.agents/skills/README.md) includes writing,
+review and porting skills, reference digests, the upstream license and the source commit.
+The conventions in this guide and AGENTS.md take precedence.
+
+Keep application code direct. Prefer concrete types and small functions over speculative
+traits and builders. Use enums for meaningful modes, newtypes where units or IDs could
+be confused, and Option and Result for absence and expected failures. Borrow with &str
+and slices when ownership is unnecessary; move owned values when consuming them.
+Avoid clones that only work around a borrow, while keeping deliberate snapshots and
+shared ownership where the controller needs them.
+
+Handle bad input and network failures without panicking, and preserve useful context in
+errors. Document invariants and failure modes that signatures cannot express. Keep unsafe
+code confined to platform or FFI boundaries with safe wrappers; every unsafe block needs
+a SAFETY comment explaining why its requirements hold. Keep locks short and avoid doing
+I/O or invoking callbacks while holding them.
+
+Test observable behavior and edge cases, keeping pure logic tests beside their modules.
+Measure before optimizing. Let rustfmt handle formatting and fix clippy findings rather
+than suppressing them. If a lint does not fit an item, use a narrowly scoped
+`#[expect(clippy::name, reason = "...")]` and explain why. Add new project lints
+incrementally; the existing native checks must stay clean on Windows and Linux.
+
 ## Dependencies
 
 Dependabot opens weekly pull requests for Rust crates and workflow actions. `trippy-core`
