@@ -57,6 +57,10 @@ impl Window {
                                 }
                                 for trace in &snapshot.traces {
                                     let selected = session.active == trace.config.session_id;
+                                    let hover_id = ui
+                                        .scope_id()
+                                        .with(("target-tab-hover", &trace.config.session_id));
+                                    let hovered = tab_hovered(ui, hover_id);
                                     let status = if trace.alerting {
                                         palette(ui.ctx()).bad
                                     } else if trace.paused {
@@ -74,6 +78,9 @@ impl Window {
                                             bottom: 0,
                                         })
                                         .show(ui, |ui| {
+                                            if !selected && !hovered {
+                                                ui.set_opacity(0.65);
+                                            }
                                             ui.horizontal(|ui| {
                                                 ui.spacing_mut().item_spacing.x = 6.0;
                                                 // The dot's slot is as tall as the tab, so that
@@ -96,16 +103,20 @@ impl Window {
                                                     "{}  ",
                                                     trace.config.host
                                                 ))
-                                                .color(if selected {
+                                                .color(if selected || hovered {
                                                     palette(ui.ctx()).text
                                                 } else {
-                                                    palette(ui.ctx()).soft
+                                                    palette(ui.ctx()).text.gamma_multiply(0.5)
                                                 });
                                                 for part in [
-                                                    if selected { host.strong() } else { host },
+                                                    host,
                                                     RichText::new(short_protocol(&trace.config))
                                                         .size(12.0)
-                                                        .color(palette(ui.ctx()).muted),
+                                                        .color(if selected {
+                                                            palette(ui.ctx()).soft
+                                                        } else {
+                                                            palette(ui.ctx()).muted
+                                                        }),
                                                 ] {
                                                     part.append_to(
                                                         &mut name,
@@ -138,6 +149,7 @@ impl Window {
                                             });
                                         })
                                         .response;
+                                    ui.data_mut(|d| d.insert_temp(hover_id, response.rect));
                                     ui.painter().set(
                                         plate,
                                         status_plate_shape(
@@ -152,6 +164,7 @@ impl Window {
                                         .container_context_menu(|ui| self.target_menu(ui, trace));
                                 }
                                 if icon_button(ui, "+", "New target", tab_height).clicked() {
+                                    self.host.clear();
                                     self.select(session, "summary".into());
                                     self.focus_host = true;
                                     changed = true;
@@ -628,6 +641,20 @@ impl Window {
                             {
                                 self.editing = Some((trace.config.clone(), false));
                             }
+                        }
+                        if small_button(
+                            ui,
+                            if session.settings.notifications {
+                                "Notifications on"
+                            } else {
+                                "Notifications off"
+                            },
+                        )
+                        .on_hover_text("Toggle desktop notifications for all targets. Events are still recorded.")
+                        .clicked()
+                        {
+                            session.settings.notifications = !session.settings.notifications;
+                            changed = true;
                         }
                         if self.end.is_some() && small_button(ui, "Live").clicked() {
                             self.end = None;
@@ -1364,7 +1391,7 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
         "▶" => Some(palette(ui.ctx()).accent),
         _ => None,
     };
-    let mut button = egui::Button::new(
+    let button = egui::Button::new(
         RichText::new(if vector { "" } else { glyph }).size(if glyph == "×" {
             16.0
         } else {
@@ -1374,13 +1401,6 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
     // New target sits among the tabs, so it takes their rounded-square plate.
     .corner_radius(if glyph == "+" { 6 } else { size as u8 / 2 })
     .frame(glyph != "×");
-    if let Some(fill) = fill {
-        button = button.fill(fill);
-    } else if glyph == "+" {
-        button = button
-            .fill(plate_fill(ui.ctx(), false, false))
-            .stroke(egui::Stroke::NONE);
-    }
     // The frameless close cross takes the tab's height, so it shares the tab's centre.
     let height = if glyph == "×" {
         theme::tab_height(ui.ctx())
@@ -1393,6 +1413,36 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, size: f32) -> egui::
         .scope(|ui| {
             ui.spacing_mut().interact_size = egui::vec2(size, height);
             ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            if let Some(fill) = fill {
+                let widgets = &mut ui.visuals_mut().widgets;
+                for (state, brightness) in [
+                    (&mut widgets.inactive, 0.0),
+                    (&mut widgets.hovered, 0.20),
+                    (&mut widgets.active, 0.32),
+                ] {
+                    state.weak_bg_fill = fill.lerp_to_gamma(Color32::WHITE, brightness);
+                    state.bg_stroke = egui::Stroke::NONE;
+                }
+            } else if glyph == "↻" {
+                let highlight = palette(ui.ctx()).text;
+                let widgets = &mut ui.visuals_mut().widgets;
+                for (state, strength) in [(&mut widgets.hovered, 0.18), (&mut widgets.active, 0.26)]
+                {
+                    state.weak_bg_fill = highlight.gamma_multiply(strength);
+                    state.bg_stroke = egui::Stroke::NONE;
+                }
+            } else if glyph == "+" {
+                let resting = plate_fill(ui.ctx(), false, false);
+                let highlight = palette(ui.ctx()).text;
+                let widgets = &mut ui.visuals_mut().widgets;
+                widgets.inactive.weak_bg_fill = resting;
+                widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                for (state, strength) in [(&mut widgets.hovered, 0.12), (&mut widgets.active, 0.18)]
+                {
+                    state.weak_bg_fill = highlight.gamma_multiply(strength);
+                    state.bg_stroke = egui::Stroke::NONE;
+                }
+            }
             ui.add_sized([size, height], button)
         })
         .inner;
@@ -1584,14 +1634,19 @@ fn preset_input(
         open = false;
     }
     let mut keep_open = open;
+    let popup_frame = theme::dropdown_frame(ui);
+    let popup_width = frame.response.rect.width();
     let list = egui::Popup::from_response(&frame.response)
         .id(state.with("popup"))
         .kind(egui::PopupKind::Menu)
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
         .open_bool(&mut keep_open)
-        .width(width)
+        .width(popup_width)
+        .frame(popup_frame)
         .show(|ui| {
+            theme::dropdown_rows(ui);
+            ui.set_width((popup_width - popup_frame.total_margin().sum().x).max(0.0));
             for (i, preset) in presets.iter().enumerate() {
                 if ui.selectable_label(*preset == shown, preset).clicked() {
                     picked = Some(Picked::Preset(i));
@@ -1608,22 +1663,24 @@ fn preset_input(
     ui.data_mut(|d| d.insert_temp(state, (open && keep_open, list)));
     picked
 }
-/// MonoCode's tab plates: a faint fill on every tab, a little more on hover. The open tab
-/// takes a neutral wash in Dark and a vivid green tint in Glass.
+/// MonoCode's title tabs dim together at rest and use a neutral selected plate.
 fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
-    if selected {
-        if theme::current(ctx) == Theme::Dark {
-            palette(ctx).text.gamma_multiply(0.10)
-        } else {
-            palette(ctx).accent.gamma_multiply(0.24)
-        }
+    let strength = if selected {
+        0.10
     } else if hovered {
-        palette(ctx).text.gamma_multiply(0.07)
+        0.07
     } else {
-        palette(ctx).text.gamma_multiply(0.04)
-    }
+        0.04 * 0.65
+    };
+    palette(ctx).text.gamma_multiply(strength)
 }
 
+fn tab_hovered(ui: &egui::Ui, id: egui::Id) -> bool {
+    ui.data(|d| d.get_temp::<egui::Rect>(id))
+        .is_some_and(|rect| ui.rect_contains_pointer(rect))
+}
+
+/// The status wash fades across the plate while selection and hover stay distinct.
 fn status_plate_shape(
     ctx: &egui::Context,
     rect: egui::Rect,
@@ -1631,14 +1688,19 @@ fn status_plate_shape(
     hovered: bool,
     color: Color32,
 ) -> egui::Shape {
+    let strength = if selected {
+        0.24
+    } else if hovered {
+        0.17
+    } else {
+        0.09
+    };
     let mut tint = egui::epaint::Mesh::default();
-    let strength = if selected { 0.24 } else { 0.17 };
     let tint_at = |pos: egui::Pos2| {
         let progress = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-        color.gamma_multiply(egui::lerp(strength..=0.025, progress))
+        color.gamma_multiply(egui::lerp(strength..=0.015, progress))
     };
     tint.colored_vertex(rect.center(), tint_at(rect.center()));
-    // The gradient follows the rounded plate, fading from the indicator across the tab.
     let radius = 6.0_f32.min(rect.width() * 0.5).min(rect.height() * 0.5);
     for (corner, center) in [
         rect.right_top() + egui::vec2(-radius, radius),
@@ -1692,47 +1754,53 @@ fn filled_slider(
     })
     .inner
 }
-/// A tab's plate. Glass lights the selected tab's edge with its green accent.
+/// A neutral rounded plate shared by target and fixed tabs.
 fn plate_shape(
     ctx: &egui::Context,
     rect: egui::Rect,
     selected: bool,
     hovered: bool,
 ) -> egui::Shape {
-    let stroke = if selected && theme::current(ctx).is_glass() {
-        egui::Stroke::new(1.0, palette(ctx).accent.gamma_multiply(0.7))
-    } else {
-        egui::Stroke::NONE
-    };
     egui::epaint::RectShape::new(
         rect,
         6.0,
         plate_fill(ctx, selected, hovered),
-        stroke,
+        egui::Stroke::NONE,
         egui::StrokeKind::Inside,
     )
     .into()
 }
 /// All targets or Settings: a plate with its mark, as the targets' tabs have.
 fn fixed_tab(ui: &mut egui::Ui, label: &str, selected: bool, gear: bool) -> egui::Response {
+    let hover_id = ui.scope_id().with(("fixed-tab-hover", label));
+    let hovered = tab_hovered(ui, hover_id);
     let plate = ui.painter().add(egui::Shape::Noop);
-    let text = RichText::new(format!("     {label}")).color(if selected {
+    let text = RichText::new(format!("     {label}")).color(if selected || hovered {
         palette(ui.ctx()).text
     } else {
-        palette(ui.ctx()).soft
+        palette(ui.ctx()).text.gamma_multiply(0.5)
     });
-    let response = ui.add_sized(
-        [
-            if gear { 104.0 } else { 120.0 },
-            theme::tab_height(ui.ctx()),
-        ],
-        egui::Button::new(if selected { text.strong() } else { text }).frame(false),
-    );
+    let response = ui
+        .scope(|ui| {
+            if !selected && !hovered {
+                ui.set_opacity(0.65);
+            }
+            let response = ui.add_sized(
+                [
+                    if gear { 104.0 } else { 120.0 },
+                    theme::tab_height(ui.ctx()),
+                ],
+                egui::Button::new(text).frame(false),
+            );
+            tab_icon(ui, &response, label, gear);
+            response
+        })
+        .inner;
+    ui.data_mut(|d| d.insert_temp(hover_id, response.rect));
     ui.painter().set(
         plate,
         plate_shape(ui.ctx(), response.rect, selected, response.hovered()),
     );
-    tab_icon(ui, &response, label, gear);
     response
 }
 /// A list or gear mark at the left of a fixed tab, painted because the bundled fonts

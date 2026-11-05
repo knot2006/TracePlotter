@@ -252,6 +252,7 @@ struct Window {
     toolbar_port: u16,
     toolbar_interval: u64,
     selected: Vec<u8>,
+    pending_selection: Option<String>,
     last_view: Option<View>,
     error: Option<String>,
     message: Option<String>,
@@ -399,6 +400,7 @@ impl Window {
             toolbar_port: config.port,
             toolbar_interval: config.interval_ms,
             selected: vec![0],
+            pending_selection: None,
             last_view: None,
             error: None,
             message: None,
@@ -529,6 +531,7 @@ impl Window {
             self.before_settings = Some(session.active.clone());
         }
         self.runtime.command(Command::Select(id.clone()));
+        self.pending_selection = Some(id.clone());
         session.active = id;
         self.selected = vec![0];
         self.bar_zoom = 1.0;
@@ -1833,6 +1836,15 @@ impl eframe::App for Window {
         let opening = self.opening.begin(ui);
         let snapshot = self.runtime.read();
         let mut session = snapshot.session.clone();
+        // Keep the user's selection until the controller publishes it; an older
+        // snapshot must not restore the previous target's toolbar in the meantime.
+        if let Some(id) = &self.pending_selection {
+            if session.active == *id {
+                self.pending_selection = None;
+            } else {
+                session.active = id.clone();
+            }
+        }
         session.theme = theme::current(ui.ctx());
         let mut changed = self.poll(&mut session);
         if self

@@ -225,8 +225,42 @@ pub(super) fn apply_theme(ctx: &egui::Context, theme: Theme) {
     });
 }
 
+/// Preset lists follow MonoCode's popover frame and compact menu rows.
+pub(super) fn dropdown_frame(ui: &egui::Ui) -> egui::Frame {
+    let p = palette(ui.ctx());
+    egui::Frame::popup(ui.style())
+        .fill(p.input.lerp_to_gamma(p.text, 0.02))
+        .stroke(egui::Stroke::new(1.0, p.text.gamma_multiply(0.10)))
+        .corner_radius(12)
+        .inner_margin(4)
+}
+
+pub(super) fn dropdown_rows(ui: &mut egui::Ui) {
+    menu_row_style(ui);
+    let p = palette(ui.ctx());
+    let text = p.text;
+    let style = ui.style_mut();
+    style.override_font_id = Some(egui::FontId::proportional(13.0));
+    style.spacing.item_spacing.y = 0.0;
+    style.spacing.button_padding = egui::vec2(8.0, 6.0);
+    style.visuals.selection.bg_fill = text.gamma_multiply(0.08);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, text);
+    for state in [
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.open,
+    ] {
+        state.bg_fill = text.gamma_multiply(0.08);
+        state.weak_bg_fill = state.bg_fill;
+    }
+}
+
 /// Applied after egui's menu defaults, which otherwise replace the control styling.
 pub(super) fn menu_rows(ui: &mut egui::Ui) {
+    menu_row_style(ui);
+    ui.set_min_width(260.0);
+}
+
+fn menu_row_style(ui: &mut egui::Ui) {
     let p = *palette(ui.ctx());
     let glass = current(ui.ctx()).is_glass();
     let style = ui.style_mut();
@@ -253,7 +287,6 @@ pub(super) fn menu_rows(ui: &mut egui::Ui) {
         state.fg_stroke = egui::Stroke::new(1.5, text);
         state.expansion = 0.0;
     }
-    ui.set_min_width(260.0);
 }
 
 pub(super) fn menu_icon(ui: &mut egui::Ui) {

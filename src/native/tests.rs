@@ -470,6 +470,43 @@ fn settings_list_their_sections_and_show_one_page_at_a_time() {
 }
 
 #[test]
+fn period_bar_can_enable_desktop_notifications() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    h.get_by_label("Notifications off").click();
+    h.run();
+    assert!(commands.try_iter().any(|command| matches!(command,
+        Command::Preferences(session) if session.settings.notifications
+    )));
+}
+
+#[test]
+fn new_target_stays_empty_while_the_controller_still_reports_the_old_tab() {
+    let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+    h.run();
+    assert_eq!(h.state().host, "example.com");
+    h.get_by_label("New target").click();
+    h.run();
+    assert!(commands.try_iter().any(|command| matches!(command,
+        Command::Select(id) if id == "summary"
+    )));
+    for _ in 0..3 {
+        h.run();
+        assert!(h.state().host.is_empty());
+        assert!(h.query_by_label("Start trace").is_some());
+        assert!(h.query_by_label("Pause").is_none());
+        assert!(
+            h.query_by_label("Restart trace and erase its history")
+                .is_none()
+        );
+    }
+    h.get_by_label("example.com  ICMP").click();
+    h.run();
+    assert_eq!(h.state().host, "example.com");
+    assert!(h.query_by_label("Pause").is_some());
+}
+
+#[test]
 fn toolbar_starts_a_new_target_and_modal_close_keeps_its_layout_visible() {
     let (mut h, commands) = harness("demo-one", [640.0, 420.0]);
     h.run();
@@ -1162,6 +1199,47 @@ fn settings_interval_arrow_stays_to_the_right_of_the_input() {
     assert!(commands.try_iter().any(
         |command| matches!(command, Command::Preferences(s) if s.settings.interval_ms == 5000)
     ));
+}
+
+#[test]
+fn preset_popups_match_their_fields_width() {
+    for name in ["Interval", "Time span"] {
+        let (mut h, _commands) = harness("demo-one", [1440.0, 900.0]);
+        h.run();
+        let field = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name);
+        let rect = field.rect();
+        let arrow = h
+            .query_all_by_label("Presets")
+            .find(|node| {
+                (node.rect().center().y - rect.center().y).abs() < 1.0
+                    && node.rect().left() >= rect.right()
+            })
+            .expect("Preset arrow beside the field")
+            .rect();
+        field.click();
+        h.run();
+        h.run();
+        let id = h.ctx.memory(|m| m.focused()).expect("Focused preset field");
+        let (_, popup) = h
+            .ctx
+            .data(|d| d.get_temp::<(bool, Option<egui::Rect>)>(id.with("presets")))
+            .expect("Open preset popup");
+        let popup = popup.expect("Preset popup rectangle");
+        let stroke = h
+            .ctx
+            .style_of(egui::Theme::Dark)
+            .visuals
+            .widgets
+            .inactive
+            .bg_stroke
+            .width;
+        let expected = arrow.right() - rect.left() + 8.0 + 2.0 * stroke;
+        assert!(
+            (popup.width() - expected).abs() <= 1.0,
+            "{name} popup must match its field: {} vs {expected}",
+            popup.width()
+        );
+    }
 }
 
 #[test]

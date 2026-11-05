@@ -379,7 +379,7 @@ impl Default for Settings {
             warn_ms: 100,
             bad_ms: 200,
             history_days: 7,
-            notifications: true,
+            notifications: false,
             loss_by_target: false,
         }
     }
@@ -905,11 +905,12 @@ mod tests {
                 continue;
             }
             let got = evaluate_fixture(case["name"].as_str().unwrap(), &case["args"]);
-            compare(
-                &got,
-                &case["expected"],
-                &format!("case {i}: {}", case["name"]),
-            );
+            let mut expected = case["expected"].clone();
+            // Desktop notifications now start off; explicit saved choices still match the legacy app.
+            if case["name"] == "settings" && !case["args"][0]["notifications"].is_boolean() {
+                expected["notifications"] = Value::Bool(false);
+            }
+            compare(&got, &expected, &format!("case {i}: {}", case["name"]));
         }
     }
 
