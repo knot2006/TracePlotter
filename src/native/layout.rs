@@ -57,6 +57,13 @@ impl Window {
                                 }
                                 for trace in &snapshot.traces {
                                     let selected = session.active == trace.config.session_id;
+                                    let status = if trace.alerting {
+                                        palette(ui.ctx()).bad
+                                    } else if trace.paused {
+                                        palette(ui.ctx()).warn
+                                    } else {
+                                        palette(ui.ctx()).good
+                                    };
                                     // The plate is painted behind once the tab's size and hover are known.
                                     let plate = ui.painter().add(egui::Shape::Noop);
                                     let response = egui::Frame::new()
@@ -82,13 +89,7 @@ impl Window {
                                                 ui.painter().circle_filled(
                                                     rect.center() + egui::vec2(0.0, 1.5),
                                                     4.5,
-                                                    if trace.alerting {
-                                                        palette(ui.ctx()).bad
-                                                    } else if trace.paused {
-                                                        palette(ui.ctx()).warn
-                                                    } else {
-                                                        palette(ui.ctx()).good
-                                                    },
+                                                    status,
                                                 );
                                                 let mut name = egui::text::LayoutJob::default();
                                                 let host = RichText::new(format!(
@@ -139,11 +140,12 @@ impl Window {
                                         .response;
                                     ui.painter().set(
                                         plate,
-                                        plate_shape(
+                                        status_plate_shape(
                                             ui.ctx(),
                                             response.rect,
                                             selected,
                                             response.contains_pointer(),
+                                            status,
                                         ),
                                     );
                                     response
@@ -1620,6 +1622,47 @@ fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
     } else {
         palette(ctx).text.gamma_multiply(0.04)
     }
+}
+
+fn status_plate_shape(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    selected: bool,
+    hovered: bool,
+    color: Color32,
+) -> egui::Shape {
+    let mut tint = egui::epaint::Mesh::default();
+    let strength = if selected { 0.24 } else { 0.17 };
+    let tint_at = |pos: egui::Pos2| {
+        let progress = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        color.gamma_multiply(egui::lerp(strength..=0.025, progress))
+    };
+    tint.colored_vertex(rect.center(), tint_at(rect.center()));
+    // The gradient follows the rounded plate, fading from the indicator across the tab.
+    let radius = 6.0_f32.min(rect.width() * 0.5).min(rect.height() * 0.5);
+    for (corner, center) in [
+        rect.right_top() + egui::vec2(-radius, radius),
+        rect.right_bottom() + egui::vec2(-radius, -radius),
+        rect.left_bottom() + egui::vec2(radius, -radius),
+        rect.left_top() + egui::vec2(radius, radius),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for step in 0..=8 {
+            let angle = (corner as f32 - 1.0 + step as f32 / 8.0) * std::f32::consts::FRAC_PI_2;
+            let pos = center + radius * egui::vec2(angle.cos(), angle.sin());
+            tint.colored_vertex(pos, tint_at(pos));
+        }
+    }
+    let count = tint.vertices.len() as u32 - 1;
+    for index in 1..=count {
+        tint.add_triangle(0, index, index % count + 1);
+    }
+    egui::Shape::Vec(vec![
+        plate_shape(ctx, rect, selected, hovered),
+        egui::Shape::mesh(tint),
+    ])
 }
 /// History and transparency share a rail whose fill ends at the circular handle's centre.
 fn filled_slider(
