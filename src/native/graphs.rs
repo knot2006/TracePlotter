@@ -432,12 +432,20 @@ pub(super) fn show(
             .flat_map(|p| p.data.hi.iter().flatten())
             .copied()
             .reduce(f64::max);
-        let [ymin, ymax] = latency_axis(lo, hi);
         let key = if compare {
             "comparison".to_owned()
         } else {
             format!("{}-{}", series[0].session, series[0].ttl)
         };
+        let plot_id = ui.make_persistent_id(egui::IdSalt::new((&key, "latency")));
+        // An outage has no latency samples, so keep the last scale while loss fills it.
+        let previous = (lo.is_none() && hi.is_none())
+            .then(|| egui_plot::PlotMemory::load(ui.ctx(), plot_id))
+            .flatten();
+        let [ymin, ymax] = previous.map_or_else(
+            || latency_axis(lo, hi),
+            |memory| [memory.bounds().min()[1], memory.bounds().max()[1]],
+        );
         let glass = theme::current(ui.ctx()).is_glass();
         ui.visuals_mut().extreme_bg_color = chart_surface(ui.ctx());
         let jitter_response = if with_jitter {

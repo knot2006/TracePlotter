@@ -772,6 +772,51 @@ fn graph_styles_render_distinct_paths_and_keep_loss_gaps() {
 }
 
 #[test]
+fn total_packet_loss_preserves_the_latency_scale_until_replies_resume() {
+    let mut snapshot = fixture("demo-one");
+    let ctx = egui::Context::default();
+    for (loss, reply) in [
+        (0.0, Some(20.0)),
+        (100.0, Some(20.0)),
+        (100.0, None),
+        (0.0, Some(80.0)),
+    ] {
+        let data = &mut snapshot.plots[0].data;
+        data.ys.fill(reply);
+        data.lo.fill(reply);
+        data.hi.fill(reply);
+        data.ls.fill(Some(loss));
+        let expected =
+            logic::latency_axis(Some(reply.unwrap_or(20.0)), Some(reply.unwrap_or(20.0)));
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                graphs::show(ui, &snapshot, &mut None, &mut None, &mut 600.0, false, None);
+                let id = ui.make_persistent_id(egui::IdSalt::new(("demo-one-0", "latency")));
+                let memory = egui_plot::PlotMemory::load(&ctx, id).unwrap();
+                assert_eq!(
+                    memory.bounds().min()[1],
+                    expected[0],
+                    "loss {loss}, reply {reply:?}"
+                );
+                assert_eq!(
+                    memory.bounds().max()[1],
+                    expected[1],
+                    "loss {loss}, reply {reply:?}"
+                );
+            },
+        );
+        output.textures_delta.clear();
+    }
+}
+
+#[test]
 fn stepped_probe_lines_do_not_turn_into_opaque_bands() {
     fn contains_band(shape: &egui::Shape) -> bool {
         match shape {
