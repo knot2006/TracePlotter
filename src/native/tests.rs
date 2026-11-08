@@ -136,6 +136,112 @@ fn themed_harness(
 }
 
 #[test]
+fn target_tabs_drag_to_either_end_without_changing_selection() {
+    for cancel in [false, true] {
+        for (source, destination, before) in [
+            ("example.com  ICMP", "second.example  ICMP", None),
+            (
+                "second.example  ICMP",
+                "example.com  ICMP",
+                Some("demo-one"),
+            ),
+        ] {
+            let (mut h, commands) = harness("demo-one", [1100.0, 720.0]);
+            let mut snapshot = fixture("demo-one");
+            let mut second = snapshot.traces[0].clone();
+            second.config.session_id = "demo-two".into();
+            second.config.host = "second.example".into();
+            snapshot.session.targets.push(second.config.clone());
+            snapshot.traces.push(second);
+            *h.state().runtime.snapshot.write().unwrap() = Arc::new(snapshot);
+            h.run();
+            let painted_x = |h: &Harness<'static, Window>, label: &str| {
+                let positions = h
+                    .output()
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos.x),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    positions.len(),
+                    1,
+                    "The tab label should be painted once: {label}"
+                );
+                positions[0]
+            };
+            let source_x = painted_x(&h, source);
+            let neighbor_x = painted_x(&h, destination);
+            let neighbor_label = destination;
+            let start = h.get_by_label(source).rect().center();
+            let destination = h.get_by_label(destination).rect();
+            let end = if before.is_some() {
+                destination.left_center()
+            } else {
+                destination.right_center()
+            };
+            h.event(egui::Event::PointerMoved(start));
+            h.event(egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+            h.event(egui::Event::PointerMoved(end));
+            h.run();
+            let direction = if before.is_some() { -1.0 } else { 1.0 };
+            assert!((painted_x(&h, source) - source_x) * direction > 20.0);
+            assert!((painted_x(&h, neighbor_label) - neighbor_x) * direction < -20.0);
+            assert!(
+                !commands
+                    .try_iter()
+                    .any(|c| matches!(c, Command::MoveTab(..)))
+            );
+            if cancel {
+                h.event(egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.run();
+                assert!((painted_x(&h, source) - source_x).abs() < 1.0);
+                assert!((painted_x(&h, neighbor_label) - neighbor_x).abs() < 1.0);
+            }
+            h.event(egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+            let expected = if before.is_some() {
+                "demo-two"
+            } else {
+                "demo-one"
+            };
+            let sent = commands.try_iter().collect::<Vec<_>>();
+            if cancel {
+                assert!(!sent.iter().any(|c| matches!(c, Command::MoveTab(..))));
+            } else {
+                assert!(sent.iter().any(|c| matches!(c,
+                    Command::MoveTab(id, next) if id == expected && next.as_deref() == before
+                )));
+            }
+            assert!(
+                !sent
+                    .iter()
+                    .any(|c| matches!(c, Command::Select(_) | Command::Close(_)))
+            );
+        }
+    }
+}
+
+#[test]
 fn the_window_accepts_fonts_after_its_first_frame() {
     let (mut h, _commands) = harness("demo-one", [1100.0, 720.0]);
     let (send, receive) = mpsc::channel();

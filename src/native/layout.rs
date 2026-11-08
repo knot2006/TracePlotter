@@ -1,6 +1,17 @@
 //! Window geometry follows the captured legacy interface; the controller owns its data.
 use super::*;
 
+struct DraggedTab {
+    session: String,
+    grab_offset: f32,
+}
+
+struct TabVisual<'a> {
+    session: &'a str,
+    rect: egui::Rect,
+    shapes: std::ops::Range<usize>,
+}
+
 impl Window {
     pub(super) fn sync_toolbar(&mut self, config: &Config) {
         self.host = config.host.clone();
@@ -38,7 +49,8 @@ impl Window {
                     .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
                 ui.horizontal(|ui| {
                     let strip_width = (ui.available_width() - 120.0).max(100.0);
-                    egui::ScrollArea::horizontal()
+                    let mut tab_rects = Vec::new();
+                    let strip = egui::ScrollArea::horizontal()
                         .id_salt("tabs")
                         .max_width(strip_width)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -57,6 +69,12 @@ impl Window {
                                 }
                                 for trace in &snapshot.traces {
                                     let selected = session.active == trace.config.session_id;
+                                    let dragging =
+                                        egui::DragAndDrop::payload::<DraggedTab>(ui.ctx())
+                                            .is_some_and(|drag| {
+                                                drag.session == trace.config.session_id
+                                            });
+                                    let mut drag_started = false;
                                     let hover_id = ui
                                         .scope_id()
                                         .with(("target-tab-hover", &trace.config.session_id));
@@ -78,7 +96,7 @@ impl Window {
                                             bottom: 0,
                                         })
                                         .show(ui, |ui| {
-                                            if !selected && !hovered {
+                                            if !selected && !hovered && !dragging {
                                                 ui.set_opacity(0.65);
                                             }
                                             ui.horizontal(|ui| {
@@ -103,7 +121,7 @@ impl Window {
                                                     "{}  ",
                                                     trace.config.host
                                                 ))
-                                                .color(if selected || hovered {
+                                                .color(if selected || hovered || dragging {
                                                     palette(ui.ctx()).text
                                                 } else {
                                                     palette(ui.ctx()).text.gamma_multiply(0.5)
@@ -125,10 +143,15 @@ impl Window {
                                                         egui::Align::Center,
                                                     );
                                                 }
-                                                let tab = ui.add_sized(
-                                                    [0.0, tab_height],
-                                                    egui::Button::new(name).frame(false),
-                                                );
+                                                let tab = ui
+                                                    .add_sized(
+                                                        [0.0, tab_height],
+                                                        egui::Button::new(name)
+                                                            .frame(false)
+                                                            .sense(egui::Sense::click_and_drag()),
+                                                    )
+                                                    .on_hover_text("Drag to rearrange tabs");
+                                                drag_started = tab.drag_started();
                                                 if tab.clicked() {
                                                     self.select(
                                                         session,
@@ -150,6 +173,20 @@ impl Window {
                                         })
                                         .response;
                                     ui.data_mut(|d| d.insert_temp(hover_id, response.rect));
+                                    if drag_started {
+                                        let grab_offset = ui
+                                            .input(|i| i.pointer.press_origin())
+                                            .map_or(response.rect.width() * 0.5, |p| {
+                                                p.x - response.rect.left()
+                                            });
+                                        egui::DragAndDrop::set_payload(
+                                            ui.ctx(),
+                                            DraggedTab {
+                                                session: trace.config.session_id.clone(),
+                                                grab_offset,
+                                            },
+                                        );
+                                    }
                                     ui.painter().set(
                                         plate,
                                         status_plate_shape(
@@ -160,6 +197,15 @@ impl Window {
                                             status,
                                         ),
                                     );
+                                    let end = ui.ctx().graphics(|g| {
+                                        g.get(ui.layer_id())
+                                            .map_or(plate.0 + 1, |list| list.next_idx().0)
+                                    });
+                                    tab_rects.push(TabVisual {
+                                        session: &trace.config.session_id,
+                                        rect: response.rect,
+                                        shapes: plate.0..end,
+                                    });
                                     response
                                         .container_context_menu(|ui| self.target_menu(ui, trace));
                                 }
@@ -171,6 +217,46 @@ impl Window {
                                 }
                             });
                         });
+                    if let Some(payload) = egui::DragAndDrop::payload::<DraggedTab>(ui.ctx())
+                        && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+                        && let Some(from) = tab_rects
+                            .iter()
+                            .position(|tab| tab.session == payload.session)
+                    {
+                        let inside = strip.inner_rect.contains(pointer);
+                        let next = tab_rects
+                            .iter()
+                            .enumerate()
+                            .find(|(i, tab)| *i != from && pointer.x < tab.rect.center().x);
+                        let before = next.map(|(_, tab)| tab.session.to_owned());
+                        let to = next.map_or(tab_rects.len(), |(i, _)| i);
+                        let to = if inside {
+                            to - usize::from(from < to)
+                        } else {
+                            from
+                        };
+                        paint_tab_drag(
+                            ui,
+                            strip.inner_rect,
+                            &tab_rects,
+                            from,
+                            to,
+                            pointer.x - payload.grab_offset,
+                        );
+                        if inside && ui.input(|i| i.pointer.primary_released()) {
+                            self.runtime
+                                .command(Command::MoveTab(payload.session.clone(), before));
+                            egui::DragAndDrop::clear_payload(ui.ctx());
+                        }
+                    } else {
+                        for tab in &tab_rects {
+                            ui.ctx().animate_value_with_time(
+                                egui::Id::unique(("tab-slide", tab.session)),
+                                0.0,
+                                0.0,
+                            );
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let settings =
                             fixed_tab(ui, "Settings", session.active == "settings", true);
@@ -1673,6 +1759,75 @@ fn plate_fill(ctx: &egui::Context, selected: bool, hovered: bool) -> Color32 {
         0.04 * 0.65
     };
     palette(ctx).text.gamma_multiply(strength)
+}
+
+/// Layout stays fixed during a drag so shifted neighbors cannot change the drop threshold.
+fn paint_tab_drag(
+    ui: &egui::Ui,
+    clip: egui::Rect,
+    tabs: &[TabVisual<'_>],
+    from: usize,
+    to: usize,
+    left: f32,
+) {
+    let source = &tabs[from];
+    let left = left.clamp(
+        tabs[0].rect.left(),
+        tabs[tabs.len() - 1].rect.right() - source.rect.width(),
+    );
+    let delta = egui::vec2(left - source.rect.left(), 0.0);
+    let lifted = source.rect.translate(delta);
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::unique("dragged-target-tab"),
+        ))
+        .with_clip_rect(clip);
+    painter.rect_filled(
+        lifted.translate(egui::vec2(0.0, 2.0)),
+        6.0,
+        Color32::from_black_alpha(65),
+    );
+    painter.rect(
+        lifted,
+        6.0,
+        palette(ui.ctx()).raised,
+        egui::Stroke::new(1.0, palette(ui.ctx()).edge),
+        egui::StrokeKind::Inside,
+    );
+    let mut lifted_shapes = Vec::new();
+    for (i, tab) in tabs.iter().enumerate() {
+        let shift = if i > from && i <= to {
+            -(source.rect.width() + 6.0)
+        } else if i >= to && i < from {
+            source.rect.width() + 6.0
+        } else {
+            0.0
+        };
+        let shift = ui.ctx().animate_value_with_time(
+            egui::Id::unique(("tab-slide", tab.session)),
+            shift,
+            0.12,
+        );
+        ui.ctx().graphics_mut(|g| {
+            let list = g.entry(ui.layer_id());
+            for index in tab.shapes.clone() {
+                list.mutate_shape(egui::layers::ShapeIdx(index), |shape| {
+                    if i == from {
+                        // Reuse the actual tab's plate, text, status and close icon on top.
+                        let mut lifted_shape =
+                            std::mem::replace(&mut shape.shape, egui::Shape::Noop);
+                        lifted_shape.translate(delta);
+                        lifted_shapes.push(lifted_shape);
+                    } else {
+                        shape.shape.translate(egui::vec2(shift, 0.0));
+                    }
+                });
+            }
+        });
+    }
+    painter.extend(lifted_shapes);
 }
 
 fn tab_hovered(ui: &egui::Ui, id: egui::Id) -> bool {

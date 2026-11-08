@@ -55,7 +55,8 @@ To try the interface without probing anything, start it in [demo mode](#demo-mod
 - Continuous traceroute over **ICMP, UDP or TCP** (IPv4 and IPv6)
 - ICMP through the Windows ICMP API, Linux ping sockets or raw sockets; reply timeout and packet size
   per target
-- One tab per target, several targets at once
+- One tab per target, several targets at once; drag target tabs to rearrange them.
+  The order is remembered on the next launch.
 
 **Statistics and graphs**
 

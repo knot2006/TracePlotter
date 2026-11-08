@@ -186,6 +186,7 @@ pub(super) enum Command {
     Open(Config),
     Pause(String),
     Close(String),
+    MoveTab(String, Option<String>),
     Restart(String),
     Edit(Config),
     Preferences(Box<Session>),
@@ -429,6 +430,11 @@ impl Controller {
                         self.save();
                     }
                 }
+                Command::MoveTab(id, before) => {
+                    if self.move_tab(&id, before.as_deref()) {
+                        self.save();
+                    }
+                }
                 Command::Restart(id) => {
                     if let Some(i) = self.index(&id) {
                         let loading = !self.traces[i].loaded
@@ -587,6 +593,25 @@ impl Controller {
     }
     fn index(&self, id: &str) -> Option<usize> {
         self.traces.iter().position(|t| t.config.session_id == id)
+    }
+    fn move_tab(&mut self, id: &str, before: Option<&str>) -> bool {
+        let Some(from) = self.index(id) else {
+            return false;
+        };
+        let to = match before {
+            Some(id) => match self.index(id) {
+                Some(index) => index,
+                None => return false,
+            },
+            None => self.traces.len(),
+        };
+        let to = to.saturating_sub(usize::from(from < to));
+        if from == to {
+            return false;
+        }
+        let trace = self.traces.remove(from);
+        self.traces.insert(to, trace);
+        true
     }
     fn save(&mut self) {
         self.session.targets = self.traces.iter().map(|t| t.config.clone()).collect();
@@ -1461,6 +1486,56 @@ mod tests {
             details_pending: HashSet::new(),
         }
     }
+    #[test]
+    fn moving_tabs_preserves_trace_state_and_ignores_stale_ids() {
+        let mut c = controller();
+        for id in ["a", "b", "c"] {
+            let mut trace = Trace::new(Config {
+                session_id: id.into(),
+                host: "same.example".into(),
+                ..Config::default()
+            });
+            trace.apply(
+                Sample {
+                    t: 1000,
+                    hops: vec![],
+                },
+                false,
+            );
+            c.traces.push(trace);
+        }
+        c.session.active = "b".into();
+        c.session.compare = vec!["a".into(), "c".into()];
+        c.traces[1].paused = true;
+        let ids = |c: &Controller| {
+            c.traces
+                .iter()
+                .map(|t| t.config.session_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        assert!(c.move_tab("a", None));
+        assert_eq!(ids(&c), "b,c,a");
+        assert!(c.move_tab("a", Some("b")));
+        assert_eq!(ids(&c), "a,b,c");
+        assert!(c.move_tab("c", Some("b")));
+        assert_eq!(ids(&c), "a,c,b");
+        assert_eq!(c.session.active, "b");
+        assert_eq!(c.session.compare, ["a", "c"]);
+        assert!(c.traces[2].paused);
+        assert!(c.traces.iter().all(|t| t.target.times == [1.0]));
+        for (id, before) in [
+            ("missing", None),
+            ("a", Some("missing")),
+            ("b", None),
+            ("a", Some("a")),
+            ("c", Some("b")),
+        ] {
+            assert!(!c.move_tab(id, before));
+            assert_eq!(ids(&c), "a,c,b");
+        }
+    }
+
     fn sample(t: u64) -> TraceEvent {
         TraceEvent::Sample(Sample {
             t,
