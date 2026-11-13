@@ -5,7 +5,7 @@ description = "Open-source visual traceroute and ping monitor"
 license = "Apache-2.0"
 repository = "https://github.com/knot2006/TracePlotter"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 
 [lib]
 # The `_lib` suffix avoids a name clash with the bin on Windows,

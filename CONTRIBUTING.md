@@ -7,7 +7,7 @@ Windows first; the code is kept portable.
 
 ## What you need
 
-- Rust 1.95 or newer
+- Rust 1.100 or newer
 - On Windows, Visual Studio Build Tools with "Desktop development with C++"
 - On Debian or Ubuntu, `libwayland-dev` and `libxkbcommon-dev`
 
