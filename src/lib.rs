@@ -1222,9 +1222,9 @@ fn raw_sockets_allowed() -> bool {
 }
 
 /// Whether `restart_elevated` can give the app raw sockets. An AppImage runs from a mount
-/// that ignores file capabilities, so it cannot.
+/// that ignores file capabilities, and a Flatpak's sandbox drops every capability, so neither can.
 fn can_elevate() -> bool {
-    std::env::var_os("APPIMAGE").is_none()
+    std::env::var_os("APPIMAGE").is_none() && std::env::var_os("FLATPAK_ID").is_none()
 }
 
 /// Switch that names the process a restarted one takes over from.
@@ -1307,7 +1307,7 @@ fn spawn_elevated() -> Result<(), String> {
     #[cfg(not(windows))]
     {
         if !can_elevate() {
-            return Err("An AppImage cannot be allowed raw sockets. Use ICMP (ping socket), or install TracePlotter from a package.".into());
+            return Err("An AppImage or Flatpak cannot be allowed raw sockets. Use ICMP (ping socket), or install TracePlotter from a package.".into());
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         // pkexec wants a full path, and distributions keep setcap in different folders.

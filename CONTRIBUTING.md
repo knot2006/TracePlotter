@@ -153,7 +153,8 @@ git push origin v0.2.0
 
 The Release workflow builds the native app, signs the Windows exe and publishes packages.
 `scripts/package-linux.sh` builds the Debian and RPM packages with dpkg-deb and rpmbuild,
-and `scripts/package-appimage.sh` the AppImage with linuxdeploy, without a GTK plugin. The Tauri CLI is used only to sign Windows
+`scripts/package-appimage.sh` the AppImage with linuxdeploy, without a GTK plugin, and
+`linux/flatpak` holds the Flatpak manifest, desktop file and AppStream metadata. The Tauri CLI is used only to sign Windows
 updates in the existing format.
 The private signing key remains in `TAURI_SIGNING_PRIVATE_KEY`; its optional password is
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key is `UPDATE_PUBLIC_KEY` in `lib.rs`.

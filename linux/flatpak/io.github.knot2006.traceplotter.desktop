@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TracePlotter
+Comment=Open-source visual traceroute and ping monitor
+Exec=traceplotter
+Icon=io.github.knot2006.traceplotter
+Categories=Network;Monitor;
+Keywords=traceroute;ping;latency;packet loss;
+Terminal=false

@@ -31,7 +31,8 @@ for your system:
 - **Fedora, openSUSE:** `TracePlotter-<version>-1.x86_64.rpm`
 - **Arch Linux:** `traceplotter-<version>-1-x86_64.pkg.tar.zst` (built with the `PKGBUILD` beside
   it). The `traceplotter-debug-…` package holds only debug symbols and is not needed.
-- **Any other Linux:** `TracePlotter_<version>_amd64.AppImage`
+- **Any other Linux:** `TracePlotter_<version>_amd64.AppImage`, or the Flatpak
+  `TracePlotter_<version>_x86_64.flatpak`, installed with `flatpak install --user` and the file name
 
 `TracePlotter.exe.sig` is used by the app's own updater and is not needed either.
 
@@ -201,8 +202,9 @@ every user.
 ICMP (raw socket), UDP and TCP probe through raw sockets, which need the capability `cap_net_raw`.
 The packages give the app that capability when they install it, the way trippy's packages do for
 `trip`. The AppImage cannot have it, as it runs from a mount that ignores capabilities; it traces
-with ICMP (ping socket) only. A copy built from source can be given it under **Tools > Allow raw
-sockets…**, which asks for an administrator's password and restarts the app, or by hand:
+with ICMP (ping socket) only, and so does the Flatpak, whose sandbox allows no raw sockets. A copy
+built from source can be given it under **Tools > Allow raw sockets…**, which asks for an
+administrator's password and restarts the app, or by hand:
 
 ```bash
 sudo setcap cap_net_raw+ep /path/to/traceplotter
@@ -225,7 +227,8 @@ in that folder; optional Windows startup registration is stored in your account'
 The Windows Firewall rules above belong to the machine.
 
 On Linux the app is installed by its package, or runs as an AppImage, and keeps its data in
-`~/.local/share/TracePlotter-data`.
+`~/.local/share/TracePlotter-data`. The Flatpak keeps it in
+`~/.var/app/io.github.knot2006.traceplotter/data/TracePlotter-data`.
 
 Old sessions are imported automatically on the first launch of the native version. Tabs,
 settings and layout are converted from browser storage; trace history keeps its original

@@ -1,0 +1,43 @@
+# Temporary: builds the Flatpak on this branch and checks that it starts and may open ping sockets.
+name: Flatpak check
+
+on:
+  push:
+    branches: ["claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder xvfb
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --repo=repo --install build linux/flatpak/io.github.knot2006.traceplotter.yml
+      - run: flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo TracePlotter.flatpak io.github.knot2006.traceplotter
+      - name: Ping socket inside the sandbox
+        run: |
+          cat /proc/sys/net/ipv4/ping_group_range
+          flatpak run --command=python3 io.github.knot2006.traceplotter -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
+          s.settimeout(3)
+          s.sendto(b'\x08\x00\xf7\xff\x00\x00\x00\x00', ('127.0.0.1', 0))
+          print('echo reply', s.recvfrom(64))
+          "
+      - name: The app starts and keeps running
+        run: |
+          set +e
+          xvfb-run -a timeout 20 flatpak run io.github.knot2006.traceplotter --demo
+          code=$?
+          echo "exit $code"
+          [ $code -eq 124 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TracePlotter.flatpak
+          path: TracePlotter.flatpak

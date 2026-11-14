@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.knot2006.traceplotter</id>
+  <name>TracePlotter</name>
+  <summary>Visual traceroute and ping monitor</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <developer id="io.github.knot2006">
+    <name>TracePlotter contributors</name>
+  </developer>
+  <description>
+    <p>
+      TracePlotter traces the route to one or more hosts continuously and plots each hop's latency
+      and packet loss over time, so you can see which hop loses packets, and when.
+    </p>
+    <p>
+      In the Flatpak it traces with ICMP ping sockets, which need no special rights. UDP, TCP and
+      raw ICMP probes need raw sockets, which the sandbox does not allow.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.knot2006.traceplotter.desktop</launchable>
+  <url type="homepage">https://github.com/knot2006/TracePlotter</url>
+  <url type="bugtracker">https://github.com/knot2006/TracePlotter/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/knot2006/TracePlotter/main/docs/screenshot-glass.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Network</category>
+    <category>Monitor</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

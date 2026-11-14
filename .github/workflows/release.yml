@@ -10,7 +10,7 @@
 # The Rust tests are not repeated here; the CI workflow runs them for the same commit.
 #
 # The Windows job publishes the release with the exe in it, so "latest release" never points at
-# one the app cannot update from. The Linux and Arch jobs run after it, side by side, and add
+# one the app cannot update from. The Linux, Arch and Flatpak jobs run after it, side by side, and add
 # their packages to that release.
 #
 # The Rust builds are not cached: a tag's run can read only caches saved by that tag or by
@@ -172,3 +172,25 @@ jobs:
         run: |
           cd /home/builder
           gh release upload "$TAG" *.pkg.tar.zst PKGBUILD traceplotter.install --repo "$GITHUB_REPOSITORY"
+
+  # The Flatpak bundle, built by linux/flatpak with the Freedesktop runtime from Flathub.
+  # People install it with `flatpak install TracePlotter_<version>_x86_64.flatpak`, which
+  # fetches the runtime from Flathub too.
+  flatpak:
+    needs: windows
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Ubuntu's AppArmor stops unprivileged user namespaces, which flatpak-builder's sandbox needs.
+      - run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --repo=repo build linux/flatpak/io.github.knot2006.traceplotter.yml
+      - run: flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo "TracePlotter_${TAG#v}_x86_64.flatpak" io.github.knot2006.traceplotter
+      - name: Add the bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "TracePlotter_${TAG#v}_x86_64.flatpak" --repo "$GITHUB_REPOSITORY"
