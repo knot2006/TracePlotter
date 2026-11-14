@@ -22,7 +22,8 @@ jobs:
       - run: flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo TracePlotter.flatpak io.github.knot2006.traceplotter
       - name: Ping socket inside the sandbox
         run: |
-          cat /proc/sys/net/ipv4/ping_group_range
+          # The runner shuts ping sockets ("1 0"); desktops open them to every group, as systemd does.
+          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
           flatpak run --command=python3 io.github.knot2006.traceplotter -c "
           import socket
           s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
@@ -31,6 +32,7 @@ jobs:
           print('echo reply', s.recvfrom(64))
           "
       - name: The app starts and keeps running
+        if: ${{ !cancelled() }}
         run: |
           set +e
           xvfb-run -a timeout 20 flatpak run io.github.knot2006.traceplotter --demo
