@@ -5,8 +5,6 @@ id: io.github.knot2006.traceplotter
 runtime: org.freedesktop.Platform
 runtime-version: "26.08"
 sdk: org.freedesktop.Sdk
-sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
 command: traceplotter
 finish-args:
   # Probing, reverse DNS, update checks and the MCP server on 127.0.0.1.
@@ -22,14 +20,18 @@ modules:
   - name: traceplotter
     buildsystem: simple
     build-options:
-      append-path: /usr/lib/sdk/rust-stable/bin
+      append-path: /run/build/traceplotter/cargo/bin
       env:
         CARGO_HOME: /run/build/traceplotter/cargo
-      # Cargo downloads the crates itself. Flathub does not allow that and would need the
-      # crates listed as sources, made from Cargo.lock with flatpak-cargo-generator.
+        RUSTUP_HOME: /run/build/traceplotter/rustup
+      # Cargo downloads the crates itself, and rustup the toolchain, because the SDK's
+      # rust-stable extension can lag behind the Rust version Cargo.toml asks for. Flathub
+      # allows neither: it needs that extension and the crates listed as sources, made from
+      # Cargo.lock with flatpak-cargo-generator.
       build-args:
         - --share=network
     build-commands:
+      - curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
       - cargo build --release --locked
       - install -Dm755 target/release/traceplotter /app/bin/traceplotter
       - install -Dm644 icons/32x32.png /app/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
