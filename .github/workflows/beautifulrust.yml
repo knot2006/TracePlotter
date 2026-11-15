@@ -1,0 +1,52 @@
+name: Update BeautifulRust
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beautifulrust-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'knot2006/TracePlotter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: node --test scripts/update-beautifulrust.test.mjs
+      - name: Fetch skills and reference guidelines
+        run: node scripts/update-beautifulrust.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
+        with:
+          branch: automation/beautifulrust
+          add-paths: .agents/skills
+          commit-message: Update BeautifulRust skills and reference guidelines
+          title: Update BeautifulRust skills and reference guidelines
+          body: |
+            Refresh the three vendored BeautifulRust skills, their reference digests
+            and license from one upstream commit. The source revision is recorded in
+            `.agents/skills/README.md`; evaluation fixtures are excluded.
+
+            Review the guidance changes against `AGENTS.md` and `CONTRIBUTING.md`
+            before merging. Those project conventions and the Cargo lint configuration
+            are maintained separately. No upstream scripts are executed.
+
+            Validation: the updater's offline tests passed. Approve the CI workflow
+            runs on this pull request if GitHub requests it, and confirm that the
+            native checks pass on Windows and Linux before merging.

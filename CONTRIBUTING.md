@@ -117,6 +117,12 @@ Rust guidance. The [project-local copy](.agents/skills/README.md) includes writi
 review and porting skills, reference digests, the upstream license and the source commit.
 The conventions in this guide and AGENTS.md take precedence.
 
+The [update workflow](.github/workflows/beautifulrust.yml) checks upstream weekly and
+opens a pull request when the skills, reference guidelines or license change. It can
+also be run manually. [The local copy's notes](.agents/skills/README.md) describe setup
+and local updates. Review the guidance before merging; project conventions and Cargo
+lints are maintained separately.
+
 Keep application code direct. Prefer concrete types and small functions over speculative
 traits and builders. Use enums for meaningful modes, newtypes where units or IDs could
 be confused, and Option and Result for absence and expected failures. Borrow with &str
@@ -126,9 +132,16 @@ shared ownership where the controller needs them.
 
 Handle bad input and network failures without panicking, and preserve useful context in
 errors. Document invariants and failure modes that signatures cannot express. Keep unsafe
-code confined to platform or FFI boundaries with safe wrappers; every unsafe block needs
-a SAFETY comment explaining why its requirements hold. Keep locks short and avoid doing
-I/O or invoking callbacks while holding them.
+code confined to platform or FFI boundaries with safe wrappers; every unsafe block or
+impl needs a SAFETY comment explaining why its requirements hold. Document callers'
+obligations on unsafe functions. Keep locks short and avoid doing I/O or invoking
+callbacks while holding them.
+
+Stopping and rebuilding a trippy-core trace deliberately unwinds from its callback;
+preserve that mechanism and the release profile's unwind strategy. Keep that exception
+confined to the probe engine. Display snapshots are deliberate copies of controller-owned
+data. Having a lib.rs or pub items does not make this application a reusable library;
+apply library API rules when code actually has external consumers.
 
 Test observable behavior and edge cases, keeping pure logic tests beside their modules.
 Measure before optimizing. Let rustfmt handle formatting and fix clippy findings rather

@@ -79,6 +79,12 @@ Use the native checks above rather than replacing them with a skill's generic co
 Adopt additional lints incrementally, with a clean build on Windows and Linux, rather
 than enabling the full upstream library lint set across the application.
 
+The [BeautifulRust update workflow](.github/workflows/beautifulrust.yml) proposes weekly
+updates to the skills and reference guidelines. Review changes against these conventions
+before merging; the updater does not change project instructions or Cargo lints. Read
+only the reference digests relevant to the task; the Bevy digest does not apply to egui.
+For reviews, classify code by its actual consumers, not by the presence of lib.rs or pub.
+
 ## Demo mode
 
 `--demo` replaces probing with a made-up nine-hop route built from documentation addresses, with a
